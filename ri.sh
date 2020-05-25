@@ -10,6 +10,8 @@ size=$(stty size)
 lines=${size% *}
 columns=${size#* }
 
+source windows.sh
+
 clear
 if `type lsb_release > /dev/null 2>&1`; then
 	CURRENT_OS=`lsb_release -d -s`
@@ -48,129 +50,6 @@ LRED='\033[1;31m'
 WHITE='\033[0m'
 
 
-# little helpers for terminal print control and key input
-ESC=$( printf "\033")
-cursor_blink_on()  { printf "$ESC[?25h"; }
-cursor_blink_off() { printf "$ESC[?25l"; }
-cursor_to()        { printf "$ESC[$1;${2:-1}H"; }
-print_option()     { printf "$1 "; }
-print_selected_on()   { printf "$ESC[7m"; }
-print_selected_off()   { printf "$ESC[27m"; }
-get_cursor_row()   { IFS=';' read -sdR -p $'\E[6n' ROW COL; echo ${ROW#*[}; }
-repl() { printf '%.0s'"$1" $(seq 1 "$2"); }
-key_input()        {
-
-local key=""
-local extra=""
-local escKey=`echo -en "\033"`
-local upKey=`echo -en "\033[A"`
-local downKey=`echo -en "\033[B"`
-
-read -s -n1 key 2> /dev/null >&2
-while read -s -n1 -t .0001 extra 2> /dev/null >&2 ; do
-	key="$key$extra"
-done
-
-if [[ $key = $upKey ]]; then
-	echo "up"
-elif [[ $key = $downKey ]]; then
-	echo "down"
-elif [[ $key = $escKey ]]; then
-	echo "esc"
-elif [[ $key = "" ]]; then
-	echo "enter"
-fi
-
-}
-
-
-function refresh_window {
-	local idx=0
-
-	cursor_to $(($top_y )) $(($left_x))
-	printf "┌"
-	repl "─" $(( $MaxWindowWidth + 3 ))
-	printf "┐"
-
-    for opt
-	do
-		cursor_to $(($top_y + $idx + 1)) $(($left_x))
-	 	print_option "│  $opt"
-		let temp=$MaxWindowWidth-${#opt}
-		repl " " $temp
-		printf "│"
-		((idx++))
-    done
-
-	cursor_to $(($top_y + $idx +1)) $(($left_x))
-	printf "└"
-	repl "─" $(( $MaxWindowWidth + 3 ))
-	printf "┘"
-}
-
-function vertical_menu {
-
-	menu_items=( "$@" )
-
-    # initially print empty new lines (scroll down if at bottom of screen)
-    for opt
-	do
-		if (( "${#opt}" > "${MaxWindowWidth}" ))
-		then
-			MaxWindowWidth=${#opt}
-		fi
-    done
-	let MaxWindowWidth=$MaxWindowWidth+2
-
-	refresh_window "$@"
-
-    # ensure cursor and input echoing back on upon a ctrl+c during read -s
-    trap "cursor_blink_on; stty echo; printf '\n'; exit" 2
-    cursor_blink_off
-
-    local selected=0
-    local previous_selected=0
-    while true; do
-        # print options by overwriting the last lines
-        local idx=0
-
-		cursor_to $(($top_y + $previous_selected + 1)) $(($left_x))
-		print_option "│  ${menu_items[$previous_selected]}"
-		let temp=$MaxWindowWidth-${#menu_items[$previous_selected]}
-		repl " " $temp
-		printf "│"
-
-		cursor_to $(($top_y + $selected + 1)) $(($left_x))
-		printf "│ "
-		print_selected_on
-		printf " ${menu_items[$selected]}"
-		let temp=$MaxWindowWidth-${#menu_items[$selected]}
-		repl " " $temp
-		print_selected_off
-		printf " │"
-
-
-        # user key control
-        ReturnKey=`key_input`
-        case ${ReturnKey} in
-            enter) break;;
-            esc) selected=255; break;;
-            up)    previous_selected=$selected;
-            	   ((selected--));
-                   if [ $selected -lt 0 ]; then selected=$(($# - 1)); fi;;
-            down)  previous_selected=$selected;
-            	   ((selected++));
-                   if [ $selected -ge $# ]; then selected=0; fi;;
-        esac
-    done
-
-    # cursor position back to normal
-    cursor_to $lastrow
-    printf "\n"
-    cursor_blink_on
-
-    return $selected
-}
 
 Infon() {
     printf "\033[1;32m$@\033[0m"
@@ -1101,30 +980,17 @@ EOF
 
 else
 	clear
-	left_x=1
-	top_y=7
+
 	options=( "Создать пользователя" \
 	"Удалить пользователя" \
 	"Удалить базу данных пользователя"
 	"Выйти")
-	ml=MaxWindowWidth
 
-	for elmnt in "${options[@]}"
-	do
-		if (( ${#elmnt} > ${ml} ))
-		then
-			(( $ml=${#elmnt} ))
-		fi
-	done
-
-	(( ml=${ml} + 2 ))
-	(( left_x=(${columns}-${ml})/2 ))
-	(( top_y= (${lines}-${#options[@]})/2-1 ))
 
 	while true
 	do
-		let MaxWindowWidth=25
-		vertical_menu "${options[@]}"
+
+		vertical_menu "center" "center" 0 30 "${options[@]}"
 		choice=$?
 		clear
 		case "$choice" in
@@ -1136,7 +1002,7 @@ else
 				if (( ${#usrs[@]} > 0 ))
 				then
 					echo "Выберите пользователя для удаления из системы"
-					vertical_menu "${usrs[@]}"
+					vertical_menu "center" "center" 0 30 "${usrs[@]}"
 					choice=$?
 					if (( choice < 255 ))
 					then
@@ -1154,7 +1020,7 @@ else
 				if (( ${#usrs[@]} > 0 ))
 				then
 					echo "Выберите пользователя для удаления его базы данных"
-					vertical_menu "${usrs[@]}"
+					vertical_menu "center" "center" 0 30 "${usrs[@]}"
 					choice=$?
 					if (( choice < 255 ))
 					then
@@ -1164,7 +1030,7 @@ else
 						if (( ${#bases[@]} > 0 ))
 						then
 							echo -e "Выберите базу данных пользователя ${RED}"${usrs[${choice}]}"${WHITE} для удаления"
-							vertical_menu "${bases[@]}"
+							vertical_menu "center" "center" 0 30 "${bases[@]}"
 							choice=$?
 							if (( ${choice} < 255 ))
 							then
