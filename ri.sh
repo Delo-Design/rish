@@ -1,58 +1,109 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#set -euo pipefail
+#IFS=$'\n\t'
 
 #Вспомогательное внутри сценария
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 LRED='\033[1;31m'
 WHITE='\033[0m'
+CURSORUP='\033[1A'
+ERASEUNTILLENDOFLINE='\033[K'
+
 SUPPORTED_OS='CentOS|Red Hat Enterprise Linux Server'
 size=$(stty size)
 lines=${size% *}
 columns=${size#* }
+upperX=1
+upperY=1
+downY=$((${lines}/2))
+rim=$(( ${downY} - 2 ))
+whereCursorIs="down"
 
+# save the home dir
+declare _script_name=${BASH_SOURCE[0]}
+declare _script_dir=${_script_name%/*}
+
+if [[ "$_script_name" == "$_script_dir" ]]
+then
+	# _script name has no path
+	_script_dir="."
+fi
+
+# convert to absolute path
+_script_dir=$(cd ${_script_dir}; pwd -P)
+
+export RISH_HOME=${_script_dir}
+
+cd ${RISH_HOME}
 source windows.sh
 
+# если настройка скрипта уже была произведена, но сессия не была перезапущена - подгрузим пароль базы данных
+if [[ -z "${MYSQLPASS}" ]]
+then
+	if grep -q "MYSQLPASS" ~/.bashrc
+	then
+		MYSQLPASS=`cat ~/.bashrc | grep MYSQLPASS | awk -F= '{ print $2}'`
+	fi
+fi
+
+Up() {
+	if [[ ${whereCursorIs} == "down" ]]
+	then
+		downY=$( get_cursor_row )
+		whereCursorIs="up"
+		# ограничить скрол верхней части экрана
+		echo -e ${ESC}"[1;${rim}r"
+		cursor_to ${upperY} 1
+	fi
+}
+
+Down() {
+	if [[ ${whereCursorIs} == "up" ]]
+	then
+		upperY=$( get_cursor_row )
+		echo -e ${ESC}"[$(( ${rim}+2));${lines}r"
+		# ограничить скрол нижней частью экрана
+		cursor_to ${downY} 1
+		whereCursorIs="down"
+	fi
+}
+
+RemoveRim () {
+	echo -e ${ESC}"[;r"
+	cursor_to $(( ${rim} +1 )) 1
+	echo -en ${ESC}"[0J"
+}
+
 clear
+# рисуем разделительную линию
+cursor_to $(( ${rim} +1 )) 1
+repl "─" $(( ${columns} ))
+cursor_to $(( ${rim} +2 )) 1
+Up
 if `type lsb_release > /dev/null 2>&1`; then
 	CURRENT_OS=`lsb_release -d -s`
 	echo -e "Ваша версия Linux: ${RED}$CURRENT_OS${WHITE}"
-elif [ -f /etc/system-release ]; then
+elif [[ -f /etc/system-release ]]; then
 	CURRENT_OS=`head -1 /etc/system-release`
 	echo -e "Ваша версия Linux: ${GREEN}$CURRENT_OS${WHITE}"
 	echo
-elif [ -f /etc/issue ]; then
+elif [[ -f /etc/issue ]]; then
 	CURRENT_OS=`head -2 /etc/issue`
 	echo -e "Ваша версия Linux: ${RED}$CURRENT_OS${WHITE}"
 else
 	echo -e "${RED}Невозможно определить вашу версию Linux${WHITE}"
 	exit 1
 fi
-if ! echo $CURRENT_OS | egrep -q "$SUPPORTED_OS"
+if ! echo ${CURRENT_OS} | egrep -q "$SUPPORTED_OS"
 then
    echo -e "Ваш дистрибутив Linux ${RED}не поддерживается${WHITE}"
    exit 1
 fi
 
 
-
-
-#максимальная ширина окна
-declare -i MaxWindowWidth=25
-ReturnKey=""
-declare -i left_x
-declare -i top_y
-declare -i MaxWindowHeight=7
-declare -i ShiftWindow
-
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-LRED='\033[1;31m'
-WHITE='\033[0m'
-
-
-
 Infon() {
-    printf "\033[1;32m$@\033[0m"
+    printf "${GREEN}$@${WHITE}"
 }
 
 Info()
@@ -79,82 +130,48 @@ OpenFirewall() {
     then
         if firewall-cmd --list-all  | grep http > /dev/null && firewall-cmd --list-all  | grep https > /dev/null
         then
-            Info "Firewall уже открыт"
+            Info "${GREEN}Firewall${WHITE} уже открыт"
         else
-            Info "Открываем firewall"
+            echo -e "Открываем ${GREEN}firewall${WHITE}"
+            Down
             firewall-cmd --zone=public --permanent --add-service=http
             firewall-cmd --zone=public --permanent --add-service=https
             firewall-cmd --reload
-
+            Up
         fi
-
     else
-        Info "Firewall не установлен"
+        echo -e "${GREEN}Firewall${WHITE} не установлен"
     fi
 }
-
-ask() {
-    # https://gist.github.com/davejamesmiller/1965569
-    local prompt default reply
-
-    if [ "${2:-}" = "Y" ]; then
-        prompt="Y/n или Д/н"
-        default=Y
-    elif [ "${2:-}" = "N" ]; then
-        prompt="y/N или д/Н"
-        default=N
-    else
-        prompt="y/n"
-        default=
-    fi
-
-    while true; do
-
-        # Ask the question (not using "read -p" as it uses stderr not stdout)
-        if [ -z "$1" ]
-        then
-          echo -n "[$prompt]"
-        else
-          echo -n "$1 [$prompt] "
-        fi
-
-        # Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
-        read reply </dev/tty
-
-        # Default?
-        if [ -z "$reply" ]; then
-            reply=$default
-        fi
-
-        # Check if the reply is valid
-        case "$reply" in
-            Y*|y*|Д*|д*) return 0 ;;
-            N*|n*|Н*|н*) return 1 ;;
-        esac
-
-    done
-}
-
 
 Install() {
 if ! rpm -q $@ >/dev/null 2>&1
 then
-  Info "Ставим ${@}"
-  if yum -y install $@
-  then
-   Info "$@ установлен"
-  else
-   Error "Установить $@ не удалось"
-   exit 1
-  fi
-  echo
+	Up
+	echo -e "Ставим ${GREEN}${@}${WHITE}"
+	Down
+	if yum -y install $@
+	then
+		(( upperY -- ))
+		Up
+		echo -e "${GREEN}$@${WHITE} установлен "
+	else
+		(( upperY -- ))
+		Up
+		echo -e "Установить ${RED}$@${WHITE} не удалось"
+		RemoveRim
+		exit 1
+	fi
+	echo
 else
-  Info "$@ уже установлен"
+	Up
+  	echo -e "${GREEN}$@${WHITE} уже установлен"
 fi
-
+Down
 }
 
 CreateUser() {
+local NAME
 # try to create user
  	if (( $# == 0 ))
 	then
@@ -197,7 +214,7 @@ CreateUser() {
 	echo "Database: ${pass2}" > /home/${NAME}/.pass.txt
 	echo -e "Пароль пользователя ${NAME}: ${GREEN}"${pass}${WHITE}
 	echo "${NAME}: ${pass}" >> /home/${NAME}/.pass.txt
-	echo -e "Пароль для баз данных ${NAME}: ${GREEN}"${pass}${WHITE}
+	echo -e "Пароль для баз данных ${NAME}: ${GREEN}"${pass2}${WHITE}
 	chmod go-rwx /home/${NAME}/.pass.txt
 	chown ${NAME}:${NAME} /home/${NAME}/.pass.txt
 
@@ -249,8 +266,8 @@ CreateUser() {
 	sed -i '/^user = apache/d' /etc/php-fpm.d/${NAME}.conf
 	sed -i '/^group = apache/d' /etc/php-fpm.d/${NAME}.conf
 
-	#меняем user = apache -> user = siteuser
-	#group = apache -> group = siteuser
+	# меняем user = apache -> user = siteuser
+	# group = apache -> group = siteuser
 
 	#listen.owner = siteuser
 	#listen.group = siteuser
@@ -261,20 +278,32 @@ CreateUser() {
 	r=${r}"group = ${NAME}"
 	sed -i "s/^listen = \/var\/run\/php-fpm\/default.sock/${r}/" /etc/php-fpm.d/${NAME}.conf
 
-	#если надо - меняем режим работы php на ondemand
-	#в этом же файле в конце меняем
-	#php_value[session.save_path]    = /var/lib/php/session/siteuser
-	#php_value[soap.wsdl_cache_dir]  = /var/lib/php/wsdlcache/siteuser
+	# если надо - меняем режим работы php на ondemand
+	# в этом же файле в конце меняем
+	# php_value[session.save_path]    = /var/lib/php/session/siteuser
+	# php_value[soap.wsdl_cache_dir]  = /var/lib/php/wsdlcache/siteuser
 	sed -i "s/^php_value\[session.save_path\].*$/php_value\[session.save_path\] = \/var\/www\/${NAME}\/session/" /etc/php-fpm.d/${NAME}.conf
 	sed -i "s/^php_value\[soap.wsdl_cache_dir\].*$/php_value\[soap.wsdl_cache_dir\] = \/var\/lib\/${NAME}\/wsdlcache/" /etc/php-fpm.d/${NAME}.conf
+	echo
+	echo -e "Выберите режим работы PHP для этого пользователя:"
+	vertical_menu "current" 2 0 5 "ondemand - оптимально расходует память" "dynamic - более оперативно реагирует на запросы"
+	cr=$?
+	if (( ${cr}==0 ))
+	then
+		r="ondemand"
+	else
+		r="dynamic"
+	fi
+	sed -i "s/^pm = .*/pm = ${r}/" /etc/php-fpm.d/${NAME}.conf
+	echo -e ${CURSORUP}"Выбран режим PHP "${GREEN}${r}${WHITE}
 
-	#и создаем папки и устанавливаем их владельцем siteuser
+	# и создаем папки и устанавливаем их владельцем siteuser
 	mkdir /var/www/${NAME}/session
 	mkdir /var/www/${NAME}/wsdlcache
 	chown ${NAME}:${NAME} /var/www/${NAME}/session
 	chown ${NAME}:${NAME} /var/www/${NAME}/wsdlcache
 
-	#Архивируем конфигурацию апача по умолчанию
+	# Архивируем конфигурацию апача по умолчанию
 	if [[ -e /etc/httpd/conf.d/php.conf ]]
 	then
 		mv /etc/httpd/conf.d/php.conf /etc/httpd/conf.d/php.conf.bak
@@ -300,17 +329,22 @@ CreateUser() {
 	then
 		echo 'ENTRY "/var/www/'${NAME}'/www" URL "/var/www/'${NAME}'/www"' >> ~/.config/mc/hotlist
 	fi
-	mysql -uroot -p${MYSQLPASS} -e "CREATE USER ${NAME}@localhost IDENTIFIED BY '${pass2}';"
+	mysql  -e "CREATE USER ${NAME}@localhost IDENTIFIED BY '${pass2}';"
 }
 
 DeleteDatabase() {
 	   echo -e "Вы хотите удалить базу данных ${LRED}${1}${WHITE}?"
-		if ! ask "" N
+		if vertical_menu "current" 2 0 5 "Нет" "Да"
 		then
 		  echo "База данных не была удалена"
 		  return 1
+	     elif (( $? == 255 ))
+	     then
+		  echo "База данных не была удалена"
+		  return 1
 		fi
-		if mysqladmin -f -u root -p${MYSQLPASS} drop ${1}
+
+		if mysqladmin -f  drop ${1}
 		then
 		   echo -e "База данных ${GREEN}${1}${WHITE} удалена"
 		else
@@ -318,29 +352,31 @@ DeleteDatabase() {
 		fi
 }
 DeleteUser() {
-	#если папка не пуста, то отказываться удалять пользователя
+	# если папка не пуста, то отказываться удалять пользователя
 	if [[ ! -z `ls -A /var/www/${1}/www` ]]
 	then
 		echo "У пользователя есть неудаленные сайты. Вначале удалите их."
 		echo -e -n ${RED}
 		cd /var/www/${1}/www
-		#выводим директории
+		# выводим директории
 		ls -d */ | cut -f1 -d'/'
-		#и файлы
+		# и файлы
 		echo -e -n ${LRED}
 		find ./ -maxdepth 1 -type f -print0 | cut -f2 -d'/'
 		echo -e ${WHITE}
 		return 1
 	fi
-	#проверим на предмет неудаленных баз данных
+	# проверим на предмет неудаленных баз данных
 	SiteuserMysqlPass=`cat /home/${1}/.pass.txt | grep Database | awk '{ print $2}'`
-	bases=( `mysql -u$USER -p$tt  --batch -e "SHOW DATABASES" | tail -n +3` )
+	bases=( `mysql -u${1} -p${SiteuserMysqlPass}  --batch -e "SHOW DATABASES" | tail -n +3` )
 	if (( ${#bases[@]} > 0 ))
 	then
 		echo "У пользователя есть неудаленные базы данных:"
+		echo -e ${RED}
 		for i in "${bases[@]}"; do
 		  echo ${i}
 		done
+		echo -e ${WHITE}
 		echo "Вначале удалите их"
 		return 1
 	fi
@@ -358,7 +394,7 @@ DeleteUser() {
 	fi
 	userdel --remove ${1}
 	sed -i '/'${1}'/d' ~/.config/mc/hotlist
-	mysql -uroot -p${MYSQLPASS} -e "DROP USER IF EXISTS ${1}@localhost;"
+	mysql  -e "DROP USER IF EXISTS ${1}@localhost;"
 }
 
 
@@ -370,81 +406,111 @@ Info "Disk space:"
 df -h -P -l -x tmpfs -x devtmpfs
 echo ""
 
+
 if ! grep -q "MYSQLPASS" ~/.bashrc
 then
+	echo -n "Проверяем обновления сервера... "
 	if yum check-update > /dev/null
 	then
-	  echo "Сервер уже обновлен"
+	  	echo "Сервер не требует обновления"
 	else
-	  echo ""
-	  echo 'Обновляем сервер? '
-	  echo 'Настоятельно рекомендуем обновить при первом запуске.'
+		Down
+		echo ""
+		echo 'Обновляем сервер? '
+		echo 'Настоятельно рекомендуем обновить при первом запуске.'
 
-	  if ask "" Y
-	  then
-	  yum update -y
-	  fi
+		if vertical_menu "current" 2 0 5 "Да" "Нет"
+		then
+			((upperY--))
+			Up
+			echo "Идет обновление сервера...                     "
+			Down
+			yum update -y
+		fi
+		Up
 	fi
 fi
+
 
 if ! grep -q "MYSQLPASS" ~/.bashrc
 then
 # we think that it is the first run of the script
-	clear
+
 	if localectl status | grep -q UTF-8
 	then
 	 	echo
-	 	Info "Кодировка консоли уже выбрана правильно."
+	 	echo -e "Кодировка консоли уже установлена правильно - ${GREEN}UTF-8${WHITE}."
 	else
 		localectl set-locale LANG=en_US.UTF-8
 		echo
-		Warning "\nБыла установлена кодировка UTF-8 для консоли. Надо перезагрузить сервер. \nВведите команду reboot.\n"
-		echo "После перезагрузки запустите скрипт заново командой ./ri.sh"
-		exit 0
+		Warning "\nБыла установлена кодировка UTF-8 для консоли. Надо перезагрузить сервер. "
+		tet=$(pwd)
+		echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
+		Down
+		echo "Перезагрузить сервер?"
+		if vertical_menu "current" 2 0 5 "Да" "Нет"
+		then
+			echo "Перезагрузка сервера начата..."
+			reboot
+		else
+			RemoveRim
+			echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}"
+			exit 0
+		fi
 	fi
 
 	if command -v sestatus >/dev/null 2>&1
 	then
-	 if [ -f /etc/selinux/config ]
-	  then
-	  if [ `cat /etc/selinux/config | grep "SELINUX=enforcing"` ]
-	  then
+		 if [[ -f /etc/selinux/config ]]
+		 then
+			  if [[ `cat /etc/selinux/config | grep "SELINUX=enforcing"` ]]
+			  then
+					sed -i "s/SELINUX=enforcing/SELINUX=disabled/" /etc/selinux/config
+					echo
+					Error "Включен selinux."
+					echo "Мы установили значение в конфигурационном файле для отключения selinux"
+					echo "Вам остается только выполнить перезагрузку сервера."
 
-	   sed -i "s/SELINUX=enforcing/SELINUX=disabled/" /etc/selinux/config
-	   echo
-	   Error "Включен selinux."
-	   echo "Мы установили значение в конфигурационном файле для отключения selinux"
-	   echo "Вам остается только выполнить перезагрузку сервера."
-	   echo "Убедитесь, что в следующих строках установлено значение SELINUX=disabled "
-	   echo "Если, значение установлено верно, вам остается только выполнить команду reboot"
-	   head /etc/selinux/config
-	   echo
-	   Warning "Введите команду reboot"
-	   tet=$(pwd)
-	   echo "После перезагрузки запустите скрипт заново командой ${tet}./ri.sh"
-	   exit 0
-
-	  fi
-	 else
-	  echo "Конфигурационный файл selinux /etc/selinux/config не доступен,"
-	  echo "Хотя система selinux на компьютере присутствует"
-	  exit 0
-	 fi
+					tet=$(pwd)
+					Down
+					echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
+					echo "Перезагрузить сервер?"
+					if vertical_menu "current" 2 0 5 "Да" "Нет"
+					then
+						echo "Перезагрузка сервера начата..."
+						reboot
+					else
+						RemoveRim
+						echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}"
+						exit 0
+					fi
+			  fi
+		 else
+			  echo "Конфигурационный файл selinux /etc/selinux/config не доступен,"
+			  echo "Хотя система selinux на компьютере присутствует"
+			  RemoveRim
+			  exit 0
+		 fi
 	fi
 
-	clear
+	Down
+	echo -e "Начать ${GREEN}установку${WHITE} сервера?"
+	if ! vertical_menu "current" 2 0 5 "Да" "Нет"
+	then
+		RemoveRim
+		echo -e "${RED}Установка сервера прервана${WHITE}"
+		exit 1
+	fi
+
 
 	Install mc
-
 	Install cronie
-
 	Install logrotate
-
 	Install epel-release
 
 	cd /etc/yum.repos.d
 	ver="codeit.el"`rpm -q --qf "%{VERSION}" $(rpm -q --whatprovides redhat-release)`".repo"
-	if [ -f ${ver} ]
+	if [[ -f ${ver} ]]
 	then
 	  rm -f $ver
 	fi
@@ -452,194 +518,64 @@ then
 	wget https://repo.codeit.guru/${ver}
 	Install "httpd mod_ssl"
 
+	Down
 	systemctl enable httpd
 	echo
 	systemctl start httpd
 	echo
+	Up
 
 	OpenFirewall
 
-	Info "Перезапускаем apache"
+	echo -e "Отключаем heartbeat module и перезапускаем ${GREEN}apache${WHITE}"
 	sed -i "s/LoadModule lbmethod_heartbeat_module/#LoadModule lbmethod_heartbeat_module/" /etc/httpd/conf.modules.d/00-proxy.conf
 	sed -i "s/##/#/" /etc/httpd/conf.modules.d/00-proxy.conf
 
 	rm -f /usr/share/httpd/noindex/index.html
-	cat > /usr/share/httpd/noindex/index.html << EOF
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+	cp ${RISH_HOME}/index.html /usr/share/httpd/noindex/index.html
 
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
-	<head>
-		<title>Test Page for the Apache HTTP Server on Fedora</title>
-		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-		<style type="text/css">
-			/*<![CDATA[*/
-			body {
-				background-color: #fff;
-				color: #000;
-				font-size: 0.9em;
-				font-family: sans-serif,helvetica;
-				margin: 0;
-				padding: 0;
-			}
-			:link {
-				color: #c00;
-			}
-			:visited {
-				color: #c00;
-			}
-			a:hover {
-				color: #f50;
-			}
-			h1 {
-				text-align: center;
-				margin: 0;
-				padding: 0.6em 2em 0.4em;
-				background-color: #3d5c0e;
-				color: #fff;
-				font-weight: normal;
-				font-size: 1.75em;
-				border-bottom: 2px solid #000;
-			}
-			h2 {
-				font-size: 1.1em;
-				font-weight: bold;
-			}
-			hr {
-				display: none;
-			}
-			.content {
-				padding: 1em 5em;
-			}
-			.content-columns {
-				position: relative;
-				padding-top: 1em;
-			}
-			.content-column-left {
-				width: 47%;
-				padding-right: 3%;
-				float: left;
-				padding-bottom: 2em;
-			}
-			.content-column-left hr {
-				display: none;
-			}
-			.content-column-right {
-				/* Values for IE/Win; will be overwritten for other browsers */
-				width: 47%;
-				padding-left: 3%;
-				float: left;
-				padding-bottom: 2em;
-			}
-			.content-columns>.content-column-left, .content-columns>.content-column-right {
-				/* Non-IE/Win */
-			}
-			img {
-				border: 2px solid #fff;
-				padding: 2px;
-				margin: 2px;
-			}
-			a:hover img {
-				border: 2px solid #f50;
-			}
-			/*]]>*/
-		</style>
-	</head>
-
-	<body>
-		<h1>RISH Test Page</h1>
-
-		<div class="content">
-			<div class="content-middle">
-				<p>This page is used to test the proper operation of the Apache HTTP server after it has been installed. If you can read this page, it means that the web server installed at this site is working properly, but has not yet been configured.</p>
-			</div>
-			<hr />
-
-			<div class="content-columns">
-				<div class="content-column-left">
-					<h2>If you are a member of the general public:</h2>
-
-					<p>The fact that you are seeing this page indicates that the website you just visited is either experiencing problems, or is undergoing routine maintenance.</p>
-
-					<p>If you would like to let the administrators of this website know that you've seen this page instead of the page you expected, you should send them e-mail. In general, mail sent to the name "webmaster" and directed to the website's domain should reach the appropriate person.</p>
-
-					<p>For example, if you experienced problems while visiting www.example.com, you should send e-mail to "webmaster@example.com".</p>
-
-					<p>Fedora is a distribution of Linux, a popular computer operating system. It is commonly used by hosting companies because it is free, and includes free web server software. Many times, they do not set up their web server correctly, and it displays this "test page" instead of the expected website.</p>
-
-					<p>Accordingly, please keep these facts in mind:</p>
-					<ul>
-					<li>Neither the Fedora Project or Red Hat has any affiliation with any website or content hosted from this server (unless otherwise explicitly stated).</li>
-					<li>Neither the Fedora Project or Red Hat has "hacked" this webserver, this test page is an included component of Apache's httpd webserver software.</li>
-					</ul>
-
-					<p>For more information about RISH, please visit the <a href="https://github.com/Delo-Design/rish">RISH Project website</a>.</p>
-					<hr />
-				</div>
-
-				<div class="content-column-right">
-					<h2>If you are the website administrator:</h2>
-
-					<p>You may now add content to the directory <code>/var/www/html/</code>. Note that until you do so, people visiting your website will see this page, and not your content. To prevent this page from ever being used, follow the instructions in the file <code>/etc/httpd/conf.d/welcome.conf</code>.</p>
-
-					<div class="logos">
-						<p>You are free to use the images below on Apache and Fedora powered HTTP servers. Thanks for using Apache and Fedora!</p>
-
-						<p><a href="https://httpd.apache.org/"><img src="/icons/apache_pb2.gif" alt="[ Powered by Apache ]"/></a> <a href="https://getfedora.org/"><img src="/icons/poweredby.png" alt="[ Powered by Fedora ]" width="88" height="31" /></a></p>
-					</div>
-				</div>
-			</div>
-		</div>
-	</body>
-</html>
-EOF
+	Down
 	apachectl restart
-	echo
-	Info "Ставим репозитарий Remi Collet для установки php"
+	Up
+	echo -e "Ставим репозитарий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
 
 	cd /etc/yum.repos.d
 	remi="remi-release-7.rpm"
-	if [ -f ${remi} ]
+	if [[ -f ${remi} ]]
 	then
-	  rm -f $remi
+	  rm -f ${remi}
 	fi
 
+	Down
 	wget http://rpms.remirepo.net/enterprise/remi-release-7.rpm
 	rpm -Uvh remi-release-7*.rpm
 	Install yum-utils
 
-	default=6
-	while true; do
-			# Ask the question (not using "read -p" as it uses stderr not stdout)
-			Info "Какую версию php будем ставить?"
-			echo "1) 5.4"
-			echo "2) 5.6"
-			echo "3) 7.0"
-			echo "4) 7.1"
-			echo "5) 7.2"
-			Warning "6) 7.3 (выбран по умолчанию - достаточно нажать Enter)"
-
-			# Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
-			read reply </dev/tty
-
-			# Default?
-			if [ -z "$reply" ]; then
-				reply=$default
-			fi
-
-			# Check if the reply is valid
-			case "$reply" in
-				1*) reply=54 ; break ;;
-				2*) reply=56 ; break ;;
-				3*) reply=70 ; break ;;
-				4*) reply=71 ; break ;;
-				5*) reply=72 ; break ;;
-				6*) reply=73 ; break ;;
-			esac
-	done
-
-	clear
+	Down
+	options=( "PHP ver. 7.3" \
+	"PHP ver. 5.4" \
+	"PHP ver. 5.6" \
+	"PHP ver. 7.0" \
+	"PHP ver. 7.1" \
+	"PHP ver. 7.2" )
+	versions=( "73" \
+	"54" \
+	"56" \
+	"70" \
+	"71" \
+	"72" )
+	echo -e "Выберите ${GREEN}версию PHP${WHITE} для установки"
+	vertical_menu "current" 2 0 5 "${options[@]}"
+	ret=$?
+	if (( ${ret} == 255 ))
+	then
+		ret=0
+	fi
+	reply=${versions[${ret}]}
+	Up
 	Warning "Выбран php версии ${reply}"
 
+	Down
 	yum-config-manager --disable remi-php54 > /dev/null
 	yum-config-manager --disable remi-php56 > /dev/null
 	yum-config-manager --disable remi-php70 > /dev/null
@@ -651,13 +587,14 @@ EOF
 
 	if (( $reply > 70 ))
 	then
-		Install "php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc"
+		Install "php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip"
 	else
-		Install "php-fpm php-opcache php-cli php-gd php-mbstring php-mcrypt php-mysqlnd php-xml php-soap php-xmlrpc"
+		Install "php-fpm php-opcache php-cli php-gd php-mbstring php-mcrypt php-mysqlnd php-xml php-soap php-xmlrpc php-zip"
 	fi
-
-	Warning "Установлен php версии ${reply}"
+	(( upperY-- ))
+	Up
 	php -v
+	Down
 
 	cd /etc/httpd/conf.d/
 
@@ -698,11 +635,13 @@ EOF
 	r=${r}"group = apache\n"
 	sed -i "s/^listen = 127.0.0.1:9000/${r}/" /etc/php-fpm.d/www.conf
 
-	sed -i "s/^pm.start_servers = 5/pm.start_servers = 3/" /etc/php-fpm.d/www.conf
-	sed -i "s/^pm.min_spare_servers = 5/pm.min_spare_servers = 3/" /etc/php-fpm.d/www.conf
-	sed -i "s/^pm.max_spare_servers = 35/pm.max_spare_servers = 5/" /etc/php-fpm.d/www.conf
+	sed -i "s/^pm = .*/pm = ondemand/" /etc/php-fpm.d/www.conf
+	sed -i "s/^pm.start_servers = .*/pm.start_servers = 3/" /etc/php-fpm.d/www.conf
+	sed -i "s/^pm.min_spare_servers = .*/pm.min_spare_servers = 3/" /etc/php-fpm.d/www.conf
+	sed -i "s/^pm.max_spare_servers = .*/pm.max_spare_servers = 5/" /etc/php-fpm.d/www.conf
 	sed -i "s/^php_admin_value\[error_log\]/; php_admin_value\[error_log\]/" /etc/php-fpm.d/www.conf
 	sed -i "s/^php_admin_flag\[log_errors\]/; php_admin_flag\[log_errors\]/" /etc/php-fpm.d/www.conf
+
 
 	sed -i "s/^#compress/compress/" /etc/logrotate.conf
 
@@ -712,8 +651,7 @@ EOF
 	fi
 
 
-
-	if [ -d /var/lib/php/session ]
+	if [[ -d /var/lib/php/session ]]
 	then
 		echo "Папка /var/lib/php/session уже существует"
 	else
@@ -722,7 +660,7 @@ EOF
 		chgrp apache /var/lib/php/session
 	fi
 
-	if [ -d /var/lib/php/wsdlcache ]
+	if [[ -d /var/lib/php/wsdlcache ]]
 	then
 	   echo "Папка /var/lib/php/wsdlcache уже существует"
 	else
@@ -733,23 +671,31 @@ EOF
 
 	if php-fpm -t
 	then
+		Up
 		Info "Конфигурационный файл /etc/php-fpm.d/www.conf корректен"
+		Down
 	else
+		Up
 		Error "Ошибка в конфигурационном файле /etc/php-fpm.d/www.conf . Требуется ручное вмешательство."
+		Down
+		RemoveRim
+		exit
 	fi
 
-	sed -i "s/memory_limit = 128M/memory_limit = 256M/" /etc/php.ini
-	sed -i "s/upload_max_filesize = 2M/upload_max_filesize = 32M/" /etc/php.ini
-	sed -i "s/post_max_size = 8M/post_max_size = 32M/" /etc/php.ini
-	sed -i "s/max_execution_time = 30/max_execution_time = 60/" /etc/php.ini
-	sed -i "s/;max_input_vars = 1000/max_input_vars = 10000/" /etc/php.ini
+	sed -i "s/memory_limit = .*/memory_limit = 256M/" /etc/php.ini
+	sed -i "s/upload_max_filesize = .*/upload_max_filesize = 32M/" /etc/php.ini
+	sed -i "s/post_max_size = .*/post_max_size = 32M/" /etc/php.ini
+	sed -i "s/max_execution_time = .*/max_execution_time = 60/" /etc/php.ini
+	sed -i "s/;max_input_vars = .*/max_input_vars = 20000/" /etc/php.ini
 
+	Up
 	Info "Установлены лимиты для php:"
-	Info "memory_limit = 256M"
-	Info "upload_max_filesize = 32M"
-	Info "post_max_size = 32M"
-	Info "max_execution_time = 60"
-	Info "max_input_vars = 10000"
+	echo -e "memory_limit = ${GREEN}256M${WHITE}"
+	echo -e "upload_max_filesize = ${GREEN}32M${WHITE}"
+	echo -e "post_max_size = ${GREEN}32M${WHITE}"
+	echo -e "max_execution_time = ${GREEN}60${WHITE}"
+	echo -e "max_input_vars = ${GREEN}20000${WHITE}"
+	Down
 
 	systemctl enable php-fpm
 	echo
@@ -758,20 +704,27 @@ EOF
 
 	Install "htop"
 
-	Info "Устанавливаем московское время:"
+	Up
+	echo -e "Устанавливаем ${GREEN}московское время${WHITE}:"
+	Down
 	mv /etc/localtime /etc/localtime.bak
 	ln -s /usr/share/zoneinfo/Europe/Moscow /etc/localtime
+	Up
 	date
+	Down
 
 	Install unzip
 
 	cd /var/www/html
 
-	if [ ! -d 000-default ]
+	Up
+	echo -e "Создаем хост для ответа сервера на обращения к ${GREEN}несуществующим сайтам${WHITE} 000-default"
+	Down
+	if [[ ! -d 000-default ]]
 	then
 		mkdir 000-default
 	else
-		Info "каталог 000-default уже создан"
+		echo -e  "каталог ${GREEN}000-default${WHITE} уже создан"
 	fi
 
 	cd /etc/httpd/conf.d
@@ -820,20 +773,22 @@ EOF
 	apachectl restart
 
 	r=$( wget -qO- ident.me )
-	Info "Попробуйте открыть этот адрес в своем браузере:"
-	echo "http://"${r}
+	echo -e "Попробуйте ${GREEN}открыть этот адрес${WHITE} в своем браузере:"
+	echo -e "${GREEN}http://"${r}${WHITE}
 	echo
 
-	if ask "Информация о php отображается нормально?" Y
+	echo "Информация о php отображается нормально?"
+	if vertical_menu "current" 2 0 5 "Да" "Нет"
 	then
 	   rm  -f index.php
 	else
-	   echo "Установка завершена с ошибкой"
-	   exit 1
+		RemoveRim
+	   	echo "Установка завершена с ошибкой"
+	   	exit 1
 	fi
 
-
 	pass=$( tr -dc A-Za-z0-9 < /dev/urandom | head -c 16 | xargs )
+	MYSQLPASS=${pass}
 
 	cd ~
 
@@ -842,14 +797,13 @@ EOF
 		echo "export EDITOR=mcedit" >> ~/.bashrc
 	fi
 
-
 	cd /etc/yum.repos.d/
 
-	echo "# MariaDB 10.3 CentOS repository list - created 2018-10-22 16:03 UTC" > MariaDB.repo
+	echo "# MariaDB 10.4 CentOS repository list - created 2020-05-30 13:04 UTC" > MariaDB.repo
 	echo "# http://downloads.mariadb.org/mariadb/repositories/" >> MariaDB.repo
 	echo "[mariadb]" >> MariaDB.repo
 	echo "name = MariaDB" >> MariaDB.repo
-	echo "baseurl = http://yum.mariadb.org/10.3/centos7-amd64" >> MariaDB.repo
+	echo "baseurl = http://yum.mariadb.org/10.4/centos7-amd64" >> MariaDB.repo
 	echo "gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB" >> MariaDB.repo
 	echo "gpgcheck=1" >> MariaDB.repo
 
@@ -857,65 +811,69 @@ EOF
 	systemctl start mariadb
 	systemctl enable mariadb
 
+	Up
 	Info "Генерируем самоподписанный сертификат SSL на 10 лет"
+	Down
 	openssl req -new -days 3650 -x509  \
 	-subj "/C=RU/ST=Moscow/L=Springfield/O=Dis/CN=www.example.com" \
 	-nodes -out /etc/pki/tls/certs/localhost.crt \
 	-keyout /etc/pki/tls/private/localhost.key
 
-	clear
-
-	if [ -z "$MYSQLPASS" ]
+	if ! grep -q "MYSQLPASS" ~/.bashrc
 	then
-		Warning "Добавляем пароль базы данных в файл автозапуска"
-		if grep -q "MYSQLPASS" ~/.bashrc
-		then
-			sed -i "s/export MYSQLPASS=.*$/export MYSQLPASS=${pass}/" ~/.bashrc
-		else
-			echo "export MYSQLPASS="${pass} >> ~/.bashrc
-		fi
-			Info "Для базы данных mysql создан следующий пароль (запишите его):"
-			Warning $pass
+		Up
+
+		echo -e "Производим настройку безопасности ${GREEN}mysql_secure_installation${WHITE}"
+		Down
+		sed -i '/character-set-server=utf8/d' /etc/my.cnf.d/server.cnf
+		sed -i "s/^\[mysqld\]/\[mysqld\]\ncharacter-set-server=utf8/" /etc/my.cnf.d/server.cnf
+
 mysql_secure_installation <<EOF
 
-y
-$pass
-$pass
-y
+n
+n
 y
 y
 y
+y
+
 EOF
+	# mysql -uroot  -e "ALTER USER root@localhost IDENTIFIED VIA mysql_native_password USING PASSWORD(\"${pass}\");"
 
 	fi
 
-
-	Info "На локальных системах certbot не нужен."
-	if ask "Ставим certbot?" Y
+	echo -e "Ставим ${GREEN}certbot${WHITE}?"
+	if vertical_menu "current" 2 0 5 "Да" "Нет"
 	then
 		Install "certbot python2-certbot-apache"
 		echo "-----------------------------"
-		echo "Настроим certbot. Введите свой email для обратной связи."
-		echo "На этот емейл будут приходить сообщения о проблемах с сертификатами."
-		echo "Обязательно укажите корректный email."
-			echo "В конце сертификат для 000-default получать не нужно - просто нажмите 'c'"
-			echo "-----------------------------"
+		echo -e "${GREEN}Настроим certbot. Введите свой email для обратной связи."
+		echo -e "На этот емейл будут приходить сообщения о проблемах с сертификатами."
+		echo -e "Обязательно укажите корректный email."
+		echo -e "В конце сертификат для 000-default получать не нужно - просто нажмите 'c'${WHITE}"
+		echo "-----------------------------"
 		certbot --apache
 	fi
 
+	Up
 	echo "Если есть почтовая служба - отключаем и останавливаем"
+	Down
 	if systemctl status postfix
 	then
 		systemctl stop postfix
 		systemctl disable postfix
 		systemctl status postfix
+		Up
 		echo -e "${GREEN}Почтовая служба остановлена.${WHITE}"
+		Down
 	fi
 
+	Up
 	echo
 	echo "Делаем сервис апача автоматически перезапускаемым, в случае какого либо падения."
 	echo "Сервер будет пытаться перезапустить апач каждые 3 минуты в случае падения."
-	if [ ! -d /etc/systemd/system/httpd.service.d ]
+	Down
+	if [[ ! -d /etc/systemd/system/httpd.service.d ]]
 	then
 		mkdir /etc/systemd/system/httpd.service.d
 	fi
@@ -924,15 +882,18 @@ EOF
 Restart=always
 RestartSec=180
 EOF
-	echo -e "Перезапускаем апач после настройки"
+	Up
+	echo -e "Перезапускаем сервер ${GREEN}apache${WHITE} после настройки"
+	Down
 	systemctl daemon-reload
 	systemctl restart httpd
 
-
+	Up
 	echo
 	echo "Делаем сервис базы данных автоматически запускаемым, в случае какого либо падения."
 	echo "Сервер будет пытаться перезапустить базу каждые 3 минуты в случае падения."
-	if [ ! -d /etc/systemd/system/mariadb.service.d ]
+	Down
+	if [[ ! -d /etc/systemd/system/mariadb.service.d ]]
 	then
 		mkdir /etc/systemd/system/mariadb.service.d
 	fi
@@ -943,10 +904,14 @@ RestartSec=180
 EOF
 	sed -i "s/^#bind-address.*$/bind-address=127.0.0.1/" /etc/my.cnf.d/server.cnf
 
-	echo -e "Перезапускаем службу баз данных после настройки"
+	Up
+	echo -e "Перезапускаем службу ${GREEN}баз данных${WHITE} после настройки"
+	Down
 	systemctl daemon-reload
 	systemctl restart mariadb
-	echo -e "${GREEN}Установка и настройка MariaDB завершена.${WHITE}"
+	Up
+	echo -e "Установка и настройка ${GREEN}MariaDB завершена.${WHITE}"
+	Down
 
 	if ! [[ -d ~/.config ]]
 	then
@@ -964,49 +929,69 @@ ENTRY "/etc/php-fpm.d" URL "/etc/php-fpm.d"
 ENTRY "/etc/httpd/conf.d" URL "/etc/httpd/conf.d"
 EOF
 
+	if [[ -e mc.menu ]]
+	then
+		rm /etc/mc/mc.menu
+		cp mc.menu /etc/mc/mc.menu
+	fi
+	Up
+	echo
+	echo -e "Для ${GREEN}root${WHITE} доступа к ${GREEN}mysql${WHITE} используются только скрипты."
+	#Warning ${pass}
+	echo -e "Учетная запись ${GREEN}root${WHITE} не доступна через интернет"
 
-	Info "Для базы данных mysql создан следующий пароль (запишите его):"
-	Warning $pass
-	Info "В дальнейшем доступ к паролю можно получить командой"
-	Warning "echo \$MYSQLPASS"
-
-
+	RemoveRim
 	echo ""
-	echo "Теперь создаем пользователя для работы с сайтом. "
+	echo ""
+	echo -e "Теперь ${GREEN}создаем${WHITE} пользователя для работы с сайтом. "
 	echo "Имя пользователя набирается латинскими буквами без спецсимволов, тире и точек."
+
+	if ! grep -q "MYSQLPASS" ~/.bashrc
+	then
+		# устанавливаем признак выполненной настройки сервера
+		echo "export MYSQLPASS="${pass} >> ~/.bashrc
+	fi
+
 	CreateUser
 
-	Info "Конфигурирование сервера завершено"
+	echo -e "Конфигурирование сервера ${GREEN}завершено${WHITE}"
+	Warning "Советуем сейчас отключиться и подключиться к серверу заново, во избежание возможных сбоев."
 
 else
-	clear
-
 	options=( "Создать пользователя" \
 	"Удалить пользователя" \
 	"Удалить базу данных пользователя"
 	"Выйти")
-
+	Down
+	echo
+	echo -e "Версия ${GREEN}apache${WHITE}"
+	httpd -v
+	echo
+	echo -e "Версия ${GREEN}PHP${WHITE}"
+	php -v
 
 	while true
 	do
 
 		vertical_menu "center" "center" 0 30 "${options[@]}"
 		choice=$?
-		clear
+
 		case "$choice" in
 			0)
+				clear
 				CreateUser
 				;;
 			1)
+				clear
 				usrs=( $( cat /etc/passwd | grep home | awk -F: '{ print $1}'   ))
 				if (( ${#usrs[@]} > 0 ))
 				then
 					echo "Выберите пользователя для удаления из системы"
-					vertical_menu "center" "center" 0 30 "${usrs[@]}"
+					vertical_menu "current" 2 0 30 "${usrs[@]}"
+					echo -e ${CURSORUP}
 					choice=$?
 					if (( choice < 255 ))
 					then
-						clear
 						echo -e "Удаляем пользователя ${GREEN}"${usrs[${choice}]}${WHITE}
 						DeleteUser ${usrs[${choice}]}
 					fi
@@ -1015,22 +1000,23 @@ else
 				fi
 				;;
 			2)
-				#проверим на предмет неудаленных баз данных
+				clear
+				# проверим на предмет неудаленных баз данных
 				usrs=( $( cat /etc/passwd | grep home | awk -F: '{ print $1}'   ))
 				if (( ${#usrs[@]} > 0 ))
 				then
 					echo "Выберите пользователя для удаления его базы данных"
-					vertical_menu "center" "center" 0 30 "${usrs[@]}"
+					vertical_menu "current" 2 0 30 "${usrs[@]}"
 					choice=$?
 					if (( choice < 255 ))
 					then
-						clear
+						echo -e ${CURSORUP}"Выбран пользователь ${GREEN}${usrs[${choice}]}${WHITE}${ERASEUNTILLENDOFLINE}"
 						SiteuserMysqlPass=`cat /home/${usrs[${choice}]}/.pass.txt | grep Database | awk '{ print $2}'`
-						bases=( `mysql -u${usrs[${choice}]} -p$SiteuserMysqlPass  --batch -e "SHOW DATABASES" | tail -n +3` )
+						bases=( `mysql -u${usrs[${choice}]} -p${SiteuserMysqlPass}  --batch -e "SHOW DATABASES" | tail -n +3` )
 						if (( ${#bases[@]} > 0 ))
 						then
 							echo -e "Выберите базу данных пользователя ${RED}"${usrs[${choice}]}"${WHITE} для удаления"
-							vertical_menu "center" "center" 0 30 "${bases[@]}"
+							vertical_menu "current" 2 0 30 "${bases[@]}"
 							choice=$?
 							if (( ${choice} < 255 ))
 							then
@@ -1040,15 +1026,16 @@ else
 							echo "У пользователя нет баз данных"
 						fi
 					fi
+				else
+					echo "В системе нет пользователей"
 				fi
-
 				;;
 			*)
-				echo "Выход"
+				RemoveRim
+				clear
 				break
 				;;
 		esac
 	done
-
 fi
 

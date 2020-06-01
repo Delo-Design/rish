@@ -2,13 +2,13 @@ shell_patterns=0
 #@IgnoreInspection BashAddShebang
 
 + d /var/www/ & t d
-1       архив сайта
+1   архив сайта
   GREEN='\033[0;32m'
   LGREEN='\033[1;32m'
   RED='\033[0;31m'
   WHITE='\033[0m'
 	echo -e "Создаем архив сайта ${GREEN}%f${WHITE}"
-	if [ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]
+	if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
 	then
 		echo "Идет создание архива базы данных"
 		mysqldump -u root -p$MYSQLPASS %f > %f.sql
@@ -21,11 +21,17 @@ shell_patterns=0
 	echo %f".tar.gz created."
 
 + d /var/www/ & t d
+4       архив базы данных сайта
+	echo "Идет создание базы данных %f"
+	mysqldump -u root -p$MYSQLPASS %f > %f.sql
+	echo "База данных %f создана"
+
++ d /var/www/ & t d
 2   cоздать сайт по имени папки
 	ask() {
 		# https://gist.github.com/davejamesmiller/1965569
 		local prompt default reply
-		if [ "${2:-}" = "Y" ]; then
+		if [[ "${2:-}" = "Y" ]]; then
 			prompt="Y/n или Д/н"
 			default=Y
 		elif [ "${2:-}" = "N" ]; then
@@ -134,17 +140,26 @@ shell_patterns=0
 		echo "</VirtualHost>" >> %f.conf
 		echo -e "Сайт ${GREEN}%f${WHITE} создан для ${GREEN}${r}${WHITE}"
 	fi
+	if [[ ${r} == "html" ]]
+	then
+		r="apache"
+	fi
+	echo
+	echo -e "Владельцем всех папок и файлов в папке ${GREEN}%d/%f${WHITE}"
+	echo -e "Установлен пользователь ${GREEN}$r${WHITE}"
+	echo
+	chown -R ${r}:${r} %d"/"%f
 	if ask "Перезапускаем сервер для активации сайта?" Y
 	then
         if apachectl configtest
         then
         	apachectl restart
-        	echo "сервер перезагружен"
+        	echo "Cервер apache перезагружен"
         else
-        	echo "сервер не был перезагружен"
+        	echo "Cервер не был перезагружен"
         fi
 	else
-		echo "Сервер перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
+		echo "Сервер apache перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
 	fi
 
 =+ f \.sql$
@@ -188,12 +203,6 @@ shell_patterns=0
 		   echo -e ${RED}"Произошла ошибка"${WHITE}
 		fi
 	fi
-
-+ d /var/www/ & t d
-4       создать архив mysql
-        echo "Идет создание базы данных %f"
-	mysqldump -u root -p$MYSQLPASS %f > %f.sql
-	echo "База данных %f создана"
 
 =+ f \.sql$
 5       импopт бaзы дaнных из фaйлa .sql

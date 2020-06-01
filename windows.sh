@@ -150,7 +150,7 @@ function vertical_menu {
 		(( skip_lines=0 ))
 		if (( (${current_y}+${height}) > ${lines} ))
 		then
-			(( skip_lines=${current_y}+${height}-${lines} ))
+			(( skip_lines=${current_y}+${height}-${lines}+1 ))
 			echo -en ${ESC}"[${skip_lines}S"
 		fi
 		(( top_y=${current_y} - ${skip_lines} ))
