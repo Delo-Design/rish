@@ -193,12 +193,12 @@ shell_patterns=0
 		   echo -e ${RED}"Произошла ошибка"${WHITE}
 		fi
 	else
-		mysqlpass=`cat /home/${r}/.pass.txt | grep Database | awk '{ print $2}'`
 		if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%f\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 		then
 		   	echo -e "База mysql с именем ${GREEN}%f${WHITE} создана"
 		   	mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%f\`.* TO '${r}'@'localhost';"
 			mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+			echo -e "Права на базу выданы пользователю ${r}"
 		else
 		   echo -e ${RED}"Произошла ошибка"${WHITE}
 		fi
@@ -206,11 +206,71 @@ shell_patterns=0
 
 =+ f \.sql$
 5       импopт бaзы дaнных из фaйлa .sql
-        GREEN='\033[0;32m'
-        RED='\033[0;31m'
-        LRED='\033[1;31m'
-        WHITE='\033[0m'
-	echo "Идет импорт базы данных по адресу "%d"/"%f
+    ask() {
+		local prompt default reply
+		if [ "${2:-}" = "Y" ]; then
+		prompt="Y/n или Д/н"
+		default=Y
+		elif [ "${2:-}" = "N" ]; then
+		prompt="y/N или д/Н"
+		default=N
+		else
+		prompt="y/n"
+		default=
+		fi
+		while true; do
+		# Ask the question (not using "read -p" as it uses stderr not stdout)
+		if [ -z "$1" ]
+		then
+		echo -n "[$prompt]"
+		else
+		echo -n "$1 [$prompt] "
+		fi
+		# Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
+		read reply </dev/tty
+		# Default?
+		if [ -z "$reply" ]; then
+		reply=$default
+		fi
+		# Check if the reply is valid
+		case "$reply" in
+		Y*|y*|Д*|д*) return 0 ;;
+		N*|n*|Н*|н*) return 1 ;;
+		esac
+		done
+    }
+	GREEN='\033[0;32m'
+	RED='\033[0;31m'
+	LRED='\033[1;31m'
+	WHITE='\033[0m'
+	r=%d
+	r=${r#/var/www/}
+	r=${r%/www*}
+    if [[ -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
+    then
+    	echo -e "Базы данных с именем ${GREEN}%b${WHITE} не существует. Создать?"
+    	ask "" Y || $( echo "База не создана, импорт прерван."; exit )
+		if [[ ${r} == "html" ]]
+		then
+			if mysqladmin -u root -p$MYSQLPASS create %b
+			then
+			   echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
+			else
+			   echo -e ${RED}"Произошла ошибка"${WHITE}
+			fi
+		else
+			if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%b\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+			then
+				echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
+				mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%b\`.* TO '${r}'@'localhost';"
+				mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+				echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
+			else
+			   echo -e ${RED}"Произошла ошибка"${WHITE}
+			fi
+		fi
+    fi
+	echo -e "Идет импорт базы данных из файла ${GREEN}"%d"/"%f${WHITE}
 	if mysql -u root -p$MYSQLPASS %b < %d"/"%f
 	then
 	   echo -e "База данных ${GREEN}%b${WHITE} успешно импортирована"

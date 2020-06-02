@@ -343,7 +343,7 @@ DeleteDatabase() {
 		  echo "База данных не была удалена"
 		  return 1
 		fi
-
+		echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
 		if mysqladmin -f  drop ${1}
 		then
 		   echo -e "База данных ${GREEN}${1}${WHITE} удалена"
