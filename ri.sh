@@ -423,7 +423,8 @@ then
 		then
 			((upperY--))
 			Up
-			echo "Идет обновление сервера...                     "
+			echo
+			echo "Идет обновление сервера..."${ERASEUNTILLENDOFLINE}
 			Down
 			yum update -y
 		fi
@@ -482,6 +483,7 @@ then
 					else
 						RemoveRim
 						echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}"
+						echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
 						exit 0
 					fi
 			  fi
@@ -672,11 +674,12 @@ then
 	if php-fpm -t
 	then
 		Up
-		Info "Конфигурационный файл /etc/php-fpm.d/www.conf корректен"
+		echo -e "Конфигурационный файл ${GREEN}/etc/php-fpm.d/www.conf корректен${WHITE}"
 		Down
 	else
 		Up
-		Error "Ошибка в конфигурационном файле /etc/php-fpm.d/www.conf . Требуется ручное вмешательство."
+		echo -e "Ошибка в конфигурационном файле ${RED}/etc/php-fpm.d/www.conf${WHITE} . Требуется ручное вмешательство."
+		echo "Скрипт остановлен."
 		Down
 		RemoveRim
 		exit
@@ -689,7 +692,7 @@ then
 	sed -i "s/;max_input_vars = .*/max_input_vars = 20000/" /etc/php.ini
 
 	Up
-	Info "Установлены лимиты для php:"
+	echo -e "Установлены лимиты для ${GREEN}PHP${WHITE}:"
 	echo -e "memory_limit = ${GREEN}256M${WHITE}"
 	echo -e "upload_max_filesize = ${GREEN}32M${WHITE}"
 	echo -e "post_max_size = ${GREEN}32M${WHITE}"
@@ -812,7 +815,7 @@ then
 	systemctl enable mariadb
 
 	Up
-	Info "Генерируем самоподписанный сертификат SSL на 10 лет"
+	echo -e "Генерируем ${GREEN}самоподписанный сертификат${WHITE} SSL на 10 лет"
 	Down
 	openssl req -new -days 3650 -x509  \
 	-subj "/C=RU/ST=Moscow/L=Springfield/O=Dis/CN=www.example.com" \
