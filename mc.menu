@@ -717,13 +717,13 @@ p       настроить Joomla в папке
 		sed -i "s/\$password.*$/\$password = '${MYSQLPASS}';/" %d/%f/configuration.php
 		echo "Новый пароль внесен в configuration.php"
 		sed -i "s/\$user.*$/\$user = '${r}';/" %d/%f/configuration.php
-		echo "Имя пользователя базы данных установлено ${GREEN}${r}${WHITE}"
+		echo -e "Имя пользователя базы данных установлено ${GREEN}${r}${WHITE}"
 		sed -i "s/\$db .*$/\$db = '%f';/" %d/%f/configuration.php
-		echo "имя базы данных ${GREEN}%f${WHITE} установлено в configuration.php"
+		echo -e "имя базы данных ${GREEN}%f${WHITE} установлено в configuration.php"
 		sed -i "s&\$log_path .*$&\$log_path = '%d\/%f\/administrator\/logs';&" %d/%f/configuration.php
-		echo "Путь к папке logs скорректирован ${GREEN}%d/%f/administrator/logs${WHITE}"
+		echo -e "Путь к папке logs скорректирован ${GREEN}%d/%f/administrator/logs${WHITE}"
 		sed -i "s&\$tmp_path .*$&\$tmp_path = '%d\/%f\/tmp';&" %d/%f/configuration.php
-		echo "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
+		echo -e "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
 		echo
 	else
 		echo
