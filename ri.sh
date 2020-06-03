@@ -4,11 +4,14 @@
 
 #Вспомогательное внутри сценария
 SCRIPTVERSION='0.01'
+GREEN='\033[0;32m'
 RED='\033[0;31m'
 LRED='\033[1;31m'
 WHITE='\033[0m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
+
+
 
 SUPPORTED_OS='CentOS|Red Hat Enterprise Linux Server'
 size=$(stty size)
@@ -1043,6 +1046,7 @@ else
 			3)
 				cd ${RISH_HOME}
 				cd ..
+				rm rish.tar.gz
 				wget https://hika.su/rish.tar.gz
 				tar -xf rish.tar.gz rish/mc.menu
 				cd ${RISH_HOME}
