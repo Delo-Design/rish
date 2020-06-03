@@ -1,4 +1,4 @@
-# Rish
+# RISH
 SSH Web-server control panel
 
 SSH панель конфигурации и установки web сервера 
