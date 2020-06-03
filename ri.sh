@@ -3,7 +3,7 @@
 #IFS=$'\n\t'
 
 #Вспомогательное внутри сценария
-SCRIPTVERSION='0.01'
+SCRIPTVERSION='0.1.1'
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 LRED='\033[1;31m'
