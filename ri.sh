@@ -1049,6 +1049,7 @@ else
 				rm rish.tar.gz
 				wget https://hika.su/rish.tar.gz
 				tar -xf rish.tar.gz rish/mc.menu
+				rm rish.tar.gz
 				cd ${RISH_HOME}
 				if [[ -e mc.menu ]]
 				then
