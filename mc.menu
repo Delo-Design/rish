@@ -168,6 +168,11 @@ shell_patterns=0
         RED='\033[0;31m'
         LRED='\033[1;31m'
         WHITE='\033[0m'
+    if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%b'" 2>&1`" ]]
+    then
+    	echo -e "База с именем ${GREEN}%b${WHITE} ${RED}уже сушествует${WHITE}"
+    	exit
+    fi
 	r=%d
 	r=${r#/var/www/}
 	r=${r%/www*}
@@ -197,6 +202,11 @@ shell_patterns=0
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
+	if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
+    then
+    	echo -e "База с именем ${GREEN}%b${WHITE} ${RED}уже сушествует${WHITE}"
+    	exit
+    fi
 	r=%d
 	r=${r#/var/www/}
 	r=${r%/www*}
@@ -262,7 +272,7 @@ shell_patterns=0
 	r=%d
 	r=${r#/var/www/}
 	r=${r%/www*}
-    if [[ -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
+    if [[ -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%b'" 2>&1`" ]]
     then
     	echo -e "Базы данных с именем ${GREEN}%b${WHITE} не существует. Создать?"
     	ask "" Y || $( echo "База не создана, импорт прерван."; exit )
@@ -568,7 +578,7 @@ k       удалить базу данных
 
 
 + d /var/www/ & t d
-9       нacтpoить пpaвa дocтyпa кaтaлoгa
+9   нacтpoить пpaвa дocтyпa кaтaлoгa
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
