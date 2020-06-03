@@ -710,7 +710,6 @@ p       настроить Joomla в папке
 	else
 		MYSQLPASS=`cat /home/${r}/.pass.txt | grep Database | awk '{ print $2}'`
 	fi
-
 	if [[ -f "%d/%f/configuration.php" ]]
 	then
 		echo
