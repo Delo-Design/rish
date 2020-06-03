@@ -932,6 +932,7 @@ ENTRY "/etc/php-fpm.d" URL "/etc/php-fpm.d"
 ENTRY "/etc/httpd/conf.d" URL "/etc/httpd/conf.d"
 EOF
 
+	cd ${RISH_HOME}
 	if [[ -e mc.menu ]]
 	then
 		rm /etc/mc/mc.menu
