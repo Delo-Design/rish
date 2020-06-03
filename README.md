@@ -13,4 +13,4 @@ SSH панель конфигурации и установки web сервер
 * PHP 7.3-5.4
 
 Команда установки
-wget https://hika.su/rish.tar.gz && tar -xvf rish.tar.gz && cd rish  && chmod u+x ri.sh && ./ri.sh
+   wget https://hika.su/rish.tar.gz && tar -xvf rish.tar.gz && cd rish  && chmod u+x ri.sh && ./ri.sh
