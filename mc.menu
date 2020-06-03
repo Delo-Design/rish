@@ -402,7 +402,7 @@ shell_patterns=0
         else
            echo -e "Логи сайта ${RED}удалены не были${WHITE}."
         fi
-        if [ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]
+        if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
         then
             echo "У сайта есть база данных"
             if mysqladmin -f -u root -p${MYSQLPASS} drop %f
@@ -457,7 +457,7 @@ k       удалить базу данных
      esac
      done
     }
-        if [ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]
+        if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
         then
             echo -e "Вы хотите удалить базу данных ${LRED}%f${WHITE}?"
             if ! ask "" N
@@ -701,20 +701,30 @@ p       настроить Joomla в папке
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
-	if [ -f "%d/%f/configuration.php" ]
+	r=%d
+	r=${r#/var/www/}
+	r=${r%/www*}
+	if [[ ${r} == "html" ]]
+	then
+		r="root"
+	else
+		MYSQLPASS=`cat /home/${r}/.pass.txt | grep Database | awk '{ print $2}'`
+	fi
+
+	if [[ -f "%d/%f/configuration.php" ]]
 	then
 		echo
 		echo -e "Сайт распознан как созданный на основе ${GREEN}Joomla${WHITE}"
 		sed -i "s/\$password.*$/\$password = '${MYSQLPASS}';/" %d/%f/configuration.php
 		echo "Новый пароль внесен в configuration.php"
-		sed -i "s/\$user.*$/\$user = 'root';/" %d/%f/configuration.php
-		echo "Имя пользователя базы данных установлено root"
+		sed -i "s/\$user.*$/\$user = '${r}';/" %d/%f/configuration.php
+		echo "Имя пользователя базы данных установлено ${GREEN}${r}${WHITE}"
 		sed -i "s/\$db .*$/\$db = '%f';/" %d/%f/configuration.php
-		echo "имя базы данных установлено в configuration.php"
+		echo "имя базы данных ${GREEN}%f${WHITE} установлено в configuration.php"
 		sed -i "s&\$log_path .*$&\$log_path = '%d\/%f\/administrator\/logs';&" %d/%f/configuration.php
-		echo "Путь к папке logs скорректирован"
+		echo "Путь к папке logs скорректирован ${GREEN}%d/%f/administrator/logs${WHITE}"
 		sed -i "s&\$tmp_path .*$&\$tmp_path = '%d\/%f\/tmp';&" %d/%f/configuration.php
-		echo "Путь к папке tmp скорректирован"
+		echo "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
 		echo
 	else
 		echo
@@ -730,7 +740,7 @@ s       Установка/обновление phpmysql
 	WHITE='\033[0m'
     silent()
     {
-    if [ "$DEBUG" -eq 1 ] ; then
+    if [[ "$DEBUG" -eq 1 ]] ; then
     "$@"
     else
     "$@" &>/dev/null
