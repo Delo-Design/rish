@@ -969,7 +969,8 @@ EOF
 else
 	options=( "Создать пользователя" \
 	"Удалить пользователя" \
-	"Удалить базу данных пользователя"
+	"Удалить базу данных пользователя" \
+	"Обновить mc.menu" \
 	"Выйти")
 	Down
 	echo
@@ -1037,6 +1038,16 @@ else
 					fi
 				else
 					echo "В системе нет пользователей"
+				fi
+				;;
+			3)
+				wget https://hika.su/rish.tar.gz
+				tar -xf rish.tar.gz rish/mc.menu
+				cd ${RISH_HOME}
+				if [[ -e mc.menu ]]
+				then
+					rm /etc/mc/mc.menu
+					cp mc.menu /etc/mc/mc.menu
 				fi
 				;;
 			*)
