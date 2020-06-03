@@ -938,6 +938,11 @@ EOF
 		rm /etc/mc/mc.menu
 		cp mc.menu /etc/mc/mc.menu
 	fi
+	cd ..
+	if [[ -e rish.tar.gz ]]
+	then
+		rm rish.tar.gz
+	fi
 	Up
 	echo
 	echo -e "Для ${GREEN}root${WHITE} доступа к ${GREEN}mysql${WHITE} используются только скрипты."
