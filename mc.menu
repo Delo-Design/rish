@@ -168,12 +168,28 @@ shell_patterns=0
         RED='\033[0;31m'
         LRED='\033[1;31m'
         WHITE='\033[0m'
-	if mysqladmin -u root -p$MYSQLPASS create %b
-        then
-           echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
-        else
-           echo "Произошла ошибка"
-        fi
+	r=%d
+	r=${r#/var/www/}
+	r=${r%/www*}
+	if [[ ${r} == "html" ]]
+	then
+		if mysqladmin -u root -p$MYSQLPASS create %b
+		then
+		   echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
+		else
+		   echo -e ${RED}"Произошла ошибка"${WHITE}
+		fi
+	else
+		if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%b\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+		then
+		   	echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
+		   	mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%b\`.* TO '${r}'@'localhost';"
+			mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+			echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
+		else
+		   echo -e ${RED}"Произошла ошибка"${WHITE}
+		fi
+	fi
 
 + d /var/www/ & t d
 3       coздaть бaзy mysql пo имени папки
@@ -198,7 +214,7 @@ shell_patterns=0
 		   	echo -e "База mysql с именем ${GREEN}%f${WHITE} создана"
 		   	mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%f\`.* TO '${r}'@'localhost';"
 			mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
-			echo -e "Права на базу выданы пользователю ${r}"
+			echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
 		else
 		   echo -e ${RED}"Произошла ошибка"${WHITE}
 		fi
