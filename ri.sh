@@ -3,7 +3,7 @@
 #IFS=$'\n\t'
 
 #Вспомогательное внутри сценария
-GREEN='\033[0;32m'
+SCRIPTVERSION='0.01'
 RED='\033[0;31m'
 LRED='\033[1;31m'
 WHITE='\033[0m'
@@ -953,7 +953,7 @@ EOF
 	if ! grep -q "MYSQLPASS" ~/.bashrc
 	then
 		# устанавливаем признак выполненной настройки сервера
-		echo "export MYSQLPASS="${pass} >> ~/.bashrc
+		echo "export MYSQLPASS="${SCRIPTVERSION} >> ~/.bashrc
 	fi
 
 	CreateUser
