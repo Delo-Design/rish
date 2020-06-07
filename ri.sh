@@ -317,7 +317,7 @@ local NAME
 		echo "Ошибка в настройках. PHP-FPM не был перезагружен"
 	else
 		systemctl restart php-fpm
-		echo "PHP-FPM был перезагружен"
+		echo -n "PHP-FPM был перезагружен, "
 	fi
 
 	if ! [[ -d ~/.config ]]
@@ -332,7 +332,12 @@ local NAME
 	then
 		echo 'ENTRY "/var/www/'${NAME}'/www" URL "/var/www/'${NAME}'/www"' >> ~/.config/mc/hotlist
 	fi
-	mysql  -e "CREATE USER ${NAME}@localhost IDENTIFIED BY '${pass2}';"
+	if mysql  -e "CREATE USER ${NAME}@localhost IDENTIFIED BY '${pass2}';"
+	then
+		echo -e "пользователь ${GREEN}${NAME}${WHITE} успешно создан"
+	else
+		echo -e "во время создания пользователя ${RED}${NAME}${WHITE} MySQL произошла ошибка"
+	fi
 }
 
 DeleteDatabase() {

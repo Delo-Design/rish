@@ -879,3 +879,9 @@ s       Установка/обновление phpmysql
 		chown -R ${r}:${r} "$PMA_PATH"
 	fi
     echo "Done"
+
+R   Управление Сервером
+	r=$( pwd )
+    cd /root/rish
+	./ri.sh
+	cd ${r}
