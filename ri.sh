@@ -1006,8 +1006,8 @@ else
 				then
 					echo "Выберите пользователя для удаления из системы"
 					vertical_menu "current" 2 0 30 "${usrs[@]}"
-					echo -e ${CURSORUP}
 					choice=$?
+					echo -e ${CURSORUP}
 					if (( choice < 255 ))
 					then
 						echo -e "Удаляем пользователя ${GREEN}"${usrs[${choice}]}${WHITE}
