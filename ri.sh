@@ -432,7 +432,7 @@ then
 			((upperY--))
 			Up
 			echo
-			echo "Идет обновление сервера..."${ERASEUNTILLENDOFLINE}
+			echo -e "Идет обновление сервера..."${ERASEUNTILLENDOFLINE}
 			Down
 			yum update -y
 		fi
