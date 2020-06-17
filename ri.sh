@@ -1030,7 +1030,7 @@ else
 					then
 						echo -e ${CURSORUP}"Выбран пользователь ${GREEN}${usrs[${choice}]}${WHITE}${ERASEUNTILLENDOFLINE}"
 						SiteuserMysqlPass=`cat /home/${usrs[${choice}]}/.pass.txt | grep Database | awk '{ print $2}'`
-						bases=( `mysql -u${usrs[${choice}]} -p${SiteuserMysqlPass}  --batch -e "SHOW DATABASES" | tail -n +3` )
+						bases=( `mysql -u${usrs[${choice}]} -p${SiteuserMysqlPass}  --batch -e "SHOW DATABASES" | tail -n +2 | sed '/information_schema/d'` )
 						if (( ${#bases[@]} > 0 ))
 						then
 							echo -e "Выберите базу данных пользователя ${RED}"${usrs[${choice}]}"${WHITE} для удаления"
