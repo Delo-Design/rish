@@ -15,3 +15,6 @@ SSH панель конфигурации и установки web сервер
 Команда установки
 
     wget https://hika.su/rish.tar.gz && tar -xvf rish.tar.gz && cd rish  && chmod u+x ri.sh && ./ri.sh
+
+Видео об использовании
+(https://youtu.be/9wli9f2krCY)
