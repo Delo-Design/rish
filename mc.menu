@@ -204,7 +204,7 @@ shell_patterns=0
 	WHITE='\033[0m'
 	if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
     then
-    	echo -e "База с именем ${GREEN}%b${WHITE} ${RED}уже сушествует${WHITE}"
+    	echo -e "База с именем ${GREEN}%f${WHITE} ${RED}уже сушествует${WHITE}"
     	exit
     fi
 	r=%d
