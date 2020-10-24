@@ -40,6 +40,7 @@ export RISH_HOME=${_script_dir}
 
 cd ${RISH_HOME}
 source windows.sh
+source clonesite.sh
 
 # если настройка скрипта уже была произведена, но сессия не была перезапущена - подгрузим пароль базы данных
 if [[ -z "${MYSQLPASS}" ]]
@@ -173,6 +174,7 @@ fi
 Down
 }
 
+# shellcheck disable=SC2120
 CreateUser() {
 local NAME
 # try to create user
@@ -298,7 +300,7 @@ local NAME
 		r="dynamic"
 	fi
 	sed -i "s/^pm = .*/pm = ${r}/" /etc/php-fpm.d/${NAME}.conf
-	echo -e ${CURSORUP}"Выбран режим PHP "${GREEN}${r}${WHITE}
+	echo -e ${CURSORUP}"Выбран режим PHP "${GREEN}${r}${WHITE}${ERASEUNTILLENDOFLINE}
 
 	# и создаем папки и устанавливаем их владельцем siteuser
 	mkdir /var/www/${NAME}/session
@@ -979,6 +981,7 @@ else
 	"Удалить пользователя" \
 	"Удалить базу данных пользователя" \
 	"Обновить mc.menu" \
+	"Импорт сайта" \
 	"Выйти")
 	Down
 	echo
@@ -1062,6 +1065,9 @@ else
 					cp mc.menu /etc/mc/mc.menu
 				fi
 				;;
+		  4)
+		    CloneSite
+		    ;;
 			*)
 				RemoveRim
 				clear

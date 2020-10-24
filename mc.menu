@@ -8,11 +8,11 @@ shell_patterns=0
   RED='\033[0;31m'
   WHITE='\033[0m'
 	echo -e "Создаем архив сайта ${GREEN}%f${WHITE}"
-	if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
+	if [[ -n "$(mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1)" ]]
 	then
 		echo "Идет создание архива базы данных"
 		mysqldump -u root -p$MYSQLPASS %f > %f.sql
-		echo "База mysql создана"
+		echo -e "База ${GREEN}%f.sql${WHITE} создана"
 	else
 		echo "Базы данных у сайта нет"
 	fi
@@ -170,7 +170,7 @@ shell_patterns=0
         WHITE='\033[0m'
     if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%b'" 2>&1`" ]]
     then
-    	echo -e "База с именем ${GREEN}%b${WHITE} ${RED}уже сушествует${WHITE}"
+    	echo -e "База с именем ${GREEN}%b${WHITE} ${RED}уже существует${WHITE}"
     	exit
     fi
 	r=%d
@@ -524,8 +524,7 @@ k       удалить базу данных
 		certbot --apache -d %f
 	fi
 
-+ d /var/www/ & t d
-7       отозвать сертификат
++ d /var/www/ & t d7       отозвать сертификат
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
@@ -676,7 +675,17 @@ j   Скачать Joomla в папку
 	RED='\033[0;31m'
 	WHITE='\033[0m'
 	directory=%d
-	adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep browser_download_url.*Stable-Full_Package.tar.gz | awk '{ print $2 }' | tr -d \" )
+	for ((i=1;i<10;i++))
+  do
+    adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep "browser_download_url.*Stable-Full_Package.tar.gz" | awk '{ print $2 }' | tr -d \" )
+    if (( ${#adr} < 200 ))
+    then
+      break
+    fi
+    read -p "Pause Time 5 seconds" -t 5
+    echo
+    echo "Идет обновление адресов Joomla"
+  done
 	if (( ${#adr} > 200 ))
 	then
 		echo "Попробуйте еще раз чуть позже - идет обновление адресов Joomla"
