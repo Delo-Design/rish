@@ -84,14 +84,14 @@ then
 else
    if $localserver
    then
-      localsitename=${remotesitename%${sitename##*.}}$suffix
+      localsitename=${remotesitename%${remotesitename##*.}}$suffix
    else
       localsitename=$remotesitename
    fi
 fi
 
 
-echo -e "Перенос сайта ${GREEN}${remotesitename}${WHITE} пользователя ${GREEN}${remoteuser}${WHITE} с сервера ${GREEN}${server}${WHITE} "
+echo -e "Перенос сайта ${GREEN}${remotesitename}${WHITE} пользователя ${GREEN}${remoteuser}${WHITE} с сервера ${GREEN}${choosenserver}${WHITE} "
 
 if [ -z "$sitename" ]
 then
@@ -234,32 +234,42 @@ then
 #SSLCertificateKeyFile /etc/pki/tls/private/localhost.key
    echo
    echo -e "Нужно ли установить самоподписанный ${GREEN}SSL${WHITE} сертификат на сайт?"
-   if vertical_menu "current" 2 0 5 "Нет" "Да"
+   if vertical_menu "current" 2 0 5 "Да" "Нет"
    then
-    echo "<IfModule mod_ssl.c>" > $ttssl
-    echo "<VirtualHost *:443>" >> $ttssl
-    echo " ServerAdmin webmaster@localhost" >> $ttssl
-    echo " ServerName "$localsitename >> $ttssl
-    echo " ServerAlias www."$localsitename >> $ttssl
-    echo " DocumentRoot /var/www/html/"$localsitename$rr >> $ttssl
-    echo " <Directory /var/www/html/${localsitename}${rr}>" >> $ttssl
-    echo "   Options -Indexes +FollowSymLinks" >> $ttssl
-    echo "   AllowOverride All" >> $ttssl
-    echo "   Order allow,deny" >> $ttssl
-    echo "   Allow from all" >> $ttssl
-    echo " </Directory>" >>  $ttssl
-    echo " ErrorLog /var/log/httpd/"$localsitename"-error-log" >> $ttssl
-    echo " LogLevel warn" >> $ttssl
-    echo " CustomLog /var/log/httpd/"$localsitename"-access-log combined" >> $ttssl
-    echo " ServerSignature Off" >> $ttssl
-    echo " SSLCertificateFile /etc/pki/tls/certs/localhost.crt" >> $ttssl
-    echo " SSLCertificateKeyFile /etc/pki/tls/private/localhost.key" >> $ttssl
-    echo "</VirtualHost>" >> $ttssl
-    echo "</IfModule>" >> $ttssl
+     {
+      echo "<IfModule mod_ssl.c>"
+      echo "<VirtualHost *:443>"
+      echo "ServerAdmin webmaster@localhost"
+      echo "ServerName "$localsitename
+      echo "ServerAlias www."$localsitename
+      echo "DocumentRoot /var/www/${localuser}/www/"${localsitename}${documentroot}
+      echo '<Proxy "unix:/var/run/php-fpm/'${localuser}'.sock|fcgi://php-fpm">'
+      echo 'ProxySet disablereuse=on connectiontimeout=3 timeout=60'
+      echo '</Proxy>'
+      echo '<FilesMatch \.php$>'
+      echo 'SetHandler proxy:fcgi://php-fpm'
+      echo '</FilesMatch>'
+      echo 'DirectoryIndex index.php index.html'
+      echo "<Directory /var/www/${localuser}/www/${localsitename}${documentroot}>"
+      echo "  Options -Indexes +FollowSymLinks"
+      echo "  AllowOverride All"
+      echo "  Order allow,deny"
+      echo "  Allow from all"
+      echo "</Directory>"
+      echo "ErrorLog /var/www/${localuser}/logs/${localsitename}-error-log"
+      echo "LogLevel warn"
+      echo "CustomLog /var/www/${localuser}/logs/${localsitename}-access-log combined"
+      echo "ServerSignature Off"
+      echo "SSLCertificateFile /etc/pki/tls/certs/localhost.crt"
+      echo "SSLCertificateKeyFile /etc/pki/tls/private/localhost.key"
+      echo "</VirtualHost>"
+      echo "</IfModule>"
+     } >> $ttssl
+
     echo "Сертификат установлен"
     echo
     echo "Надо ли устанавливать редирект http->https ?"
-    if vertical_menu "current" 2 0 5 "Нет" "Да"
+    if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
       echo "RewriteEngine on" >> $localsitename".conf"
       echo "RewriteCond %{SERVER_NAME} =${localsitename} [OR]" >> $localsitename".conf"
