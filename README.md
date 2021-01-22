@@ -16,5 +16,10 @@ SSH панель конфигурации и установки web сервер
 
     wget https://hika.su/rish.tar.gz && tar -xvf rish.tar.gz && cd rish  && chmod u+x ri.sh && ./ri.sh
 
+Возможно, что в минимальной установке CentOS будет отсутствовать команда wget и ее понадобится установить отдельно:
+
+    yum install wget
+
+
 Видео об использовании
 (https://youtu.be/9wli9f2krCY)
