@@ -194,6 +194,8 @@ local NAME
 				break
 			fi
 		done
+		echo -e ${WHITE}
+		read -e -p "Введите имя учетной записи для создания сайтов по умолчанию (можно не заполнять)" DEFAULTSITEACCOUNT
 	else
 		NAME=$1
 	fi
@@ -220,6 +222,13 @@ local NAME
 	echo -e "Пароль пользователя ${NAME}: ${GREEN}"${pass}${WHITE}
 	echo "${NAME}: ${pass}" >> /home/${NAME}/.pass.txt
 	echo -e "Пароль для баз данных ${NAME}: ${GREEN}"${pass2}${WHITE}
+  pass3=$( tr -dc A-Za-z0-9 < /dev/urandom | head -c 16 | xargs )
+  if [[ -z ${DEFAULTSITEACCOUNT} ]]
+  then
+    DEFAULTSITEACCOUNT="info@${NAME}.com"
+  fi
+  echo "defaultsiteaccount ${DEFAULTSITEACCOUNT} ${pass3}" >> /home/${NAME}/.pass.txt
+
 	chmod go-rwx /home/${NAME}/.pass.txt
 	chown ${NAME}:${NAME} /home/${NAME}/.pass.txt
 
@@ -263,32 +272,7 @@ local NAME
 	chown ${NAME}:${NAME} /home/${NAME}/.ssh/authorized_keys
 
 	#копируем файл /etc/php-fpm.d/www.conf -> siteuser.conf
-	cp /etc/php-fpm.d/www.conf  /etc/php-fpm.d/${NAME}.conf
-	#меняем имя пула.
-	#[www]->[siteuser]
-	sed -i "s/^\[www\]/\[${NAME}\]/" /etc/php-fpm.d/${NAME}.conf
-	# удаляем старое
-	sed -i '/^user = apache/d' /etc/php-fpm.d/${NAME}.conf
-	sed -i '/^group = apache/d' /etc/php-fpm.d/${NAME}.conf
 
-	# меняем user = apache -> user = siteuser
-	# group = apache -> group = siteuser
-
-	#listen.owner = siteuser
-	#listen.group = siteuser
-	sed -i "s/^listen.owner = apache/listen.owner = ${NAME}/" /etc/php-fpm.d/${NAME}.conf
-	sed -i "s/^listen.group = apache/listen.group = ${NAME}/" /etc/php-fpm.d/${NAME}.conf
-	r="listen = \/var\/run\/php-fpm\/${NAME}.sock\n"
-	r=${r}"user = ${NAME}\n"
-	r=${r}"group = ${NAME}"
-	sed -i "s/^listen = \/var\/run\/php-fpm\/default.sock/${r}/" /etc/php-fpm.d/${NAME}.conf
-
-	# если надо - меняем режим работы php на ondemand
-	# в этом же файле в конце меняем
-	# php_value[session.save_path]    = /var/lib/php/session/siteuser
-	# php_value[soap.wsdl_cache_dir]  = /var/lib/php/wsdlcache/siteuser
-	sed -i "s/^php_value\[session.save_path\].*$/php_value\[session.save_path\] = \/var\/www\/${NAME}\/session/" /etc/php-fpm.d/${NAME}.conf
-	sed -i "s/^php_value\[soap.wsdl_cache_dir\].*$/php_value\[soap.wsdl_cache_dir\] = \/var\/lib\/${NAME}\/wsdlcache/" /etc/php-fpm.d/${NAME}.conf
 	echo
 	echo -e "Выберите режим работы PHP для этого пользователя:"
 	vertical_menu "current" 2 0 5 "ondemand - оптимально расходует память" "dynamic - более оперативно реагирует на запросы"
@@ -299,8 +283,57 @@ local NAME
 	else
 		r="dynamic"
 	fi
-	sed -i "s/^pm = .*/pm = ${r}/" /etc/php-fpm.d/${NAME}.conf
 	echo -e ${CURSORUP}"Выбран режим PHP "${GREEN}${r}${WHITE}${ERASEUNTILLENDOFLINE}
+
+	{
+	  echo "[${NAME}]"
+	  echo "listen = /var/run/php-fpm/${NAME}.sock"
+	  echo "user = ${NAME}"
+	  echo "group = ${NAME}"
+	  echo "listen.owner = ${NAME}"
+	  echo "listen.group = ${NAME}"
+	  echo
+	  echo "listen.allowed_clients = 127.0.0.1"
+	  echo "pm = ${r}"
+    echo "pm.max_children = 50"
+    echo "pm.start_servers = 3"
+    echo "pm.min_spare_servers = 3"
+    echo "pm.max_spare_servers = 5"
+    echo "slowlog = /var/log/php-fpm/www-slow.log"
+    echo "php_value[session.save_handler] = files"
+    echo "php_value[session.save_path] = /var/www/${NAME}/session"
+    echo "php_value[soap.wsdl_cache_dir] = /var/lib/${NAME}/wsdlcache"
+	} > /etc/php-fpm.d/${NAME}.conf
+
+
+	#cp /etc/php-fpm.d/www.conf  /etc/php-fpm.d/${NAME}.conf
+	#меняем имя пула.
+	#[www]->[siteuser]
+	#sed -i "s/^\[www\]/\[${NAME}\]/" /etc/php-fpm.d/${NAME}.conf
+	# удаляем старое
+	#sed -i '/^user = apache/d' /etc/php-fpm.d/${NAME}.conf
+	#sed -i '/^group = apache/d' /etc/php-fpm.d/${NAME}.conf
+
+	# меняем user = apache -> user = siteuser
+	# group = apache -> group = siteuser
+
+	#listen.owner = siteuser
+	#listen.group = siteuser
+	#sed -i "s/^listen.owner = apache/listen.owner = ${NAME}/" /etc/php-fpm.d/${NAME}.conf
+	#sed -i "s/^listen.group = apache/listen.group = ${NAME}/" /etc/php-fpm.d/${NAME}.conf
+	#r="listen = \/var\/run\/php-fpm\/${NAME}.sock\n"
+	#r=${r}"user = ${NAME}\n"
+	#r=${r}"group = ${NAME}"
+	#sed -i "s/^listen = \/var\/run\/php-fpm\/default.sock/${r}/" /etc/php-fpm.d/${NAME}.conf
+
+	# если надо - меняем режим работы php на ondemand
+	# в этом же файле в конце меняем
+	# php_value[session.save_path]    = /var/lib/php/session/siteuser
+	# php_value[soap.wsdl_cache_dir]  = /var/lib/php/wsdlcache/siteuser
+	#sed -i "s/^php_value\[session.save_path\].*$/php_value\[session.save_path\] = \/var\/www\/${NAME}\/session/" /etc/php-fpm.d/${NAME}.conf
+	#sed -i "s/^php_value\[soap.wsdl_cache_dir\].*$/php_value\[soap.wsdl_cache_dir\] = \/var\/lib\/${NAME}\/wsdlcache/" /etc/php-fpm.d/${NAME}.conf
+
+	#sed -i "s/^pm = .*/pm = ${r}/" /etc/php-fpm.d/${NAME}.conf
 
 	# и создаем папки и устанавливаем их владельцем siteuser
 	mkdir /var/www/${NAME}/session
@@ -363,7 +396,7 @@ DeleteDatabase() {
 }
 DeleteUser() {
 	# если папка не пуста, то отказываться удалять пользователя
-	if [[ ! -z `ls -A /var/www/${1}/www` ]]
+	if [[ -n $( ls -A /var/www/${1}/www ) ]]
 	then
 		echo "У пользователя есть неудаленные сайты. Вначале удалите их."
 		echo -e -n ${RED}
@@ -372,7 +405,7 @@ DeleteUser() {
 		ls -d */ | cut -f1 -d'/'
 		# и файлы
 		echo -e -n ${LRED}
-		find ./ -maxdepth 1 -type f -print0 | cut -f2 -d'/'
+		ls -Sp | grep -v '/'
 		echo -e ${WHITE}
 		return 1
 	fi
@@ -564,18 +597,20 @@ then
 	Install yum-utils
 
 	Down
-	options=( "PHP ver. 7.3" \
+	options=( "PHP ver. 7.4" \
 	"PHP ver. 5.4" \
 	"PHP ver. 5.6" \
 	"PHP ver. 7.0" \
 	"PHP ver. 7.1" \
-	"PHP ver. 7.2" )
-	versions=( "73" \
+	"PHP ver. 7.2"  \
+	"PHP ver. 7.3" )
+	versions=( "74" \
 	"54" \
 	"56" \
 	"70" \
 	"71" \
-	"72" )
+	"72" \
+	"73" )
 	echo -e "Выберите ${GREEN}версию PHP${WHITE} для установки"
 	vertical_menu "current" 2 0 5 "${options[@]}"
 	ret=$?
@@ -660,6 +695,21 @@ then
 	if ! grep -q "daily" /etc/logrotate.d/httpd
 	then
 		sed -i "s/missingok/missingok\n    daily/" /etc/logrotate.d/httpd
+	fi
+
+	if ! grep -q "/var/www/*/logs/*log" /etc/logrotate.d/httpd
+	then
+	  echo "/var/www/*/logs/*log {" >> /etc/logrotate.d/httpd
+	  echo " missingok" >> /etc/logrotate.d/httpd
+	  echo " daily" >> /etc/logrotate.d/httpd
+	  echo " maxsize 50M" >> /etc/logrotate.d/httpd
+	  echo " notifempty" >> /etc/logrotate.d/httpd
+	  echo " sharedscripts" >> /etc/logrotate.d/httpd
+	  echo " delaycompress" >> /etc/logrotate.d/httpd
+	  echo " postrotate" >> /etc/logrotate.d/httpd
+	  echo "  /bin/systemctl reload httpd.service > /dev/null 2>/dev/null || true" >> /etc/logrotate.d/httpd
+	  echo " endscript" >> /etc/logrotate.d/httpd
+	  echo "}" >> /etc/logrotate.d/httpd
 	fi
 
 
@@ -953,6 +1003,13 @@ EOF
 	then
 		rm rish.tar.gz
 	fi
+  if systemctl status httpd.service -l --no-pager -n 3 | grep "Could not"
+  then
+    echo "Устанавливаем имя сервера как localhost"
+    sed -i "s|#ServerName .*$|ServerName localhost|" /etc/httpd/conf/httpd.conf
+    systemctl restart httpd.service
+  fi
+
 	Up
 	echo
 	echo -e "Для ${GREEN}root${WHITE} доступа к ${GREEN}mysql${WHITE} используются только скрипты."
@@ -981,7 +1038,7 @@ else
 	"Удалить пользователя" \
 	"Удалить базу данных пользователя" \
 	"Обновить mc.menu" \
-	"Импорт сайта" \
+	"Клонирование сайта" \
 	"Выйти")
 	Down
 	echo

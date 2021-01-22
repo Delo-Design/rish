@@ -5,7 +5,6 @@ CloneSite() {
 #суффикс для доменов на локальном сервере
 declare suffix="test"
 
-server=adonis
 clear
 
 if [[ ! -e ~/.ssh/config ]]
@@ -40,9 +39,9 @@ else
  localserver=false
 fi
 
-mapfile -t array < <(< ~/.ssh/config grep "Host " |  awk '{print $2}')
+mapfile -t servers < <(< ~/.ssh/config grep "Host " |  awk '{print $2}')
 
-vertical_menu "current" 2 0 30 "${array[@]}"
+vertical_menu "current" 2 0 30 "${servers[@]}"
 choice=$?
 if (( choice == 255 ))
 then
@@ -50,124 +49,183 @@ then
 fi
 
 
-echo -e "Список сайтов удаленного сервера ${GREEN}$server${WHITE}:"
+echo -e "Список сайтов удаленного сервера ${GREEN}${servers[${choice}]}${WHITE}:"
 printf "\n"
-return
-directory="/var/www/html"
 
-left_x=10
-top_y=7
-options=( $( ssh $server ls -l $directory | grep 'drwx'| awk '{print $9}'   ))
+local choosenserver=${servers[${choice}]}
 
-vertical_menu "${options[@]}"
+#local sites=( $( ssh $choosenserver ls -l $directory | grep 'drwx'| awk '{print $9}'   ) )
+mapfile -t sites < <(ssh $choosenserver 'ls -l /var/www/html/ /var/www/*/www/ 2>/dev/null' | grep drwx | grep -v 000-default | awk '{print  $9" ("$3")"}' | sort)
+
+vertical_menu "current" 2 10 30 "${sites[@]}"
 choice=$?
-clear
-if (( $choice == 255 ))
+
+if (( choice == 255 ))
 then
-    exit
+    return
 fi
 
-sitename=${options[$choice]}
+sitename=${sites[$choice]}
+local remoteuser
+remoteuser=$( echo "${sitename}" | cut -d "(" -f2 | cut -d ")" -f1 )
+if [[ "root" == "${remoteuser}" ]]
+then
+    remoteuser="apache"
+fi
 
-if [[ "${sitename##*.}" == "${sitename##*/}" ]]
+local remotesitename
+remotesitename="${sitename%% *}"
+
+if [[ "${remotesitename##*.}" == "${remotesitename##*/}" ]]
 then
    echo "Неверный выбор. Сайт должен быть как минимум доменом второго уровня."
-   echo -e "Был выбран ${RED}$sitename${WHITE}"
+   echo -e "Был выбран ${RED}${remotesitename}${WHITE}"
+   return
 else
    if $localserver
    then
-      localsitename=${sitename%${sitename##*.}}$suffix
+      localsitename=${remotesitename%${sitename##*.}}$suffix
    else
-      localsitename=$sitename
+      localsitename=$remotesitename
    fi
 fi
 
-echo -e "Перенос сайта ${GREEN}$sitename${WHITE} с сервера ${GREEN}${server}${WHITE} "
-echo -e "В сайт ${GREEN}$localsitename${WHITE} на сервер ${GREEN}$serverip${WHITE}"
+
+echo -e "Перенос сайта ${GREEN}${remotesitename}${WHITE} пользователя ${GREEN}${remoteuser}${WHITE} с сервера ${GREEN}${server}${WHITE} "
 
 if [ -z "$sitename" ]
 then
-  exit
+  return
 fi
 
-ssh $server "test -e /var/www/html/"$sitename
+local siteusers
+echo
+echo "Выберите пользователя на текущем сервере, куда надо копировать сайт"
+mapfile -t siteusers < <(ls -l /var/www 2>/dev/null | grep drwx | grep -v cgi-bin |  grep -v html | awk '{print  $9}' | sort)
+
+vertical_menu "current" 2 10 30 "${siteusers[@]}"
+choice=$?
+local localuser=${siteusers[$choice]}
+
+echo -e ${CURSORUP}"В сайт ${GREEN}$localsitename${WHITE} пользователя ${GREEN}${localuser}${WHITE} на сервер ${GREEN}$serverip${WHITE}${ERASEUNTILLENDOFLINE}"
+
+local pathtosite
+if [[ ${remoteuser} == "apache" ]]
+then
+  pathtosite="/var/www/html/"${remotesitename}
+else
+  pathtosite="/var/www/${remoteuser}/www/${remotesitename}"
+fi
+
+ssh ${choosenserver} "test -e "${pathtosite}
 
 if [ $? -ne 0 ]
 then
-  echo "такого сайта "$sitename" нет на удаленном сервере!"
-  exit
+  echo "такого сайта ${remotesitename} нет на удаленном сервере!"
+  return
 fi
 echo "-----------------"
 
-rr=$( ssh $server grep DocumentRoot /etc/httpd/conf.d/$sitename.conf  | sed 's|.*/||' )
+rr=$( ssh $choosenserver 'grep DocumentRoot /etc/httpd/conf.d/'${remotesitename}'.conf'  | sed 's|.*/||' )
 
-if [[ "$sitename" == "$rr" ]]
+if [[ "${remotesitename}" == "${rr}" ]]
 then
-  rr=""
+  documentroot=""
   echo "DocumentRoot равен папке сайта"
 else
-  rr="/"$rr
-  echo "DocumentRoot будет установлен: "$rr
+  documentroot="/"$rr
+  echo "DocumentRoot будет установлен: "${documentroot}
 fi
 
-ext=${sitename##*.}
-name=`basename "$sitename" ".$ext"`
+
+ext=${remotesitename##*.}
 
 ee='mysql  -uroot -p${MYSQLPASS} -qfsBe'
-ee=$ee' "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='"'"$sitename"'\" "
+ee=$ee' "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='"'"${remotesitename}"'\" "
 ee=$ee'2>&1'
-ee=$( ssh $server $ee )
-if [ ! -z $ee ]
+ee=$( ssh $choosenserver $ee )
+if [ -n "$ee" ]
 then
-  echo -e "идет создание архива базы данных ${GREEN}${sitename}${WHITE}"
-  ssh $server 'mysqldump -u root -p${MYSQLPASS}' $sitename > $sitename.sql
-  echo -e "Архив базы данных ${GREEN}${sitename}${WHITE} скачан"
-  mysql -u root -p$MYSQLPASS -e "create database if not exists \`"$localsitename"\` CHARACTER SET utf8 COLLATE utf8_general_ci;"
-  mysql -u root -p$MYSQLPASS $localsitename < $sitename".sql"
-  rm $sitename".sql"
+  echo -e "идет создание архива базы данных ${GREEN}${remotesitename}${WHITE}"
+  ssh $choosenserver 'mysqldump -u root -p$'{MYSQLPASS} $remotesitename > $remotesitename.sql
+  echo -e "Архив базы данных ${GREEN}${remotesitename}${WHITE} скачан"
+  if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE IF NOT EXISTS \`${localsitename}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+  then
+    echo -e "База mysql с именем ${GREEN}${localsitename}${WHITE} создана"
+    mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`${localsitename}\`.* TO '${localuser}'@'localhost';"
+    mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+    echo -e "Права на базу выданы пользователю ${GREEN}${localuser}${WHITE}"
+  else
+     echo -e ${RED}"Произошла ошибка"${WHITE}
+  fi
+  mysql -u root -p$MYSQLPASS $localsitename < $remotesitename".sql"
+  rm $remotesitename".sql"
   echo -e "База данных ${GREEN}$localsitename${WHITE} перенесена"
 else
   echo "базы данных у сайта нет"
 fi
 
-
-namearch=$name."tar.gz"
+namearch=$remotesitename."tar.gz"
 
 echo "-----------------"
-temp="cd /var/www/html/$sitename; tar czf ../$namearch ."
-echo -e "Идет создание архива сайта ${GREEN}$sitename${WHITE}"
-ssh $server "$temp"
-cd /var/www/html
-rm -rf $localsitename
+temp1="cd ${pathtosite}; rm -f ../$namearch"
+temp2="cd ${pathtosite}; tar czf ../$namearch ."
+echo -e "Идет создание архива сайта ${GREEN}$remotesitename${WHITE} пользователя ${GREEN}${remoteuser}${WHITE}"
+ssh $choosenserver "$temp1"
+ssh $choosenserver "$temp2"
+
+local  pathtolocalsite="/var/www/${localuser}/www/${localsitename}"
+local pathtolocaluser="/var/www/${localuser}/www"
+cd ${pathtolocaluser} || return
+rm -rf $namearch
+
 echo "Идет скачивание архива сайта"
-scp $server:/var/www/html/$namearch /var/www/html
-ssh $server rm /var/www/html/$namearch
-mkdir -p $localsitename
-tar xzf $namearch -C /var/www/html/$localsitename
+scp $choosenserver:${pathtosite}/../$namearch ${pathtolocaluser}
+ssh $choosenserver rm ${pathtosite}/../$namearch
+
+if [[ -d "${pathtolocalsite}" ]]
+then
+  rm -rf  "${pathtolocalsite}"
+  echo -e "Старое содержимое локального сайта ${GREEN}${localsitename}${WHITE} удалено "
+  mkdir -p "$localsitename"
+  echo -e "Создан новый сайт ${GREEN}${localsitename}${WHITE} пользователя ${GREEN}${localuser}${WHITE} "
+else
+  echo -e "Создан новый сайт ${GREEN}${localsitename}${WHITE} пользователя ${GREEN}${localuser}${WHITE} "
+  mkdir -p "$localsitename"
+fi
+tar xzf $namearch -C ${pathtolocaluser}/$localsitename
 rm $namearch
 
-chown -R apache:apache $localsitename
-echo -e "Архив сайта развернут в каталоге ${GREEN}$localsitename${WHITE}"
+chown -R ${localuser}:${localuser} $localsitename
+echo -e "Архив сайта развернут в каталоге ${GREEN}${localuser}/${localsitename}${WHITE}"
 
 cd /etc/httpd/conf.d
 rm -f ${localsitename}*
 
-tt=$localsitename".conf"
-echo "<VirtualHost *:80>" > $tt
-echo " ServerAdmin webmaster@localhost" >> $tt
-echo " ServerName "$localsitename >> $tt
-echo " ServerAlias www."$localsitename >> $tt
-echo " DocumentRoot /var/www/html/"$localsitename$rr >> $tt
-echo " <Directory /var/www/html/${localsitename}${rr}>" >> $tt
-echo "   Options -Indexes +FollowSymLinks" >> $tt
-echo "   AllowOverride All" >> $tt
-echo "   Order allow,deny" >> $tt
-echo "   Allow from all" >> $tt
-echo " </Directory>" >>  $tt
-echo " ErrorLog /var/log/httpd/"$localsitename"-error-log" >> $tt
-echo " LogLevel warn" >> $tt
-echo " CustomLog /var/log/httpd/"$localsitename"-access-log combined" >> $tt
-echo " ServerSignature Off" >> $tt
+{
+echo "<VirtualHost *:80>"
+echo "ServerAdmin webmaster@localhost"
+echo "ServerName "$localsitename
+echo "ServerAlias www."$localsitename
+echo "DocumentRoot /var/www/${localuser}/www/"${localsitename}${documentroot}
+echo '<Proxy "unix:/var/run/php-fpm/'${localuser}'.sock|fcgi://php-fpm">'
+echo 'ProxySet disablereuse=on connectiontimeout=3 timeout=60'
+echo '</Proxy>'
+echo '<FilesMatch \.php$>'
+echo 'SetHandler proxy:fcgi://php-fpm'
+echo '</FilesMatch>'
+echo 'DirectoryIndex index.php index.html'
+echo "<Directory /var/www/${localuser}/www/${localsitename}${documentroot}>"
+echo "  Options -Indexes +FollowSymLinks"
+echo "  AllowOverride All"
+echo "  Order allow,deny"
+echo "  Allow from all"
+echo "</Directory>"
+echo "ErrorLog /var/www/${localuser}/logs/${localsitename}-error-log"
+echo "LogLevel warn"
+echo "CustomLog /var/www/${localuser}/logs/${localsitename}-access-log combined"
+echo "ServerSignature Off"
+} >> $localsitename".conf"
 
 ttssl=$localsitename"-ssl.conf"
 if $localserver
@@ -176,7 +234,7 @@ then
 #SSLCertificateKeyFile /etc/pki/tls/private/localhost.key
    echo
    echo -e "Нужно ли установить самоподписанный ${GREEN}SSL${WHITE} сертификат на сайт?"
-   if ask "" Y
+   if vertical_menu "current" 2 0 5 "Нет" "Да"
    then
     echo "<IfModule mod_ssl.c>" > $ttssl
     echo "<VirtualHost *:443>" >> $ttssl
@@ -201,12 +259,12 @@ then
     echo "Сертификат установлен"
     echo
     echo "Надо ли устанавливать редирект http->https ?"
-    if ask "" Y
+    if vertical_menu "current" 2 0 5 "Нет" "Да"
     then
-      echo "RewriteEngine on" >> $tt
-      echo "RewriteCond %{SERVER_NAME} =${localsitename} [OR]" >> $tt
-      echo "RewriteCond %{SERVER_NAME} =www.${localsitename}" >> $tt
-      echo "RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]" >> $tt
+      echo "RewriteEngine on" >> $localsitename".conf"
+      echo "RewriteCond %{SERVER_NAME} =${localsitename} [OR]" >> $localsitename".conf"
+      echo "RewriteCond %{SERVER_NAME} =www.${localsitename}" >> $localsitename".conf"
+      echo "RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]" >> $localsitename".conf"
       echo "Редирект был установлен"
     else
       echo "Редирект не был установлен"
@@ -217,20 +275,22 @@ then
    fi
 fi
 
-echo "</VirtualHost>" >> $tt
+echo "</VirtualHost>" >> $localsitename".conf"
 
-
-if [ -f "/var/www/html/${localsitename}/configuration.php" ]
+if [ -f "${pathtolocalsite}/configuration.php" ]
 then
     echo
+    DATABASEPASS=$( cat /home/${localuser}/.pass.txt | grep Database | awk '{ print $2}' )
     echo -e "Сайт распознан как созданный на основе ${GREEN}Joomla${WHITE}"
-    sed -i "s/\$password.*$/\$password = '${MYSQLPASS}';/" /var/www/html/${localsitename}/configuration.php
+    sed -i "s/\$password.*$/\$password = '${DATABASEPASS}';/" "${pathtolocalsite}/configuration.php"
     echo "Новый пароль внесен в configuration.php"
-    sed -i "s/\$db .*$/\$db = '${localsitename}';/" /var/www/html/${localsitename}/configuration.php
-    echo "имя базы данных установлено в configuration.php"
-    sed -i "s/\$log_path .*$/\$log_path = '\/var\/www\/html\/${localsitename}\/administrator\/logs' ;/" /var/www/html/%f/configuration.php
+    sed -i "s/\$db .*$/\$db = '${localsitename}';/" "${pathtolocalsite}/configuration.php"
+    echo -e "имя базы данных ${GREEN}${localsitename}${WHITE} установлено в configuration.php"
+		sed -i "s/\$user.*$/\$user =  '${localuser}';/" "${pathtolocalsite}/configuration.php"
+		echo -e "Имя пользователя базы данных установлено ${GREEN}${localuser}${WHITE}"
+    sed -i "s|\$log_path .*$|\$log_path = '${pathtolocalsite}/administrator/logs';|" "${pathtolocalsite}/configuration.php"
     echo "Путь к папке logs скорректирован"
-    sed -i "s/\$tmp_path .*$/\$tmp_path = '\/var\/www\/html\/${localsitename}\/tmp' ;/" /var/www/html/${localsitename}/configuration.php
+    sed -i "s|\$tmp_path .*$|\$tmp_path = '${pathtolocalsite}/tmp';|" "${pathtolocalsite}/configuration.php"
     echo "Путь к папке tmp скорректирован"
     echo
 fi

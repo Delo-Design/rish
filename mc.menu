@@ -1,5 +1,4 @@
 shell_patterns=0
-#@IgnoreInspection BashAddShebang
 
 + d /var/www/ & t d
 1   архив сайта
@@ -312,39 +311,39 @@ shell_patterns=0
 	WHITE='\033[0m'
 	clear
 	echo -e "Вы действительно хотите удалить сайт ${LRED}%f${WHITE}?"
-    ask() {
-		local prompt default reply
-		if [ "${2:-}" = "Y" ]; then
-		prompt="Y/n или Д/н"
-		default=Y
-		elif [ "${2:-}" = "N" ]; then
-		prompt="y/N или д/Н"
-		default=N
-		else
-		prompt="y/n"
-		default=
-		fi
-		while true; do
-		# Ask the question (not using "read -p" as it uses stderr not stdout)
-		if [ -z "$1" ]
-		then
-		echo -n "[$prompt]"
-		else
-		echo -n "$1 [$prompt] "
-		fi
-		# Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
-		read reply </dev/tty
-		# Default?
-		if [ -z "$reply" ]; then
-		reply=$default
-		fi
-		# Check if the reply is valid
-		case "$reply" in
-		Y*|y*|Д*|д*) return 0 ;;
-		N*|n*|Н*|н*) return 1 ;;
-		esac
-		done
-    }
+        ask() {
+        local prompt default reply
+        if [ "${2:-}" = "Y" ]; then
+        prompt="Y/n или Д/н"
+        default=Y
+        elif [ "${2:-}" = "N" ]; then
+        prompt="y/N или д/Н"
+        default=N
+        else
+        prompt="y/n"
+        default=
+        fi
+        while true; do
+        # Ask the question (not using "read -p" as it uses stderr not stdout)
+        if [ -z "$1" ]
+        then
+        echo -n "[$prompt]"
+        else
+        echo -n "$1 [$prompt] "
+        fi
+        # Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
+        read reply </dev/tty
+        # Default?
+        if [ -z "$reply" ]; then
+        reply=$default
+        fi
+        # Check if the reply is valid
+        case "$reply" in
+        Y*|y*|Д*|д*) return 0 ;;
+        N*|n*|Н*|н*) return 1 ;;
+        esac
+        done
+        }
         silent()
         {
            "$@" &>/dev/null
@@ -387,15 +386,15 @@ shell_patterns=0
         else
            echo -e "В процессе удаления папки сайта ${RED}%f${WHITE} возникли проблемы"
         fi
-		r=%d
-		r=${r#/var/www/}
-		r=${r%/www*}
-		if [[ ${r} == "html" ]]
-		then
-        	rm  /var/log/httpd/%f* &>/dev/null
-		else
-        	rm  /var/www/${r}/logs/%f* &>/dev/null
-		fi
+        r=%d
+        r=${r#/var/www/}
+        r=${r%/www*}
+        if [[ ${r} == "html" ]]
+        then
+              rm  /var/log/httpd/%f* &>/dev/null
+        else
+              rm  /var/www/${r}/logs/%f* &>/dev/null
+        fi
         if [[ $? -eq 0 ]]
         then
            echo -e "Логи сайта ${GREEN}удалены${WHITE}."
@@ -674,10 +673,14 @@ j   Скачать Joomla в папку
  	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	WHITE='\033[0m'
+	LRED='\033[1;31m'
+	source /root/rish/windows.sh
 	directory=%d
 	for ((i=1;i<10;i++))
   do
-    adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep "browser_download_url.*Stable-Full_Package.tar.gz" | awk '{ print $2 }' | tr -d \" )
+    #adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep "https.*Stable-Full_Package.tar.gz" | awk '{ print $2 }' | tr -d \" )
+    adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | egrep -o 'https?://[^ ]+Stable-Full_Package.tar.gz' | awk 'NR == 1' )
+    adr="https"${adr##*https}
     if (( ${#adr} < 200 ))
     then
       break
@@ -691,9 +694,19 @@ j   Скачать Joomla в папку
 		echo "Попробуйте еще раз чуть позже - идет обновление адресов Joomla"
 		exit
 	fi
+	ver=$( echo ${adr}| egrep -o 'Joomla.*Stable' )
+	echo -e ${GREEN}${ver}${WHITE}
 	cd ${directory}
+	echo -e "Удалить содержимое папки ${GREEN}%f${WHITE}?"
+	vertical_menu "current" 2 0 5 "Да" "Нет"
+  cr=$?
+  if (( ${cr}==0 ))
+  then
+    rm -rf %f
+    mkdir %f
+  fi
 	wget ${adr}
-	tar xvzf *Stable-Full_Package.tar.gz -C ${directory}/%f
+	tar xvzf *Stable-Full_Package.tar.gz -C ${directory}/%f > /dev/null
 	rm ${directory}/*Stable-Full_Package.tar.gz
 	r=%d
 	r=${r#/var/www/}
@@ -703,6 +716,63 @@ j   Скачать Joomla в папку
 		r="apache"
 	fi
 	chown -R ${r}:${r} %d"/"%f
+	mv ${directory}/%f/htaccess.txt ${directory}/%f/.htaccess
+	if [[ ${r} == "apache" ]]
+	then
+	  exit
+	else
+	  if cat /home/${r}/.pass.txt | grep -q "defaultsiteaccount"
+	  then
+	    echo "Будет использована учетная запись"
+      email=$( cat /home/${r}/.pass.txt | grep "siteaccount" | awk '{ print $2}' )
+      pass=$( cat /home/${r}/.pass.txt | grep "siteaccount" | awk '{ print $3}' )
+      echo -e "Логин/почта: "${GREEN}${email} ${WHITE}"Пароль: "${LRED}${pass}${WHITE}
+      sed -i "s/name=\"admin_email\".*/name=\"admin_email\" default=\"${email}\"/" ${directory}/%f/installation/model/forms/site.xml
+      sed -i "s/name=\"admin_user\".*/name=\"admin_user\" default=\"${email}\"/" ${directory}/%f/installation/model/forms/site.xml
+      sed -i "s/name=\"admin_password\".*/name=\"admin_password\" default=\"${pass}\"/" ${directory}/%f/installation/model/forms/site.xml
+      sed -i "s/name=\"admin_password2\".*/name=\"admin_password2\" default=\"${pass}\"/" ${directory}/%f/installation/model/forms/site.xml
+	  fi
+    dbpass=$( cat /home/${r}/.pass.txt | grep "Database" | awk '{ print $2}' )
+    sed -i "s/name=\"site_name\".*/name=\"site_name\" default=\"%f\"/" ${directory}/%f/installation/model/forms/site.xml
+    sed -i "s/name=\"db_user\".*/name=\"db_user\" default=\"${r}\"/" ${directory}/%f/installation/model/forms/database.xml
+    sed -i "s/name=\"db_pass\".*/name=\"db_pass\" default=\"${dbpass}\"/" ${directory}/%f/installation/model/forms/database.xml
+    sed -i "s/name=\"db_name\".*/name=\"db_name\" default=\"%f\"/" ${directory}/%f/installation/model/forms/database.xml
+    if [[ -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
+    then
+      echo -e "Базы данных с именем ${GREEN}%f${WHITE} не существует. Создать?"
+      vertical_menu "current" 2 0 5 "Да" "Нет"
+      cr=$?
+      if (( ${cr}==0 ))
+      then
+        if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%f\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+        then
+          echo -e "База mysql с именем ${GREEN}%f${WHITE} создана"
+          mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%f\`.* TO '${r}'@'localhost';"
+          mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+          echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
+        else
+           echo -e ${RED}"Произошла ошибка"${WHITE}
+        fi
+      else
+        echo "База данных не была создана."
+      fi
+    fi
+	fi
+	echo
+	ip=$( echo "$SSH_CLIENT" | awk '{ print $1}' )
+	echo -e "Сейчас сайт ${GREEN}заблокирован${WHITE} для всех IP адресов кроме вашего: ${GREEN}"${ip}${WHITE}
+	echo "Теперь перейдите в браузер и выполните необходимые шаги для установки сайта."
+	echo "Все поля уже были предварительно заполнены для корректной установки."
+	echo "После того как вы выполните установку сайта - вернитесь к окну терминала и нажмите Enter для снятия блокировки по IP."
+	echo
+	echo "Для снятия блокировки по IP "
+	sed -i '1s/^/Allow from '${ip}'\n/' ${directory}/%f/.htaccess
+	sed -i '1s/^/Deny from all\n/' ${directory}/%f/.htaccess
+	sed -i '1s/^/Order deny,allow\n/' ${directory}/%f/.htaccess
+  vertical_menu "current" 2 0 5 "Нажмите Enter"
+	sed -i '/Order deny,allow*/d' ${directory}/%f/.htaccess
+	sed -i '/Deny from all*/d' ${directory}/%f/.htaccess
+	sed -i '/Allow from*/d' ${directory}/%f/.htaccess
 
 + d /var/www/ & t d
 p       настроить Joomla в папке
