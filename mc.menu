@@ -310,111 +310,88 @@ shell_patterns=0
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
 	clear
-	echo -e "Вы действительно хотите удалить сайт ${LRED}%f${WHITE}?"
-        ask() {
-        local prompt default reply
-        if [ "${2:-}" = "Y" ]; then
-        prompt="Y/n или Д/н"
-        default=Y
-        elif [ "${2:-}" = "N" ]; then
-        prompt="y/N или д/Н"
-        default=N
-        else
-        prompt="y/n"
-        default=
-        fi
-        while true; do
-        # Ask the question (not using "read -p" as it uses stderr not stdout)
-        if [ -z "$1" ]
-        then
-        echo -n "[$prompt]"
-        else
-        echo -n "$1 [$prompt] "
-        fi
-        # Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
-        read reply </dev/tty
-        # Default?
-        if [ -z "$reply" ]; then
-        reply=$default
-        fi
-        # Check if the reply is valid
-        case "$reply" in
-        Y*|y*|Д*|д*) return 0 ;;
-        N*|n*|Н*|н*) return 1 ;;
-        esac
-        done
-        }
-        silent()
-        {
-           "$@" &>/dev/null
-        }
-        if ! [ -d "%d/%f" ]
-        then
-           echo "Это не является папкой сайта. Удаление прервано."
-           exit
-        fi
-        ask "" N || exit
-        echo "Проверяем наличие сертификата у сайта"
-        if certbot certificates --cert-name %f | grep %f &>/dev/null
-        then
-           echo "У сайта есть SSL сертификат"
-           echo "Производим отзыв сертификата"
-           certbot revoke --cert-path /etc/letsencrypt/live/%f/cert.pem
-        else
-           echo "У сайта нет SSL сертификата"
-        fi
-        rm /etc/httpd/conf.d/%f* &>/dev/null
-        if [[ $? -eq 0 ]]
-        then
-           echo -e "Файлы виртуальных хостов ${GREEN}/etc/httpd/conf.d/%f${WHITE} удалены."
-        else
-           echo -e "Файлы виртуального хоста ${RED}удалить не удалось${WHITE}."
-        fi
-        if apachectl configtest
-        then
-          apachectl restart
-          echo "Сервер перезагружен."
-        else
-          echo -e "Сервер не был перезагружен. ${RED}Ошибка${WHITE} в конфигурации апача."
-          echo -e "Удаление сайта ${RED}прервано${WHITE}"
-          exit
-        fi
-        rm -R %d/%f
-        if [[ $? -eq 0 ]]
-        then
-           echo -e "Папка сайта ${GREEN}%f${WHITE} удалена"
-        else
-           echo -e "В процессе удаления папки сайта ${RED}%f${WHITE} возникли проблемы"
-        fi
-        r=%d
-        r=${r#/var/www/}
-        r=${r%/www*}
-        if [[ ${r} == "html" ]]
-        then
-              rm  /var/log/httpd/%f* &>/dev/null
-        else
-              rm  /var/www/${r}/logs/%f* &>/dev/null
-        fi
-        if [[ $? -eq 0 ]]
-        then
-           echo -e "Логи сайта ${GREEN}удалены${WHITE}."
-        else
-           echo -e "Логи сайта ${RED}удалены не были${WHITE}."
-        fi
-        if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
-        then
-            echo "У сайта есть база данных"
-            if mysqladmin -f -u root -p${MYSQLPASS} drop %f
-            then
-               echo -e "База данных ${GREEN}%f${WHITE} удалена"
-            else
-               echo -e "При удалении базы данных ${RED}%f${WHITE} произошли ${RED}ошибки${WHITE}"
-            fi
-        fi
-        echo "Убедитесь что для сайта не установлены задания cron (удалить можно командой crontab -e):"
-        crontab -l
-        echo "Нажмите Enter"
-        ask "" Y
+	source /root/rish/windows.sh
+  if ! [ -d "%d/%f" ]
+  then
+     echo "Это не является папкой сайта. Удаление прервано."
+     exit
+  fi
+  echo -e "Вы действительно хотите удалить сайт ${LRED}%f${WHITE}?"
+  if vertical_menu "current" 2 0 5 "Нет" "Да"
+  then
+    exit
+  fi
+  echo "Проверяем наличие сертификата у сайта"
+  if certbot certificates --cert-name %f | grep %f &>/dev/null
+  then
+     echo "У сайта есть SSL сертификат"
+     echo "Производим отзыв сертификата"
+     certbot revoke --cert-path /etc/letsencrypt/live/%f/cert.pem
+  else
+     echo "У сайта нет SSL сертификата"
+  fi
+  rm /etc/httpd/conf.d/%f* &>/dev/null
+  if [[ $? -eq 0 ]]
+  then
+     echo -e "Файлы виртуальных хостов ${GREEN}/etc/httpd/conf.d/%f${WHITE} удалены."
+  else
+     echo -e "Файлы виртуального хоста ${RED}удалить не удалось${WHITE}."
+  fi
+  if apachectl configtest
+  then
+    apachectl restart
+    echo "Сервер перезагружен."
+  else
+    echo -e "Сервер не был перезагружен. ${RED}Ошибка${WHITE} в конфигурации апача."
+    echo -e "Удаление сайта ${RED}прервано${WHITE}"
+    exit
+  fi
+  rm -R %d/%f
+  if [[ $? -eq 0 ]]
+  then
+     echo -e "Папка сайта ${GREEN}%f${WHITE} удалена"
+  else
+     echo -e "В процессе удаления папки сайта ${RED}%f${WHITE} возникли проблемы"
+  fi
+  r=%d
+  r=${r#/var/www/}
+  r=${r%/www*}
+  if [[ ${r} == "html" ]]
+  then
+        rm  /var/log/httpd/%f* &>/dev/null
+  else
+        rm  /var/www/${r}/logs/%f* &>/dev/null
+  fi
+  if [[ $? -eq 0 ]]
+  then
+     echo -e "Логи сайта ${GREEN}удалены${WHITE}."
+  else
+     echo -e "Логи сайта ${RED}удалены не были${WHITE}."
+  fi
+  if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
+  then
+      echo "У сайта есть база данных"
+      if mysqladmin -f -u root -p${MYSQLPASS} drop %f
+      then
+         echo -e "База данных ${GREEN}%f${WHITE} удалена"
+      else
+         echo -e "При удалении базы данных ${RED}%f${WHITE} произошли ${RED}ошибки${WHITE}"
+      fi
+  fi
+  rm /etc/pki/tls/private/%f* &>/dev/null
+  if [[ $? -eq 0 ]]
+  then
+    echo "Удалены локальные ssl сертификаты сайта"
+  fi
+  rm /etc/pki/tls/certs/%f* &>/dev/null
+  if [[ $? -eq 0 ]]
+  then
+    echo "Удалены локальные ssl сертификаты сайта"
+  fi
+  echo "Убедитесь что для сайта не установлены задания cron (удалить можно командой crontab -e):"
+  crontab -l
+  echo "Нажмите Enter"
+  vertical_menu "current" 2 0 5 "Да"
 
 + d /var/www/ & t d
 k       удалить базу данных

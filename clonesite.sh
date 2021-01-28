@@ -236,6 +236,10 @@ then
    echo -e "Нужно ли установить самоподписанный ${GREEN}SSL${WHITE} сертификат на сайт?"
    if vertical_menu "current" 2 0 5 "Да" "Нет"
    then
+      openssl req -x509 -out $localsitename.crt -keyout $localsitename.key \
+        -newkey rsa:2048 -nodes -sha256 -days 3650 -out /etc/pki/tls/certs/${localsitename}.crt -keyout /etc/pki/tls/private/${localsitename}.key \
+       -subj "/CN=${localsitename}" -extensions EXT -config <( \
+       printf "[dn]\nCN=${localsitename}\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:${localsitename}, DNS:www.${localsitename}\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth")
      {
       echo "<IfModule mod_ssl.c>"
       echo "<VirtualHost *:443>"
@@ -260,8 +264,8 @@ then
       echo "LogLevel warn"
       echo "CustomLog /var/www/${localuser}/logs/${localsitename}-access-log combined"
       echo "ServerSignature Off"
-      echo "SSLCertificateFile /etc/pki/tls/certs/localhost.crt"
-      echo "SSLCertificateKeyFile /etc/pki/tls/private/localhost.key"
+      echo "SSLCertificateFile /etc/pki/tls/certs/${localsitename}.crt"
+      echo "SSLCertificateKeyFile /etc/pki/tls/private/${localsitename}.key"
       echo "</VirtualHost>"
       echo "</IfModule>"
      } >> $ttssl
