@@ -32,13 +32,21 @@ shell_patterns=0
   GREEN='\033[0;32m'
   WHITE='\033[0m'
   clear
-	r=%d
   if [[ "%f" == ".." ]]
   then
     echo -e "${RED}%f${WHITE} - это не папка!"
     vertical_menu "current" 2 0 5 "Нажмите Enter"
     exit
   fi
+  pattern=" |'"
+  if [[ "%f" =~ $pattern ]]
+  then
+    echo -e "Имя папки ${RED}'%f'${WHITE} содержит пробелы"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+    exit
+  fi
+  r=%d
+  r=%d
 	r=${r#/var/www/}
 	r=${r%/www*}
 	cd /etc/httpd/conf.d
