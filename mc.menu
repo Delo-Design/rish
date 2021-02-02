@@ -46,7 +46,6 @@ shell_patterns=0
     exit
   fi
   r=%d
-  r=%d
 	r=${r#/var/www/}
 	r=${r%/www*}
 	cd /etc/httpd/conf.d
