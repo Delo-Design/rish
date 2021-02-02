@@ -27,14 +27,15 @@ shell_patterns=0
 
 + d /var/www/ & t d
 2   cоздать сайт по имени папки
-	source /root/rish/windows.sh
+  source /root/rish/windows.sh
+	RED='\033[0;31m'
   GREEN='\033[0;32m'
   WHITE='\033[0m'
   clear
 	r=%d
   if [[ "%f" == ".." ]]
   then
-    echo -e "${RED}%f%${WHITE} - это не папка!"
+    echo -e "${RED}%f${WHITE} - это не папка!"
     vertical_menu "current" 2 0 5 "Нажмите Enter"
     exit
   fi
