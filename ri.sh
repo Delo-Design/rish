@@ -1115,7 +1115,7 @@ else
 			3)
 				cd ${RISH_HOME}
 				cd ..
-				rm rish.tar.gz
+				rm rish.tar.gz > /dev/null
 				wget https://hika.su/rish.tar.gz
 				tar -xf rish.tar.gz rish/mc.menu
 				rm rish.tar.gz

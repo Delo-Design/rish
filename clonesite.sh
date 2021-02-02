@@ -39,7 +39,7 @@ else
  localserver=false
 fi
 
-mapfile -t servers < <(< ~/.ssh/config grep "Host " |  awk '{print $2}')
+mapfile -t servers < <(< ~/.ssh/config grep "Host " |  awk '{print $2}' | sort )
 
 vertical_menu "current" 2 0 30 "${servers[@]}"
 choice=$?

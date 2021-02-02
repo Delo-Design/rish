@@ -27,40 +27,17 @@ shell_patterns=0
 
 + d /var/www/ & t d
 2   cоздать сайт по имени папки
-	ask() {
-		# https://gist.github.com/davejamesmiller/1965569
-		local prompt default reply
-		if [[ "${2:-}" = "Y" ]]; then
-			prompt="Y/n или Д/н"
-			default=Y
-		elif [ "${2:-}" = "N" ]; then
-			prompt="y/N или д/Н"
-			default=N
-		else
-			prompt="y/n"
-			default=
-		fi
-		while true; do
-			if [ -z "$1" ]
-			then
-			  echo -n "[$prompt]"
-			else
-			  echo -n "$1 [$prompt] "
-			fi
-			read reply </dev/tty
-			if [ -z "$reply" ]; then
-				reply=$default
-			fi
-			case "$reply" in
-				Y*|y*|Д*|д*) return 0 ;;
-				N*|n*|Н*|н*) return 1 ;;
-			esac
-		done
-	}
-  	GREEN='\033[0;32m'
-  	WHITE='\033[0m'
-    clear
+	source /root/rish/windows.sh
+  GREEN='\033[0;32m'
+  WHITE='\033[0m'
+  clear
 	r=%d
+  if [[ "${r}" == ".." ]]
+  then
+    echo "Это не папка!"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+    exit
+  fi
 	r=${r#/var/www/}
 	r=${r%/www*}
 	cd /etc/httpd/conf.d
@@ -148,8 +125,9 @@ shell_patterns=0
 	echo -e "Установлен пользователь ${GREEN}$r${WHITE}"
 	echo
 	chown -R ${r}:${r} %d"/"%f
-	if ask "Перезапускаем сервер для активации сайта?" Y
-	then
+	echo -e "Перезапускаем сервер для активации сайта ${LRED}%f${WHITE}?"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
         if apachectl configtest
         then
         	apachectl restart
