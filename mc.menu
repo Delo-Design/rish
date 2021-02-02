@@ -32,9 +32,9 @@ shell_patterns=0
   WHITE='\033[0m'
   clear
 	r=%d
-  if [[ "${r}" == ".." ]]
+  if [[ "%f" == ".." ]]
   then
-    echo "Это не папка!"
+    echo -e "${RED}%f%${WHITE} - это не папка!"
     vertical_menu "current" 2 0 5 "Нажмите Enter"
     exit
   fi
