@@ -105,6 +105,10 @@ mapfile -t siteusers < <(ls -l /var/www 2>/dev/null | grep drwx | grep -v cgi-bi
 
 vertical_menu "current" 2 10 30 "${siteusers[@]}"
 choice=$?
+if (( choice == 255 ))
+then
+    return
+fi
 local localuser=${siteusers[$choice]}
 
 echo -e ${CURSORUP}"В сайт ${GREEN}$localsitename${WHITE} пользователя ${GREEN}${localuser}${WHITE} на сервер ${GREEN}$serverip${WHITE}${ERASEUNTILLENDOFLINE}"
