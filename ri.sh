@@ -197,7 +197,8 @@ local NAME
 		echo -e ${WHITE}
 		echo "При создании новых сайтов Joomla требуется указать учетную запись для администратора."
 		echo "Вы можете указать имя этой учетной записи, чтобы в дальнейшем не тратить время на ее изменение."
-		echo -e "Если вы не укажете имя сейчас - оно будет создано автоматически. Изменить его можно будет в файле ${GREEN}/home/${NAME}/.pass.txt${WHITE}"
+		echo -e "Если вы не укажете имя сейчас - оно будет создано автоматически. "
+		echo -e "Изменить его можно будет в файле ${GREEN}/home/${NAME}/.pass.txt${WHITE}"
 		echo
 		read -e -p "Введите имя учетной записи для создания сайтов по умолчанию (можно не заполнять - нажмите Enter)" DEFAULTSITEACCOUNT
 	else
@@ -306,7 +307,7 @@ local NAME
     echo "slowlog = /var/log/php-fpm/www-slow.log"
     echo "php_value[session.save_handler] = files"
     echo "php_value[session.save_path] = /var/www/${NAME}/session"
-    echo "php_value[soap.wsdl_cache_dir] = /var/lib/${NAME}/wsdlcache"
+    echo "php_value[soap.wsdl_cache_dir] = /var/www/${NAME}/wsdlcache"
 	} > /etc/php-fpm.d/${NAME}.conf
 
 

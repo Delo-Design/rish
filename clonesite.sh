@@ -48,11 +48,17 @@ then
   return
 fi
 
-
-echo -e "Список сайтов удаленного сервера ${GREEN}${servers[${choice}]}${WHITE}:"
-printf "\n"
-
 local choosenserver=${servers[${choice}]}
+
+ssh -q -o BatchMode=yes  -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${choosenserver} 'exit 0'
+if (( $? == 255 ))
+then
+    echo -e "Подключиться к серверу ${LRED}${choosenserver}${WHITE} невозможно."
+    return
+fi
+
+echo -e "Список сайтов удаленного сервера ${GREEN}${choosenserver}${WHITE}:"
+printf "\n"
 
 #local sites=( $( ssh $choosenserver ls -l $directory | grep 'drwx'| awk '{print $9}'   ) )
 mapfile -t sites < <(ssh $choosenserver 'ls -l /var/www/html/ /var/www/*/www/ 2>/dev/null' | grep drwx | grep -v 000-default | awk '{print  $9" ("$3")"}' | sort)
