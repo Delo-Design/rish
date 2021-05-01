@@ -927,3 +927,36 @@ R   Управление Сервером
     cd /root/rish
 	./ri.sh
 	cd ${r}
+
+	+ d /var/www/ & t d
+T   Добавить сайт в роутер
+ ipaddress=$( ip route get 1 | awk '{print $NF;exit}' )
+ echo ${ipaddress}
+ {
+ sleep 3
+ echo admin
+ sleep 2
+ echo zZ121212--
+ sleep 2
+ echo "ip host %f ${ipaddress}"
+ sleep 3
+ echo "system configuration save"
+ exit
+ } | telnet 192.168.1.1
+
++ d /var/www/ & t d
+S   Убрать сайт из роутера
+ ipaddress=$( ip route get 1 | awk '{print $NF;exit}' )
+ echo ${ipaddress}
+ {
+ sleep 3
+ echo admin
+ sleep 1
+ echo zZ121212--
+ sleep 2
+ echo "no ip host %f ${ipaddress}"
+ sleep 3
+ echo "system configuration save"
+ exit
+ } | telnet 192.168.1.1
+
