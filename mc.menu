@@ -445,46 +445,96 @@ k       удалить базу данных
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
-	ask() {
-		# https://gist.github.com/davejamesmiller/1965569
-		local prompt default reply
-		if [ "${2:-}" = "Y" ]; then
-			prompt="Y/n или Д/н"
-			default=Y
-		elif [ "${2:-}" = "N" ]; then
-			prompt="y/N или д/Н"
-			default=N
-		else
-			prompt="y/n"
-			default=
-		fi
-		while true; do
-			if [ -z "$1" ]
-			then
-			  echo -n "[$prompt]"
-			else
-			  echo -n "$1 [$prompt] "
-			fi
-			read reply </dev/tty
-			if [ -z "$reply" ]; then
-				reply=$default
-			fi
-			case "$reply" in
-				Y*|y*|Д*|д*) return 0 ;;
-				N*|n*|Н*|н*) return 1 ;;
-			esac
-		done
-	}
+	source /root/rish/windows.sh
 	clear
 	echo -e "Получение сертификата для сайта ${GREEN}"%f${WHITE}
-	if ask "Нужен сертификат для www?" Y
-	then
-		echo "получаем www и основной домен"
-		certbot --apache -d %f -d www.%f
-	else
-		echo "www не получаем"
-		certbot --apache -d %f
-	fi
+  vertical_menu "current" 2 0 5 "www.%f и %f" "%f"  "Самоподписанный сертификат"
+  choice=$?
+  		case "$choice" in
+			0)
+        certbot --apache -d %f -d www.%f
+				;;
+			1)
+			  certbot --apache -d %f
+			  ;;
+			2)
+			  cd /etc/httpd/conf.d
+        rr=$( grep DocumentRoot /etc/httpd/conf.d/%f.conf  | sed 's|.*/||' )
+        if [[ "%f" == "${rr}" ]]
+        then
+          documentroot=""
+          echo "DocumentRoot равен папке сайта"
+        else
+          documentroot="/"$rr
+          echo "DocumentRoot будет установлен: "${documentroot}
+        fi
+        rm -f %f-ssl*
+			  ttssl="%f-ssl.conf"
+			  localsitename="%f"
+			   printf "[dn]\nCN=${localsitename}\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:${localsitename}, DNS:www.${localsitename}\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth" > tt1.txt
+        {
+          echo "[req]"
+          echo "distinguished_name = req_distinguished_name"
+          echo "x509_extensions = v3_req"
+          echo "prompt = no"
+          echo "[req_distinguished_name]"
+          echo "CN = %f"
+          echo "[v3_req]"
+          echo "keyUsage = critical, digitalSignature, keyAgreement"
+          echo "extendedKeyUsage = serverAuth"
+          echo "subjectAltName = @alt_names"
+          echo "[alt_names]"
+          echo "DNS.1 = www.%f"
+          echo "DNS.2 = %f"
+        } > rish_temp_file_for_creating_selfsigned_cert.txt
+      openssl req -x509 -out $localsitename.crt -keyout $localsitename.key \
+        -newkey rsa:2048 -nodes -sha256 -days 3650 -out /etc/pki/tls/certs/${localsitename}.crt -keyout /etc/pki/tls/private/${localsitename}.key \
+       -subj "/CN=${localsitename}"  -config rish_temp_file_for_creating_selfsigned_cert.txt
+       rm -f rish_temp_file_for_creating_selfsigned_cert.txt
+        localuser=%d
+        localuser=${localuser#/var/www/}
+        localuser=${localuser%/www*}
+        {
+        echo "<IfModule mod_ssl.c>"
+        echo "<VirtualHost *:443>"
+        echo "ServerAdmin webmaster@localhost"
+        echo "ServerName %f"
+        echo "ServerAlias www.%f"
+        echo "DocumentRoot /var/www/${localuser}/www/%f"${documentroot}
+        echo '<Proxy "unix:/var/run/php-fpm/'${localuser}'.sock|fcgi://php-fpm">'
+        echo 'ProxySet disablereuse=on connectiontimeout=3 timeout=60'
+        echo '</Proxy>'
+        echo '<FilesMatch \.php$>'
+        echo 'SetHandler proxy:fcgi://php-fpm'
+        echo '</FilesMatch>'
+        echo 'DirectoryIndex index.php index.html'
+        echo "<Directory /var/www/${localuser}/www/%f${documentroot}>"
+        echo "  Options -Indexes +FollowSymLinks"
+        echo "  AllowOverride All"
+        echo "  Order allow,deny"
+        echo "  Allow from all"
+        echo "</Directory>"
+        echo "ErrorLog /var/www/${localuser}/logs/%f-error-log"
+        echo "LogLevel warn"
+        echo "CustomLog /var/www/${localuser}/logs/%f-access-log combined"
+        echo "ServerSignature Off"
+        echo "SSLCertificateFile /etc/pki/tls/certs/%f.crt"
+        echo "SSLCertificateKeyFile /etc/pki/tls/private/%f.key"
+        echo "</VirtualHost>"
+        echo "</IfModule>"
+       } > $ttssl
+      if apachectl configtest
+      then
+        apachectl restart
+        echo "Сервер перезагружен."
+      else
+        echo -e "Сервер не был перезагружен. ${RED}Ошибка${WHITE} в конфигурации апача."
+      fi
+      echo "Сертификат установлен"
+      echo
+        vertical_menu "current" 2 0 5 "Нажмите Enter"
+			  ;;
+			esac
 
 + d /var/www/ & t d7       отозвать сертификат
 	GREEN='\033[0;32m'
