@@ -634,6 +634,7 @@ then
 	yum-config-manager --disable remi-php71 > /dev/null
 	yum-config-manager --disable remi-php72 > /dev/null
 	yum-config-manager --disable remi-php73 > /dev/null
+	yum-config-manager --disable remi-php74 > /dev/null
 
 	yum-config-manager --enable remi-php${reply} > /dev/null
 

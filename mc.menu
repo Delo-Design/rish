@@ -692,7 +692,7 @@ j   Скачать Joomla в папку
 	for ((i=1;i<10;i++))
   do
     #adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep "https.*Stable-Full_Package.tar.gz" | awk '{ print $2 }' | tr -d \" )
-    adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | egrep -o 'https?://[^ ]+Stable-Full_Package.tar.gz' | awk 'NR == 1' )
+    adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep -Eo 'https?://[^ ]+Stable-Full_Package.tar.gz' | awk 'NR == 1' )
     adr="https"${adr##*https}
     if (( ${#adr} < 200 ))
     then
