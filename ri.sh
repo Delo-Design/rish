@@ -816,8 +816,9 @@ then
 	apachectl restart
 
 	r=$( wget -qO- ident.me )
+	ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
 	echo -e "Попробуйте ${GREEN}открыть этот адрес${WHITE} в своем браузере:"
-	echo -e "${GREEN}http://"${r}${WHITE}
+	echo -e "${GREEN}http://"${ipaddress}${WHITE}
 	echo
 
 	echo "Информация о php отображается нормально?"
