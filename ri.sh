@@ -13,7 +13,7 @@ ERASEUNTILLENDOFLINE='\033[K'
 
 
 
-SUPPORTED_OS='CentOS|Red Hat Enterprise Linux Server'
+SUPPORTED_OS='AlmaLinux|CentOS|Red Hat Enterprise Linux Server'
 size=$(stty size)
 lines=${size% *}
 columns=${size#* }
@@ -557,15 +557,16 @@ then
 	Install cronie
 	Install logrotate
 	Install epel-release
+  Install wget
+  Install tar
 
 	cd /etc/yum.repos.d
-	ver="codeit.el"`rpm -q --qf "%{VERSION}" $(rpm -q --whatprovides redhat-release)`".repo"
-	if [[ -f ${ver} ]]
-	then
-	  rm -f $ver
-	fi
-
-	wget https://repo.codeit.guru/${ver}
+#	ver="codeit.el"`rpm -q --qf "%{VERSION}" $(rpm -q --whatprovides redhat-release)`".repo"
+#	if [[ -f ${ver} ]]
+#	then
+#	  rm -f $ver
+#	fi
+#	wget https://repo.codeit.guru/${ver}
 	Install "httpd mod_ssl"
 
 	Down
@@ -590,59 +591,31 @@ then
 	echo -e "Ставим репозитарий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
 
 	cd /etc/yum.repos.d
-	remi="remi-release-7.rpm"
-	if [[ -f ${remi} ]]
-	then
-	  rm -f ${remi}
-	fi
 
 	Down
-	wget http://rpms.remirepo.net/enterprise/remi-release-7.rpm
-	rpm -Uvh remi-release-7*.rpm
-	Install yum-utils
 
-	Down
-	options=( "PHP ver. 7.4" \
-	"PHP ver. 5.4" \
-	"PHP ver. 5.6" \
-	"PHP ver. 7.0" \
-	"PHP ver. 7.1" \
-	"PHP ver. 7.2"  \
-	"PHP ver. 7.3" )
-	versions=( "74" \
-	"54" \
-	"56" \
-	"70" \
-	"71" \
-	"72" \
-	"73" )
+  dnf install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm
+  mapfile -t options < <( dnf module list -y php | grep -Eo 'remi-[0-9].[0-9]')
 	echo -e "Выберите ${GREEN}версию PHP${WHITE} для установки"
 	vertical_menu "current" 2 0 5 "${options[@]}"
 	ret=$?
 	if (( ${ret} == 255 ))
 	then
-		ret=0
+		exit
 	fi
-	reply=${versions[${ret}]}
+	reply=${options[${ret}]}
 	Up
 	Warning "Выбран php версии ${reply}"
 
 	Down
-	yum-config-manager --disable remi-php54 > /dev/null
-	yum-config-manager --disable remi-php56 > /dev/null
-	yum-config-manager --disable remi-php70 > /dev/null
-	yum-config-manager --disable remi-php71 > /dev/null
-	yum-config-manager --disable remi-php72 > /dev/null
-	yum-config-manager --disable remi-php73 > /dev/null
-	yum-config-manager --disable remi-php74 > /dev/null
+  dnf module enable -y php:"${reply}"
 
-	yum-config-manager --enable remi-php${reply} > /dev/null
-
-	if (( $reply > 70 ))
+	dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl
+		echo -e "Ставим ${GREEN}imagick${WHITE}?"
+	if vertical_menu "current" 2 0 5 "Да" "Нет"
 	then
-		Install "php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip"
-	else
-		Install "php-fpm php-opcache php-cli php-gd php-mbstring php-mcrypt php-mysqlnd php-xml php-soap php-xmlrpc php-zip"
+		Install "php-pecl-imagick"
+	  #yum install php-pecl-imagick
 	fi
 	(( upperY-- ))
 	Up
@@ -678,15 +651,15 @@ then
 
 	cd /etc/php-fpm.d/
 
-	r="; listen = 127.0.0.1:9000\n"
-	r=${r}"listen = \/var\/run\/php-fpm\/default.sock\n"
-	r=${r}"listen.allowed_clients = 127.0.0.1\n"
-	r=${r}"listen.owner = apache\n"
-	r=${r}"listen.group = apache\n"
-	r=${r}"listen.mode = 0660\n"
-	r=${r}"user = apache\n"
-	r=${r}"group = apache\n"
-	sed -i "s/^listen = 127.0.0.1:9000/${r}/" /etc/php-fpm.d/www.conf
+#	r="; listen = 127.0.0.1:9000\n"
+#	r=${r}"listen.allowed_clients = 127.0.0.1\n"
+#	r=${r}"listen.owner = apache\n"
+#	r=${r}"listen.group = apache\n"
+#	r=${r}"listen.mode = 0660\n"
+#	r=${r}"user = apache\n"
+#	r=${r}"group = apache\n"
+	r="listen = \/var\/run\/php-fpm\/default.sock\n"
+	sed -i "s/^listen = .*/${r}/" /etc/php-fpm.d/www.conf
 
 	sed -i "s/^pm = .*/pm = ondemand/" /etc/php-fpm.d/www.conf
 	sed -i "s/^pm.start_servers = .*/pm.start_servers = 3/" /etc/php-fpm.d/www.conf
@@ -756,6 +729,7 @@ then
 	sed -i "s/post_max_size = .*/post_max_size = 32M/" /etc/php.ini
 	sed -i "s/max_execution_time = .*/max_execution_time = 60/" /etc/php.ini
 	sed -i "s/;max_input_vars = .*/max_input_vars = 20000/" /etc/php.ini
+	sed -i "s/output_buffering .*/output_buffering = Off/" /etc/php.ini
 
 	Up
 	echo -e "Установлены лимиты для ${GREEN}PHP${WHITE}:"
@@ -868,14 +842,16 @@ then
 
 	cd /etc/yum.repos.d/
 
-	echo "# MariaDB 10.4 CentOS repository list - created 2020-05-30 13:04 UTC" > MariaDB.repo
-	echo "# http://downloads.mariadb.org/mariadb/repositories/" >> MariaDB.repo
-	echo "[mariadb]" >> MariaDB.repo
-	echo "name = MariaDB" >> MariaDB.repo
-	echo "baseurl = http://yum.mariadb.org/10.4/centos7-amd64" >> MariaDB.repo
-	echo "gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB" >> MariaDB.repo
-	echo "gpgcheck=1" >> MariaDB.repo
-
+  {
+	echo "# MariaDB 10.6 CentOS repository list - created 2021-09-30 08:32 UTC"
+	echo "# http://downloads.mariadb.org/mariadb/repositories/"
+	echo "[mariadb]"
+	echo "name = MariaDB"
+	echo "baseurl = http://yum.mariadb.org/10.6/centos8-amd64"
+	echo "module_hotfixes=1"
+	echo "gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB"
+	echo "gpgcheck=1"
+  } > MariaDB.repo
 	Install "MariaDB-server MariaDB-client"
 	systemctl start mariadb
 	systemctl enable mariadb
@@ -897,7 +873,7 @@ then
 		sed -i '/character-set-server=utf8/d' /etc/my.cnf.d/server.cnf
 		sed -i "s/^\[mysqld\]/\[mysqld\]\ncharacter-set-server=utf8/" /etc/my.cnf.d/server.cnf
 
-mysql_secure_installation <<EOF
+mariadb-secure-installation <<EOF
 
 n
 n
@@ -914,7 +890,7 @@ EOF
 	echo -e "Ставим ${GREEN}certbot${WHITE}?"
 	if vertical_menu "current" 2 0 5 "Да" "Нет"
 	then
-		Install "certbot python2-certbot-apache"
+		Install "certbot python3-certbot-apache"
 		echo "-----------------------------"
 		echo -e "${GREEN}Настроим certbot. Введите свой email для обратной связи."
 		echo -e "На этот емейл будут приходить сообщения о проблемах с сертификатами."

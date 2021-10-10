@@ -683,33 +683,37 @@ i       IP адрес сервера
 
 + d /var/www/ & t d
 j   Скачать Joomla в папку
+  clear
  	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	WHITE='\033[0m'
 	LRED='\033[1;31m'
 	source /root/rish/windows.sh
 	directory=%d
-	for ((i=1;i<10;i++))
-  do
-    #adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep "https.*Stable-Full_Package.tar.gz" | awk '{ print $2 }' | tr -d \" )
-    adr=$( curl -s https://api.github.com/repos/joomla/joomla-cms/releases/latest | grep -Eo 'https?://[^ ]+Stable-Full_Package.tar.gz' | awk 'NR == 1' )
-    adr="https"${adr##*https}
-    if (( ${#adr} < 200 ))
-    then
-      break
-    fi
-    read -p "Pause Time 5 seconds" -t 5
-    echo
-    echo "Идет обновление адресов Joomla"
-  done
-	if (( ${#adr} > 200 ))
-	then
-		echo "Попробуйте еще раз чуть позже - идет обновление адресов Joomla"
-		exit
-	fi
-	ver=$( echo ${adr}| egrep -o 'Joomla.*Stable' )
-	echo -e ${GREEN}${ver}${WHITE}
+	echo "Доступные версии Joomla для скачивания:"
+	downloads=( $( curl -s https://api.github.com/repos/joomla/joomla-cms/releases |  grep browser_download.*Stable-Full.*tar.gz | grep -Eo 'https?://[^ ]+Stable-Full_Package.tar.gz' ))
+	for i in "${downloads[@]}"; do
+	 echo ${i}
+	done
+	echo
+	echo "Выберите версию Joomla для скачивания:"
+	joomlas=( $( curl -s https://api.github.com/repos/joomla/joomla-cms/releases |  grep browser_download.*Stable-Full.*tar.gz | grep -Eo 'https?://[^ ]+Stable-Full_Package.tar.gz' |   awk -F"/" '{print $NF}' ))
+  vertical_menu "current" 2 0 30 "${joomlas[@]}"
+  choice=$?
+  if (( choice == 255 ))
+  then
+      echo "Выход. Каталог не тронут. Никаких действий произведено не было."
+      exit
+  fi
+  joomla_version=$( echo ${joomlas[${choice}]} | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 	cd ${directory}
+	if [[ ${joomla_version} == "3" ]]
+	then
+	  echo -e "Установка Joomla version ${GREEN}3${WHITE}"
+  else
+	  echo -e"Установка Joomla version ${GREEN}4${WHITE}"
+  fi
+	if [ -n "$(ls -A ${directory}/%f)" ]; then
 	echo -e "Удалить содержимое папки ${GREEN}%f${WHITE}?"
 	vertical_menu "current" 2 0 5 "Да" "Нет"
   cr=$?
@@ -718,7 +722,8 @@ j   Скачать Joomla в папку
     rm -rf %f
     mkdir %f
   fi
-	wget ${adr}
+	fi
+	wget "${downloads[${choice}]}"
 	tar xvzf *Stable-Full_Package.tar.gz -C ${directory}/%f > /dev/null
 	rm ${directory}/*Stable-Full_Package.tar.gz
 	r=%d
@@ -732,25 +737,48 @@ j   Скачать Joomla в папку
 	mv ${directory}/%f/htaccess.txt ${directory}/%f/.htaccess
 	if [[ ${r} == "apache" ]]
 	then
+	  echo "Неверно выбран каталог для сайта"
 	  exit
 	else
-	  if cat /home/${r}/.pass.txt | grep -q "defaultsiteaccount"
-	  then
-	    echo "Будет использована учетная запись"
-      email=$( cat /home/${r}/.pass.txt | grep "siteaccount" | awk '{ print $2}' )
-      pass=$( cat /home/${r}/.pass.txt | grep "siteaccount" | awk '{ print $3}' )
-      echo -e "Логин/почта: "${GREEN}${email} ${WHITE}"Пароль: "${LRED}${pass}${WHITE}
-      sed -i "s/name=\"admin_email\".*/name=\"admin_email\" default=\"${email}\"/" ${directory}/%f/installation/model/forms/site.xml
-      sed -i "s/name=\"admin_user\".*/name=\"admin_user\" default=\"${email}\"/" ${directory}/%f/installation/model/forms/site.xml
-      sed -i "s/name=\"admin_password\".*/name=\"admin_password\" default=\"${pass}\"/" ${directory}/%f/installation/model/forms/site.xml
-      sed -i "s/name=\"admin_password2\".*/name=\"admin_password2\" default=\"${pass}\"/" ${directory}/%f/installation/model/forms/site.xml
-	  fi
-    dbpass=$( cat /home/${r}/.pass.txt | grep "Database" | awk '{ print $2}' )
-    sed -i "s/name=\"site_name\".*/name=\"site_name\" default=\"%f\"/" ${directory}/%f/installation/model/forms/site.xml
-    sed -i "s/name=\"db_user\".*/name=\"db_user\" default=\"${r}\"/" ${directory}/%f/installation/model/forms/database.xml
-    sed -i "s/name=\"db_pass\".*/name=\"db_pass\" default=\"${dbpass}\"/" ${directory}/%f/installation/model/forms/database.xml
-    sed -i "s/name=\"db_name\".*/name=\"db_name\" default=\"%f\"/" ${directory}/%f/installation/model/forms/database.xml
-    if [[ -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
+	  if [[ ${joomla_version} == "3" ]]
+    then
+      echo -e "Установка Joomla version ${GREEN}3${WHITE}"
+      if cat /home/${r}/.pass.txt | grep -q "defaultsiteaccount"
+      then
+        echo "Будет использована учетная запись"
+        email=$( cat /home/${r}/.pass.txt | grep "siteaccount" | awk '{ print $2}' )
+        pass=$( cat /home/${r}/.pass.txt | grep "siteaccount" | awk '{ print $3}' )
+        echo -e "Логин/почта: "${GREEN}${email} ${WHITE}"Пароль: "${LRED}${pass}${WHITE}
+        sed -i "s/name=\"admin_email\".*/name=\"admin_email\" default=\"${email}\"/" ${directory}/%f/installation/model/forms/site.xml
+        sed -i "s/name=\"admin_user\".*/name=\"admin_user\" default=\"${email}\"/" ${directory}/%f/installation/model/forms/site.xml
+        sed -i "s/name=\"admin_password\".*/name=\"admin_password\" default=\"${pass}\"/" ${directory}/%f/installation/model/forms/site.xml
+        sed -i "s/name=\"admin_password2\".*/name=\"admin_password2\" default=\"${pass}\"/" ${directory}/%f/installation/model/forms/site.xml
+      fi
+      dbpass=$( cat /home/${r}/.pass.txt | grep "Database" | awk '{ print $2}' )
+      sed -i "s/name=\"site_name\".*/name=\"site_name\" default=\"%f\"/" ${directory}/%f/installation/model/forms/site.xml
+      sed -i "s/name=\"db_user\".*/name=\"db_user\" default=\"${r}\"/" ${directory}/%f/installation/model/forms/database.xml
+      sed -i "s/name=\"db_pass\".*/name=\"db_pass\" default=\"${dbpass}\"/" ${directory}/%f/installation/model/forms/database.xml
+      sed -i "s/name=\"db_name\".*/name=\"db_name\" default=\"%f\"/" ${directory}/%f/installation/model/forms/database.xml
+    else
+      echo -e"Установка Joomla version ${GREEN}4${WHITE}"
+      if cat /home/${r}/.pass.txt | grep -q "defaultsiteaccount"
+      then
+        echo "Будет использована учетная запись"
+        email=$( cat /home/${r}/.pass.txt | grep "siteaccount" | awk '{ print $2}' )
+        pass=$( cat /home/${r}/.pass.txt | grep "siteaccount" | awk '{ print $3}' )
+        echo -e "Логин/почта: "${GREEN}${email} ${WHITE}"Пароль: "${LRED}${pass}${WHITE}
+        sed -i "s/name=\"admin_email\".*/name=\"admin_email\" default=\"${email}\"/" ${directory}/%f/installation/forms/setup.xml
+        sed -i "s/name=\"admin_user\".*/name=\"admin_user\" default=\"${email}\"/" ${directory}/%f/installation/forms/setup.xml
+        sed -i "s/name=\"admin_username\".*/name=\"admin_username\" default=\"${email}\"/" ${directory}/%f/installation/forms/setup.xml
+        sed -i "s/name=\"admin_password\".*/name=\"admin_password\" default=\"${pass}\"/" ${directory}/%f/installation/forms/setup.xml
+      fi
+      dbpass=$( cat /home/${r}/.pass.txt | grep "Database" | awk '{ print $2}' )
+      sed -i "s/name=\"site_name\".*/name=\"site_name\" default=\"%f\"/" ${directory}/%f/installation/forms/setup.xml
+      sed -i "s/name=\"db_user\".*/name=\"db_user\" default=\"${r}\"/" ${directory}/%f/installation/forms/setup.xml
+      sed -i "s/name=\"db_pass\".*/name=\"db_pass\" default=\"${dbpass}\"/" ${directory}/%f/installation/forms/setup.xml
+      sed -i "s/joomla_db/%f/" ${directory}/%f/installation/forms/setup.xml
+    fi
+    if [[ -z "$(mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1)" ]]
     then
       echo -e "Базы данных с именем ${GREEN}%f${WHITE} не существует. Создать?"
       vertical_menu "current" 2 0 5 "Да" "Нет"
@@ -768,6 +796,28 @@ j   Скачать Joomla в папку
         fi
       else
         echo "База данных не была создана."
+      fi
+    else
+      echo -e "База данных с именем ${GREEN}%f${WHITE} уже существует. Хотите очистить ее?"
+      vertical_menu "current" 2 0 5 "Да" "Нет"
+      cr=$?
+      if (( ${cr}==0 ))
+      then
+        if mysqladmin -f -u root -p${MYSQLPASS} drop %f
+        then
+         echo -e "База данных ${GREEN}%f${WHITE} удалена"
+        else
+         echo -e "При удалении базы данных ${RED}%f${WHITE} произошли ${RED}ошибки${WHITE}"
+        fi
+        if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%f\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+        then
+          echo -e "База mysql с именем ${GREEN}%f${WHITE} создана"
+          mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%f\`.* TO '${r}'@'localhost';"
+          mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+          echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
+        else
+           echo -e ${RED}"Произошла ошибка"${WHITE}
+        fi
       fi
     fi
 	fi
