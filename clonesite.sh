@@ -22,7 +22,7 @@ then
   return
 fi
 
-serverip=$( ip route get 1 | awk '{print $NF;exit}' )
+serverip=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,16}' |  awk '{print $NF;exit}' )
 if [[ "$serverip" =~ ^192\.168\..* ]]
 then
  echo "****************************************************************"

@@ -13,7 +13,7 @@ ERASEUNTILLENDOFLINE='\033[K'
 
 
 
-SUPPORTED_OS='AlmaLinux|CentOS|Red Hat Enterprise Linux Server'
+SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server'
 size=$(stty size)
 lines=${size% *}
 columns=${size#* }
