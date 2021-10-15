@@ -3,23 +3,21 @@ SSH Web-server control panel
 
 SSH панель конфигурации и установки web сервера 
 
-Протестировано на CentOS 7
+Протестировано на AlmaLinux (CentOS 8) и Rocky Linux
 
 * http/2
 * gzip and brotli компрессия
 * mpm event для apache
-* MariaDB 10.4
+* MariaDB 10.6
 * Система не устанавливает никаких дополнительных сервисов и не расходует попусту ресурсов сервера
-* PHP 7.4-5.4
+* Все актуальные версии PHP начиная с 7.2 (список держится в актуальном состоянии)
+* Есть возможность установки Joomla
 
 Команда установки
 
-    wget https://hika.su/rish.tar.gz && tar -xvf rish.tar.gz && cd rish  && chmod u+x ri.sh && ./ri.sh
+    curl get.rish.su | sh
 
-Возможно, что в минимальной установке CentOS будет отсутствовать команда wget и ее понадобится установить отдельно:
+Возможно, что в минимальной установке CentOS будет отсутствовать команда curl и ее понадобится установить отдельно:
 
-    yum install wget
+    yum install curl
 
-
-Видео об использовании
-(https://youtu.be/9wli9f2krCY)
