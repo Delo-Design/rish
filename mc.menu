@@ -711,7 +711,7 @@ j   Скачать Joomla в папку
 	then
 	  echo -e "Установка Joomla version ${GREEN}3${WHITE}"
   else
-	  echo -e"Установка Joomla version ${GREEN}4${WHITE}"
+	  echo -e "Установка Joomla version ${GREEN}4${WHITE}"
   fi
 	if [ -n "$(ls -A ${directory}/%f)" ]; then
 	echo -e "Удалить содержимое папки ${GREEN}%f${WHITE}?"
@@ -1027,10 +1027,11 @@ R   Управление Сервером
     cd /root/rish
 	./ri.sh
 	cd ${r}
+#
 
 	+ d /var/www/ & t d
 T   Добавить сайт в роутер
- ipaddress=$( ip route get 1 | awk '{print $NF;exit}' )
+ ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
  echo ${ipaddress}
  {
  sleep 3
@@ -1046,7 +1047,7 @@ T   Добавить сайт в роутер
 
 + d /var/www/ & t d
 S   Убрать сайт из роутера
- ipaddress=$( ip route get 1 | awk '{print $NF;exit}' )
+ ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
  echo ${ipaddress}
  {
  sleep 3

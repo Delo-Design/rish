@@ -138,8 +138,9 @@ OpenFirewall() {
         else
             echo -e "Открываем ${GREEN}firewall${WHITE}"
             Down
-            firewall-cmd --zone=public --permanent --add-service=http
-            firewall-cmd --zone=public --permanent --add-service=https
+            zonename=$(firewall-cmd --get-default-zone)
+            firewall-cmd --zone=${zonename} --permanent --add-service=http
+            firewall-cmd --zone=${zonename} --permanent --add-service=https
             firewall-cmd --reload
             Up
         fi
@@ -466,8 +467,13 @@ then
 		echo ""
 		echo 'Обновляем сервер? '
 		echo 'Настоятельно рекомендуем обновить при первом запуске.'
-
-		if vertical_menu "current" 2 0 5 "Да" "Нет"
+    vertical_menu "current" 2 0 5 "Да" "Нет" "Выйти"
+    ret=$?
+    if (( ret > 1 ))
+    then
+      exit 1
+    fi
+		if (( ret == 0 ))
 		then
 			((upperY--))
 			Up
@@ -556,7 +562,10 @@ then
 	Install mc
 	Install cronie
 	Install logrotate
-	Install epel-release
+	if ! echo ${CURRENT_OS} | egrep -q "Fedora"
+	then
+	  Install epel-release
+	fi
   Install wget
   Install tar
 
@@ -591,10 +600,15 @@ then
 	echo -e "Ставим репозитарий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
 
 	cd /etc/yum.repos.d
-
 	Down
-
-  dnf install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm
+	if echo ${CURRENT_OS} | egrep -q "Fedora"
+	then
+	  FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
+	  echo ${FedoraVersion}
+    dnf install -y https://rpms.remirepo.net/fedora/remi-release-${FedoraVersion}.rpm
+  else
+    dnf install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm
+	fi
   mapfile -t options < <( dnf module list -y php | grep -Eo 'remi-[0-9].[0-9]')
 	echo -e "Выберите ${GREEN}версию PHP${WHITE} для установки"
 	vertical_menu "current" 2 0 5 "${options[@]}"
@@ -609,9 +623,9 @@ then
 
 	Down
   dnf module enable -y php:"${reply}"
-
-	dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl
-		echo -e "Ставим ${GREEN}imagick${WHITE}?"
+	dnf module -y reset php
+	dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
+	echo -e "Ставим ${GREEN}imagick${WHITE}?"
 	if vertical_menu "current" 2 0 5 "Да" "Нет"
 	then
 		Install "php-pecl-imagick"
@@ -843,16 +857,34 @@ then
 
 	cd /etc/yum.repos.d/
 
-  {
-	echo "# MariaDB 10.6 CentOS repository list - created 2021-09-30 08:32 UTC"
-	echo "# http://downloads.mariadb.org/mariadb/repositories/"
-	echo "[mariadb]"
-	echo "name = MariaDB"
-	echo "baseurl = http://yum.mariadb.org/10.6/centos8-amd64"
-	echo "module_hotfixes=1"
-	echo "gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB"
-	echo "gpgcheck=1"
-  } > MariaDB.repo
+	if echo ${CURRENT_OS} | egrep -q "Fedora"
+	then
+    ServerArch=$( arch )
+    if [[ ${ServerArch} == "x86_64" ]]
+    then
+        ServerArch="amd64"
+    fi
+    {
+    echo "# MariaDB 10.6 CentOS repository list - created 2021-09-30 08:32 UTC"
+    echo "# http://downloads.mariadb.org/mariadb/repositories/"
+    echo "[mariadb]"
+    echo "name = MariaDB"
+    echo "baseurl = http://mirror.mephi.ru/mariadb/yum/10.6/fedora${FedoraVersion}-${ServerArch}"
+    echo "gpgkey=http://mirror.mephi.ru/mariadb/yum/RPM-GPG-KEY-MariaDB"
+    echo "gpgcheck=1"
+    } > MariaDB.repo
+  else
+    {
+    echo "# MariaDB 10.6 CentOS repository list - created 2021-09-30 08:32 UTC"
+    echo "# http://downloads.mariadb.org/mariadb/repositories/"
+    echo "[mariadb]"
+    echo "name = MariaDB"
+    echo "baseurl = http://yum.mariadb.org/10.6/centos8-amd64"
+    echo "module_hotfixes=1"
+    echo "gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB"
+    echo "gpgcheck=1"
+    } > MariaDB.repo
+  fi
 	Install "MariaDB-server MariaDB-client"
 	systemctl start mariadb
 	systemctl enable mariadb
@@ -1009,6 +1041,7 @@ EOF
 	then
 		# устанавливаем признак выполненной настройки сервера
 		echo "export MYSQLPASS="${SCRIPTVERSION} >> ~/.bashrc
+		export MYSQLPASS=${SCRIPTVERSION}
 	fi
 
 	CreateUser
