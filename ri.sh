@@ -10,7 +10,7 @@ LRED='\033[1;31m'
 WHITE='\033[0m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
-
+ServerArch=$( arch )
 
 
 SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server'
@@ -597,42 +597,50 @@ then
 	Down
 	apachectl restart
 	Up
-	echo -e "Ставим репозитарий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
-
-	cd /etc/yum.repos.d
-	Down
-	if echo ${CURRENT_OS} | egrep -q "Fedora"
+	if [[ ${ServerArch} == "aarch64" ]]
 	then
-	  FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
-	  echo ${FedoraVersion}
-    dnf install -y https://rpms.remirepo.net/fedora/remi-release-${FedoraVersion}.rpm
+	  echo -e "Ставим стандартный php из репозитариев системы"
+	  Down
+	  dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
+	  Up
   else
-    dnf install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm
-	fi
-  mapfile -t options < <( dnf module list -y php | grep -Eo 'remi-[0-9].[0-9]')
-	echo -e "Выберите ${GREEN}версию PHP${WHITE} для установки"
-	vertical_menu "current" 2 0 5 "${options[@]}"
-	ret=$?
-	if (( ${ret} == 255 ))
-	then
-		exit
-	fi
-	reply=${options[${ret}]}
-	Up
-	Warning "Выбран php версии ${reply}"
+    echo -e "Ставим репозитарий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
 
-	Down
-  dnf module enable -y php:"${reply}"
-	dnf module -y reset php
-	dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
-	echo -e "Ставим ${GREEN}imagick${WHITE}?"
-	if vertical_menu "current" 2 0 5 "Да" "Нет"
-	then
-		Install "php-pecl-imagick"
-	  #yum install php-pecl-imagick
+    cd /etc/yum.repos.d
+    Down
+    if echo ${CURRENT_OS} | egrep -q "Fedora"
+    then
+      FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
+      echo ${FedoraVersion}
+      dnf install -y https://rpms.remirepo.net/fedora/remi-release-${FedoraVersion}.rpm
+    else
+      dnf install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm
+    fi
+    mapfile -t options < <( dnf module list -y php | grep -Eo 'remi-[0-9].[0-9]')
+    echo -e "Выберите ${GREEN}версию PHP${WHITE} для установки"
+    vertical_menu "current" 2 0 5 "${options[@]}"
+    ret=$?
+    if (( ${ret} == 255 ))
+    then
+      exit
+    fi
+    reply=${options[${ret}]}
+    Up
+    Warning "Выбран php версии ${reply}"
+
+    Down
+    dnf module enable -y php:"${reply}"
+    dnf module -y reset php
+    dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
+    echo -e "Ставим ${GREEN}imagick${WHITE}?"
+    if vertical_menu "current" 2 0 5 "Да" "Нет"
+    then
+      Install "php-pecl-imagick"
+      #yum install php-pecl-imagick
+    fi
+    (( upperY-- ))
+    Up
 	fi
-	(( upperY-- ))
-	Up
 	php -v
 	Down
 
@@ -859,7 +867,6 @@ then
 
 	if echo ${CURRENT_OS} | egrep -q "Fedora"
 	then
-    ServerArch=$( arch )
     if [[ ${ServerArch} == "x86_64" ]]
     then
         ServerArch="amd64"
