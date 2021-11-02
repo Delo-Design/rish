@@ -85,15 +85,15 @@ cursor_to $(( ${rim} +1 )) 1
 repl "─" $(( ${columns} ))
 cursor_to $(( ${rim} +2 )) 1
 Up
-if `type lsb_release > /dev/null 2>&1`; then
-	CURRENT_OS=`lsb_release -d -s`
+if (type lsb_release > /dev/null 2>&1); then
+	CURRENT_OS=$(lsb_release -d -s)
 	echo -e "Ваша версия Linux: ${RED}$CURRENT_OS${WHITE}"
 elif [[ -f /etc/system-release ]]; then
-	CURRENT_OS=`head -1 /etc/system-release`
+	CURRENT_OS=$(head -1 /etc/system-release)
 	echo -e "Ваша версия Linux: ${GREEN}$CURRENT_OS${WHITE}"
 	echo
 elif [[ -f /etc/issue ]]; then
-	CURRENT_OS=`head -2 /etc/issue`
+	CURRENT_OS=$(head -2 /etc/issue)
 	echo -e "Ваша версия Linux: ${RED}$CURRENT_OS${WHITE}"
 else
 	echo -e "${RED}Невозможно определить вашу версию Linux${WHITE}"
@@ -104,7 +104,10 @@ then
    echo -e "Ваш дистрибутив Linux ${RED}не поддерживается${WHITE}"
    exit 1
 fi
-
+if echo ${CURRENT_OS} | grep -Eq "Fedora"
+then
+  FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
+fi
 
 Infon() {
     printf "${GREEN}$@${WHITE}"
@@ -602,6 +605,12 @@ then
 	  echo -e "Ставим стандартный php из репозитариев системы"
 	  Down
 	  dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
+	  echo -e "Ставим ${GREEN}imagick${WHITE}?"
+    if vertical_menu "current" 2 0 5 "Да" "Нет"
+    then
+      Install "php-pecl-imagick"
+      #yum install php-pecl-imagick
+    fi
 	  Up
   else
     echo -e "Ставим репозитарий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
@@ -611,7 +620,6 @@ then
     if echo ${CURRENT_OS} | egrep -q "Fedora"
     then
       FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
-      echo ${FedoraVersion}
       dnf install -y https://rpms.remirepo.net/fedora/remi-release-${FedoraVersion}.rpm
     else
       dnf install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm
