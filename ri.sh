@@ -637,8 +637,9 @@ then
     Warning "Выбран php версии ${reply}"
 
     Down
-    dnf module enable -y php:"${reply}"
     dnf module -y reset php
+    dnf module enable -y php:"${reply}"
+
     dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
     echo -e "Ставим ${GREEN}imagick${WHITE}?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
