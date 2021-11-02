@@ -637,6 +637,7 @@ then
     Warning "Выбран php версии ${reply}"
 
     Down
+    dnf config-manager --set-enabled remi
     dnf module -y reset php
     dnf module enable -y php:"${reply}"
 
