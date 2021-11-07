@@ -1,0 +1,132 @@
++ d /var/www/ & t d
+T   Добавить сайт в роутер
+ clear
+ GREEN='\033[0;32m'
+ RED='\033[0;31m'
+ LRED='\033[1;31m'
+ VIOLET='\033[0;35m'
+ WHITE='\033[0m'
+ 	r=%d
+	r=${r#/var/www/}
+	r=${r%/www*}
+	if [[ -e "/home/${r}/.pass.txt" ]]
+	then
+	  if cat /home/${r}/.pass.txt | grep -q "router"
+    then
+      RouterLogin=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $2}' )
+      RouterPass=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $3}' )
+    else
+      echo "Вы впервые обращаетесь к роутеру из этой учетной записи."
+      echo "Пожалуйста введите логин и пароль для вашего роутера."
+      echo -e "Они будут сохранены в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
+      echo
+      echo -e -n "${WHITE}Введите логин для входа в роутер:${GREEN}"
+			read -e -r -p " " -i  "admin" RouterLogin
+      echo -e -n "${WHITE}Введите пароль для входа в роутер:${GREEN}"
+			read -e -r -p " " -i  "" RouterPass
+			echo -e ${WHITE}
+			echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
+    fi
+    ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
+    echo ${ipaddress}
+    {
+    sleep 3
+    echo "${RouterLogin}"
+    sleep 2
+    echo "${RouterPass}"
+    sleep 2
+    echo "ip host %f ${ipaddress}"
+    sleep 3
+    echo "system configuration save"
+    exit
+    } | telnet 192.168.1.1
+  else
+    echo "Неверно выбран каталог сайта"
+	fi
+
+
++ d /var/www/ & t d
+S   Убрать сайт из роутера
+ source /root/rish/windows.sh
+ GREEN='\033[0;32m'
+ RED='\033[0;31m'
+ LRED='\033[1;31m'
+ VIOLET='\033[0;35m'
+ WHITE='\033[0m'
+  r=%d
+	r=${r#/var/www/}
+	r=${r%/www*}
+	if [[ ! -e "/home/${r}/.pass.txt" ]]
+	then
+	  echo "Неверно выбран каталог сайтов"
+	  exit
+  fi
+  if cat /home/${r}/.pass.txt | grep -q "router"
+  then
+    RouterLogin=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $2}' )
+    RouterPass=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $3}' )
+  else
+    echo "Вы впервые обращаетесь к роутеру из этой учетной записи."
+    echo "Пожалуйста введите логин и пароль для вашего роутера."
+    echo -e "Они будут сохранены в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
+    echo
+    echo -e -n "${WHITE}Введите логин для входа в роутер:${GREEN}"
+    read -e -r -p " " -i  "admin" RouterLogin
+    echo -e -n "${WHITE}Введите пароль для входа в роутер:${GREEN}"
+    read -e -r -p " " -i  "" RouterPass
+    echo -e ${WHITE}
+    echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
+  fi
+  ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
+  while true
+	do
+	  clear
+    echo "Получаем от роутера список сайтов..."
+    echo "Подождите пожалуйста."
+    array=()
+    {
+    sleep 3
+    echo "${RouterLogin}"
+    sleep 2
+    echo "${RouterPass}"
+    sleep 2
+    echo "sh ru"
+    sleep 2
+    exit
+    } | telnet 192.168.1.1 | grep "ip host" | tr -s '\r\n' '\n' > /tmp/rish.temporary.file
+    mapfile -t array < /tmp/rish.temporary.file
+    rm -f /tmp/rish.temporary.file
+    for((i=0;i<${#array[@]};i++))
+    do
+      array[$i]=$( echo "${array[${i}]}" | awk '{ printf( "%%-15s %%s", $4, $3) }')
+    done
+    clear
+    echo "Выберите нужную запись для удаления"
+    echo "Или нажмите Esc для выхода"
+    vertical_menu "current" 2 20 30 "${array[@]}"
+    choice=$?
+    if (( choice > 254 ))
+    then
+      exit
+    fi
+    IPSite=$( echo "${array[${choice}]}" | awk '{ print $1 }' )
+    SiteAddress=$( echo "${array[${choice}]}" | awk '{ print $2 }' )
+    echo -e "Удаляем запись: ${GREEN}${SiteAddress}${WHITE} ${RED}${IPSite}${WHITE}"
+    {
+      sleep 3
+      echo "${RouterLogin}"
+      sleep 2
+      echo "${RouterPass}"
+      sleep 2
+      echo "no ip host ${SiteAddress} ${IPSite}"
+      sleep 3
+      echo "system configuration save"
+      exit
+    } | telnet 192.168.1.1
+    echo
+    echo "Удалить еще одну запись?"
+    if vertical_menu "current" 2 0 5 "Нет" "да"
+    then
+      break
+    fi
+  done

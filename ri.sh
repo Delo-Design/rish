@@ -7,6 +7,7 @@ SCRIPTVERSION='0.1.1'
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 LRED='\033[1;31m'
+VIOLET='\033[0;35m'
 WHITE='\033[0m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
@@ -141,9 +142,9 @@ OpenFirewall() {
         else
             echo -e "Открываем ${GREEN}firewall${WHITE}"
             Down
-            zonename=$(firewall-cmd --get-default-zone)
-            firewall-cmd --zone=${zonename} --permanent --add-service=http
-            firewall-cmd --zone=${zonename} --permanent --add-service=https
+            ZoneName=$(firewall-cmd --get-default-zone)
+            firewall-cmd --zone=${ZoneName} --permanent --add-service=http
+            firewall-cmd --zone=${ZoneName} --permanent --add-service=https
             firewall-cmd --reload
             Up
         fi
@@ -554,13 +555,22 @@ then
 
 	Down
 	echo -e "Начать ${GREEN}установку${WHITE} сервера?"
-	if ! vertical_menu "current" 2 0 5 "Да" "Нет"
-	then
-		RemoveRim
+	LocalServer=false
+	vertical_menu "current" 2 0 5 "Установка боевого (production) сервера" "Установка локального сервера" "Выйти"
+	ret=$?
+  if (( ret > 1 ))
+  then
+    RemoveRim
 		echo -e "${RED}Установка сервера прервана${WHITE}"
-		exit 1
-	fi
-
+    exit
+  fi
+  if (( ret == 1 ))
+  then
+    LocalServer=true
+		echo -e "Установка ${VIOLET}локального${WHITE} сервера"
+	else
+	  echo -e "Установка ${RED}боевого${WHITE} сервера"
+  fi
 
 	Install mc
 	Install cronie
@@ -589,6 +599,18 @@ then
 	Up
 
 	OpenFirewall
+	if [[ ! ${LocalServer} ]]
+	then
+	  Down
+	  echo -e "Закрываем порт доступа ${GREEN}cockpit${WHITE}?"
+	  echo "Если не знаете что это такое - закрывайте"
+    if vertical_menu "current" 2 0 5 "Да" "Нет"
+    then
+      firewall-cmd --zone=--zone=${ZoneName} --remove-service=ssh --permanent
+      firewall-cmd --reload
+    fi
+    Up
+  fi
 
 	echo -e "Отключаем heartbeat module и перезапускаем ${GREEN}apache${WHITE}"
 	sed -i "s/LoadModule lbmethod_heartbeat_module/#LoadModule lbmethod_heartbeat_module/" /etc/httpd/conf.modules.d/00-proxy.conf
@@ -602,7 +624,7 @@ then
 	Up
 	if [[ ${ServerArch} == "aarch64" ]]
 	then
-	  echo -e "Ставим стандартный php из репозитариев системы"
+	  echo -e "Ставим стандартный php из репозиториев системы"
 	  Down
 	  dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
 	  echo -e "Ставим ${GREEN}imagick${WHITE}?"
@@ -613,7 +635,7 @@ then
     fi
 	  Up
   else
-    echo -e "Ставим репозитарий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
+    echo -e "Ставим репозиторий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
 
     cd /etc/yum.repos.d
     Down
@@ -780,10 +802,14 @@ then
 	Install "htop"
 
 	Up
-	echo -e "Устанавливаем ${GREEN}московское время${WHITE}:"
+	echo -e "Устанавливаем ${GREEN}время${WHITE}:"
 	Down
-	mv /etc/localtime /etc/localtime.bak
-	ln -s /usr/share/zoneinfo/Europe/Moscow /etc/localtime
+  echo -e "Ставим ${GREEN}Московское время${WHITE}?"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
+    mv /etc/localtime /etc/localtime.bak
+    ln -s /usr/share/zoneinfo/Europe/Moscow /etc/localtime
+  fi
 	Up
 	date
 	Down
@@ -859,9 +885,41 @@ then
 	   rm  -f index.php
 	else
 		RemoveRim
-	   	echo "Установка завершена с ошибкой"
-	   	exit 1
+	  echo "Установка завершена с ошибкой"
+	  exit 1
 	fi
+
+	if  ${LocalServer}
+	then
+	  echo -e "Ставим ${GREEN}Xdebug${WHITE}?"
+    if vertical_menu "current" 2 0 5 "Да" "Нет"
+    then
+      Install "php-xdebug"
+      if [[ -e "/etc/php.d/15-xdebug.ini" ]]
+      then
+        {
+          echo "xdebug.idekey = \"PHPSTORM\""
+          echo "xdebug.mode = debug"
+          echo "xdebug.client_port = 9003"
+          echo "xdebug.discover_client_host=1"
+        } >> /etc/php.d/15-xdebug.ini
+      else
+        echo -e "Файл ${RED}/etc/php.d/15-xdebug.ini${WHITE} не существует!"
+        echo -e "Возможны ошибки при установке xdebug."
+        echo -e "Продолжить установку?"
+        if vertical_menu "current" 2 0 5 "Да" "Нет"
+        then
+          echo "Продолжаем..."
+        else
+          RemoveRim
+          echo "Установка завершена с ошибкой"
+          exit 1
+        fi
+      fi
+    fi
+    Install "telnet"
+    Up
+  fi
 
 	pass=$( tr -dc A-Za-z0-9 < /dev/urandom | head -c 16 | xargs )
 	MYSQLPASS=${pass}
@@ -1028,13 +1086,14 @@ EOF
 	if [[ -e mc.menu ]]
 	then
 		rm /etc/mc/mc.menu
+    if  ${LocalServer}
+    then
+      cat mc.menu.local >> mc.menu
+    fi
 		cp mc.menu /etc/mc/mc.menu
 	fi
 	cd ..
-	if [[ -e rish.tar.gz ]]
-	then
-		rm rish.tar.gz
-	fi
+
   if systemctl status httpd.service -l --no-pager -n 3 | grep "Could not"
   then
     echo "Устанавливаем имя сервера как localhost"
@@ -1063,8 +1122,17 @@ EOF
 
 	CreateUser
 
+  echo -e "Советуем запретить авторизацию по паролю при доступе по ${GREEN}SSH${WHITE}."
+  echo -e "Вы всегда сможете авторизоваться по паролю непосредственно на сервере."
+  echo -e "Авторизация по паролю будет доступна, например, через KVM."
+  echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
+    sed -i "s|#PasswordAuthentication .*$|PasswordAuthentication no|" /etc/ssh/sshd_config
+    systemctl restart sshd.service
+  fi
 	echo -e "Конфигурирование сервера ${GREEN}завершено${WHITE}"
-	Warning "Советуем сейчас отключиться и подключиться к серверу заново, во избежание возможных сбоев."
+	Warning "Советуем сейчас отключиться и подключиться к серверу заново, во избежание неверной работы скриптов."
 
 else
 	options=( "Создать пользователя" \
