@@ -891,6 +891,7 @@ then
 
 	if  ${LocalServer}
 	then
+	  echo -e ${CURSORUP}
 	  echo -e "Ставим ${GREEN}Xdebug${WHITE}?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
@@ -1122,14 +1123,20 @@ EOF
 
 	CreateUser
 
+  echo
   echo -e "Советуем запретить авторизацию по паролю при доступе по ${GREEN}SSH${WHITE}."
   echo -e "Вы всегда сможете авторизоваться по паролю непосредственно на сервере."
   echo -e "Авторизация по паролю будет доступна, например, через KVM."
   echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
   if vertical_menu "current" 2 0 5 "Да" "Нет"
   then
+    echo -e "${CURSORUP}"
     sed -i "s|#PasswordAuthentication .*$|PasswordAuthentication no|" /etc/ssh/sshd_config
     systemctl restart sshd.service
+    echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE}."
+  else
+    echo -e "${CURSORUP}"
+    echo -e "Авторизация по паролю ${RED}разрешена${WHITE}."
   fi
 	echo -e "Конфигурирование сервера ${GREEN}завершено${WHITE}"
 	Warning "Советуем сейчас отключиться и подключиться к серверу заново, во избежание неверной работы скриптов."
