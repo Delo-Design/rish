@@ -891,8 +891,7 @@ then
 
 	if  ${LocalServer}
 	then
-	  echo -e ${CURSORUP}
-	  echo -e "Ставим ${GREEN}Xdebug${WHITE}?"
+	  echo -e ${CURSORUP}"Ставим ${GREEN}Xdebug${WHITE}?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
       Install "php-xdebug"
