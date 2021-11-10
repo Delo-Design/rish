@@ -606,7 +606,7 @@ then
 	  echo "Если не знаете что это такое - закрывайте"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
-      firewall-cmd --zone="${ZoneName}" --remove-service=ssh --permanent
+      firewall-cmd --zone="${ZoneName}" --remove-service=cockpit --permanent
       firewall-cmd --reload
     fi
     Up
