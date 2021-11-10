@@ -599,7 +599,7 @@ then
 	Up
 
 	OpenFirewall
-	if [[ ! ${LocalServer} ]]
+	if ! ${LocalServer}
 	then
 	  Down
 	  echo -e "Закрываем порт доступа ${GREEN}cockpit${WHITE}?"
@@ -891,7 +891,7 @@ then
 
 	if  ${LocalServer}
 	then
-	  echo -e ${CURSORUP}"Ставим ${GREEN}Xdebug${WHITE}?"
+	  echo -e ${CURSORUP}"Ставим ${GREEN}Xdebug${WHITE}?${ERASEUNTILLENDOFLINE}"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
       Install "php-xdebug"
