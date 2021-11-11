@@ -1027,5 +1027,19 @@ R   Управление Сервером
     cd /root/rish
 	./ri.sh
 	cd ${r}
-#
 
+O   Обновление RISH
+  cd /root
+  rm rish8.tar.gz > /dev/null
+  wget https://rish.su/rish8.tar.gz
+  tar -xvf rish8.tar.gz
+  rm rish8.tar.gz
+  cd /root/rish
+  if grep -q "localrish" /etc/mc/mc.menu
+  then
+    cat mc.menu.local >> mc.menu
+  fi
+  rm /etc/mc/mc.menu
+  cp mc.menu /etc/mc/mc.menu
+  echo "Обновление завершено"
+  vertical_menu "current" 2 0 5 "Нажмите Enter"

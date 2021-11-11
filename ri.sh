@@ -1218,11 +1218,16 @@ else
 			3)
 				cd ${RISH_HOME}
 				cd ..
-				rm rish.tar.gz > /dev/null
-				wget https://hika.su/rish.tar.gz
-				tar -xf rish.tar.gz rish/mc.menu
-				rm rish.tar.gz
+				rm rish8.tar.gz > /dev/null
+				wget https://rish.su/rish8.tar.gz
+				tar -xf rish8.tar.gz rish/mc.menu
+				tar -xf rish8.tar.gz rish/mc.menu.local
+				rm rish8.tar.gz
 				cd ${RISH_HOME}
+        if grep -q "localrish" /etc/mc/mc.menu
+        then
+          cat mc.menu.local >> mc.menu
+        fi
 				if [[ -e mc.menu ]]
 				then
 					rm /etc/mc/mc.menu

@@ -1,5 +1,6 @@
 + d /var/www/ & t d
 T   Добавить сайт в роутер
+#localrish
  clear
  GREEN='\033[0;32m'
  RED='\033[0;31m'
