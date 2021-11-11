@@ -1029,6 +1029,7 @@ R   Управление Сервером
 	cd ${r}
 
 O   Обновление RISH
+  source /root/rish/windows.sh
   cd /root
   rm rish8.tar.gz > /dev/null
   wget https://rish.su/rish8.tar.gz
