@@ -1031,7 +1031,7 @@ R   Управление Сервером
 O   Обновление RISH
   source /root/rish/windows.sh
   cd /root
-  rm rish8.tar.gz > /dev/null
+  rm -f rish8.tar.gz > /dev/null
   wget https://rish.su/rish8.tar.gz
   tar -xvf rish8.tar.gz
   rm rish8.tar.gz
