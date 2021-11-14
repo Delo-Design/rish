@@ -47,7 +47,7 @@ createlist() {
 			fi
 			let ii=$ii+1
 			printf "%3s. " $ii
-			printf "${GREEN}%-${max}s${WHITE} " "${r}"
+			printf "${GREEN}%s${WHITE} " "${r}"
 			if [ -n "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='$db'" 2>&1`" ];
 			then
 				echo "База данных $db "
@@ -113,7 +113,7 @@ then
 fi
 
 
-SUPPORTED_OS='CentOS|Red Hat Enterprise Linux Server'
+SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server'
 if `type lsb_release > /dev/null 2>&1`; then
 	CURRENT_OS=`lsb_release -d -s`
 	echo -e "Ваша версия Linux: ${RED}$CURRENT_OS${WHITE}"
