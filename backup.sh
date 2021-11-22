@@ -22,7 +22,7 @@ source /root/rish/windows.sh
 #Если на одном диске будут бекапы разных серверов - надо изменить название для каждого
 server="backup_server"
 
-DATE=`/bin/date '+%Y.%m.%d'`
+DATE=$(/bin/date '+%Y.%m.%d')
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -170,7 +170,8 @@ then
      if (( ${cr}==0 ))
      then
       cd /etc/yum.repos.d/
-      wget https://download.opensuse.org/repositories/home:antonbatenev:ydcmd/CentOS_7/home:antonbatenev:ydcmd.repo
+      rm -f home:antonbatenev:ydcmd.repo > /dev/null
+      wget https://download.opensuse.org/repositories/home:antonbatenev:ydcmd/CentOS_8/home:antonbatenev:ydcmd.repo
       yum install -y ydcmd
     else
       exit
