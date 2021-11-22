@@ -98,7 +98,7 @@ backupall() {
 		   rm ./$DB.sql
 		fi
 		echo -e "\033[1AАрхив сайта создан. Передаем на место хранения."
-		/usr/bin/ydcmd --config=$cnf put  $DIR_BACKUP/ disk:/
+		/usr/bin/ydcmd --config=$cnf put --progress  $DIR_BACKUP/ disk:/
 		#sshpass -p 'hzGZadbd1Geg' scp  -r $DIR_BACKUP/* ih1515719@193.124.176.46:/
 		rm -rf $DIR_BACKUP/*
 	done < $backupall
