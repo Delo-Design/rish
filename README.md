@@ -1,9 +1,12 @@
 # RISH
+
 SSH Web-server control panel
 
 SSH панель конфигурации и установки web сервера 
 
-Протестировано на AlmaLinux (CentOS 8) и Rocky Linux
+Официальный сайт RISH https://rish.su
+
+Протестировано на AlmaLinux (CentOS 8), Rocky Linux и Fedora
 
 * http/2
 * gzip and brotli компрессия
