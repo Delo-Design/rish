@@ -1,18 +1,18 @@
 + d /var/www/ & t d
 T   Добавить сайт в роутер
-#localrish
+ #localrish
  clear
  GREEN='\033[0;32m'
  RED='\033[0;31m'
  LRED='\033[1;31m'
  VIOLET='\033[0;35m'
  WHITE='\033[0m'
- 	r=%d
-	r=${r#/var/www/}
-	r=${r%/www*}
-	if [[ -e "/home/${r}/.pass.txt" ]]
-	then
-	  if cat /home/${r}/.pass.txt | grep -q "router"
+  r=%d
+  r=${r#/var/www/}
+  r=${r%/www*}
+  if [[ -e "/home/${r}/.pass.txt" ]]
+  then
+    if cat /home/${r}/.pass.txt | grep -q "router"
     then
       RouterLogin=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $2}' )
       RouterPass=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $3}' )
@@ -22,11 +22,11 @@ T   Добавить сайт в роутер
       echo -e "Они будут сохранены в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
       echo
       echo -e -n "${WHITE}Введите логин для входа в роутер:${GREEN}"
-			read -e -r -p " " -i  "admin" RouterLogin
+      read -e -r -p " " -i  "admin" RouterLogin
       echo -e -n "${WHITE}Введите пароль для входа в роутер:${GREEN}"
-			read -e -r -p " " -i  "" RouterPass
-			echo -e ${WHITE}
-			echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
+      read -e -r -p " " -i  "" RouterPass
+      echo -e ${WHITE}
+      echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
     fi
     ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
     echo ${ipaddress}
@@ -43,7 +43,7 @@ T   Добавить сайт в роутер
     } | telnet 192.168.1.1
   else
     echo "Неверно выбран каталог сайта"
-	fi
+  fi
 
 
 + d /var/www/ & t d

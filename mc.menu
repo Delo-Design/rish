@@ -1047,3 +1047,4 @@ O   Обновление RISH
   chmod u+x backup.sh
   echo "Обновление завершено"
   vertical_menu "current" 2 0 5 "Нажмите Enter"
+
