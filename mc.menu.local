@@ -26,12 +26,13 @@ T   Добавить сайт в роутер
     echo -e ${WHITE}
     echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
   fi
+  echo "Проверяем пароль..."
   if {
-  sleep 3
+  sleep 2
   echo "${RouterLogin}"
-  sleep 2
+  sleep 1
   echo "${RouterPass}"
-  sleep 2
+  sleep 1
   exit
   } | telnet 192.168.1.1 | grep -q "KEENETIC"
   then
@@ -40,13 +41,13 @@ T   Добавить сайт в роутер
       ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
       echo ${ipaddress}
       {
-      sleep 3
+      sleep 2
       echo "${RouterLogin}"
-      sleep 2
+      sleep 1
       echo "${RouterPass}"
-      sleep 2
+      sleep 1
       echo "ip host %f ${ipaddress}"
-      sleep 3
+      sleep 2
       echo "system configuration save"
       exit
       } | telnet 192.168.1.1
@@ -54,7 +55,7 @@ T   Добавить сайт в роутер
       echo "Неверно выбран каталог сайта"
     fi
   else
-    echo "Пароль указана неверно"
+    echo "Пароль указан неверно"
     echo -e "Проверьте пароль в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
   fi
 
@@ -92,55 +93,69 @@ S   Убрать сайт из роутера
     echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
   fi
   ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
-  while true
-	do
-	  clear
-    echo "Получаем от роутера список сайтов..."
-    echo "Подождите пожалуйста."
-    array=()
-    {
-    sleep 3
-    echo "${RouterLogin}"
-    sleep 2
-    echo "${RouterPass}"
-    sleep 2
-    echo "sh ru"
-    sleep 2
-    exit
-    } | telnet 192.168.1.1 | grep "ip host" | tr -s '\r\n' '\n' > /tmp/rish.temporary.file
-    mapfile -t array < /tmp/rish.temporary.file
-    rm -f /tmp/rish.temporary.file
-    for((i=0;i<${#array[@]};i++))
+    echo "Проверяем пароль..."
+  if {
+  sleep 2
+  echo "${RouterLogin}"
+  sleep 1
+  echo "${RouterPass}"
+  sleep 1
+  exit
+  } | telnet 192.168.1.1 | grep -q "KEENETIC"
+  then
+    while true
     do
-      array[$i]=$( echo "${array[${i}]}" | awk '{ printf( "%%-15s %%s", $4, $3) }')
-    done
-    clear
-    echo "Выберите нужную запись для удаления"
-    echo "Или нажмите Esc для выхода"
-    vertical_menu "current" 2 20 30 "${array[@]}"
-    choice=$?
-    if (( choice > 254 ))
-    then
-      exit
-    fi
-    IPSite=$( echo "${array[${choice}]}" | awk '{ print $1 }' )
-    SiteAddress=$( echo "${array[${choice}]}" | awk '{ print $2 }' )
-    echo -e "Удаляем запись: ${GREEN}${SiteAddress}${WHITE} ${RED}${IPSite}${WHITE}"
-    {
-      sleep 3
+      clear
+      echo "Получаем от роутера список сайтов..."
+      echo "Подождите пожалуйста."
+      array=()
+      {
+      sleep 2
       echo "${RouterLogin}"
-      sleep 2
+      sleep 1
       echo "${RouterPass}"
-      sleep 2
-      echo "no ip host ${SiteAddress} ${IPSite}"
-      sleep 3
-      echo "system configuration save"
+      sleep 1
+      echo "sh ru"
+      sleep 1
       exit
-    } | telnet 192.168.1.1
-    echo
-    echo "Удалить еще одну запись?"
-    if vertical_menu "current" 2 0 5 "Нет" "да"
-    then
-      break
-    fi
-  done
+      } | telnet 192.168.1.1 | grep "ip host" | tr -s '\r\n' '\n' > /tmp/rish.temporary.file
+      mapfile -t array < /tmp/rish.temporary.file
+      rm -f /tmp/rish.temporary.file
+      for((i=0;i<${#array[@]};i++))
+      do
+        array[$i]=$( echo "${array[${i}]}" | awk '{ printf( "%%-15s %%s", $4, $3) }')
+      done
+      clear
+      echo "Выберите нужную запись для удаления"
+      echo "Или нажмите Esc для выхода"
+      vertical_menu "current" 2 20 30 "${array[@]}"
+      choice=$?
+      if (( choice > 254 ))
+      then
+        exit
+      fi
+      IPSite=$( echo "${array[${choice}]}" | awk '{ print $1 }' )
+      SiteAddress=$( echo "${array[${choice}]}" | awk '{ print $2 }' )
+      echo -e "Удаляем запись: ${GREEN}${SiteAddress}${WHITE} ${RED}${IPSite}${WHITE}"
+      {
+        sleep 2
+        echo "${RouterLogin}"
+        sleep 1
+        echo "${RouterPass}"
+        sleep 1
+        echo "no ip host ${SiteAddress} ${IPSite}"
+        sleep 2
+        echo "system configuration save"
+        exit
+      } | telnet 192.168.1.1
+      echo
+      echo "Удалить еще одну запись?"
+      if vertical_menu "current" 2 0 5 "Нет" "да"
+      then
+        break
+      fi
+    done
+  else
+    echo "Пароль указан неверно"
+    echo -e "Проверьте пароль в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
+  fi
