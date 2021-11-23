@@ -10,39 +10,52 @@ T   Добавить сайт в роутер
   r=%d
   r=${r#/var/www/}
   r=${r%/www*}
-  if [[ -e "/home/${r}/.pass.txt" ]]
+  if cat /home/${r}/.pass.txt | grep -q "router"
   then
-    if cat /home/${r}/.pass.txt | grep -q "router"
-    then
-      RouterLogin=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $2}' )
-      RouterPass=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $3}' )
-    else
-      echo "Вы впервые обращаетесь к роутеру из этой учетной записи."
-      echo "Пожалуйста введите логин и пароль для вашего роутера."
-      echo -e "Они будут сохранены в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
-      echo
-      echo -e -n "${WHITE}Введите логин для входа в роутер:${GREEN}"
-      read -e -r -p " " -i  "admin" RouterLogin
-      echo -e -n "${WHITE}Введите пароль для входа в роутер:${GREEN}"
-      read -e -r -p " " -i  "" RouterPass
-      echo -e ${WHITE}
-      echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
-    fi
-    ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
-    echo ${ipaddress}
-    {
-    sleep 3
-    echo "${RouterLogin}"
-    sleep 2
-    echo "${RouterPass}"
-    sleep 2
-    echo "ip host %f ${ipaddress}"
-    sleep 3
-    echo "system configuration save"
-    exit
-    } | telnet 192.168.1.1
+    RouterLogin=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $2}' )
+    RouterPass=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $3}' )
   else
-    echo "Неверно выбран каталог сайта"
+    echo "Вы впервые обращаетесь к роутеру из этой учетной записи."
+    echo "Пожалуйста введите логин и пароль для вашего роутера."
+    echo -e "Они будут сохранены в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
+    echo
+    echo -e -n "${WHITE}Введите логин для входа в роутер:${GREEN}"
+    read -e -r -p " " -i  "admin" RouterLogin
+    echo -e -n "${WHITE}Введите пароль для входа в роутер:${GREEN}"
+    read -e -r -p " " -i  "" RouterPass
+    echo -e ${WHITE}
+    echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
+  fi
+  if {
+  sleep 3
+  echo "${RouterLogin}"
+  sleep 2
+  echo "${RouterPass}"
+  sleep 2
+  exit
+  } | telnet 192.168.1.1 | grep -q "KEENETIC"
+  then
+    if [[ -e "/home/${r}/.pass.txt" ]]
+    then
+      ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
+      echo ${ipaddress}
+      {
+      sleep 3
+      echo "${RouterLogin}"
+      sleep 2
+      echo "${RouterPass}"
+      sleep 2
+      echo "ip host %f ${ipaddress}"
+      sleep 3
+      echo "system configuration save"
+      exit
+      } | telnet 192.168.1.1
+    else
+      echo "Неверно выбран каталог сайта"
+    fi
+  else
+    echo "Пароль указана неверно"
+    echo -e "Проверьте пароль в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
   fi
 
 
