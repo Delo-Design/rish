@@ -1,6 +1,7 @@
 + d /var/www/ & t d
 T   Добавить сайт в роутер
  #localrish
+ source /root/rish/windows.sh
  clear
  GREEN='\033[0;32m'
  RED='\033[0;31m'
@@ -57,6 +58,7 @@ T   Добавить сайт в роутер
   else
     echo "Пароль указан неверно"
     echo -e "Проверьте пароль в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
   fi
 
 
@@ -158,4 +160,5 @@ S   Убрать сайт из роутера
   else
     echo "Пароль указан неверно"
     echo -e "Проверьте пароль в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
   fi
