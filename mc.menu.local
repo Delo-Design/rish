@@ -56,7 +56,7 @@ T   Добавить сайт в роутер
       echo "Неверно выбран каталог сайта"
     fi
   else
-    echo "Пароль указан неверно"
+    echo -e "Пароль указан ${RED}неверно${WHITE}"
     echo -e "Проверьте пароль в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
     vertical_menu "current" 2 0 5 "Нажмите Enter"
   fi
@@ -158,7 +158,7 @@ S   Убрать сайт из роутера
       fi
     done
   else
-    echo "Пароль указан неверно"
+    echo -e "Пароль указан ${RED}неверно${WHITE}"
     echo -e "Проверьте пароль в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
     vertical_menu "current" 2 0 5 "Нажмите Enter"
   fi
