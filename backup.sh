@@ -132,6 +132,10 @@ then
    echo -e "Ваш дистрибутив Linux ${RED}не поддерживается${WHITE}"
    exit 1
 fi
+if echo ${CURRENT_OS} | grep -Eq "Fedora"
+then
+  FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
+fi
 
 
 basename() {
@@ -167,11 +171,16 @@ then
     echo "Устанавливаем ydcmd?"
     	vertical_menu "current" 2 0 5 "Да" "Нет"
       cr=$?
-     if (( ${cr}==0 ))
+     if (( cr==0 ))
      then
       cd /etc/yum.repos.d/
       rm -f home:antonbatenev:ydcmd.repo > /dev/null
-      wget https://download.opensuse.org/repositories/home:antonbatenev:ydcmd/CentOS_8/home:antonbatenev:ydcmd.repo
+      if echo ${CURRENT_OS} | grep -Eq "Fedora"
+      then
+        dnf config-manager --add-repo https://download.opensuse.org/repositories/home:antonbatenev:ydcmd/Fedora_${FedoraVersion}/home:antonbatenev:ydcmd.repo
+      else
+        wget https://download.opensuse.org/repositories/home:antonbatenev:ydcmd/CentOS_8/home:antonbatenev:ydcmd.repo
+      fi
       yum install -y ydcmd
     else
       exit
