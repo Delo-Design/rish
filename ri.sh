@@ -518,6 +518,8 @@ then
     fi
   fi
 
+  dnf install langpacks-en glibc-all-langpacks -y
+
   if command -v sestatus >/dev/null 2>&1
   then
      if [[ -f /etc/selinux/config ]]
