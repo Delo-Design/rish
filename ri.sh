@@ -1136,7 +1136,7 @@ EOF
   if vertical_menu "current" 2 0 5 "Да" "Нет"
   then
     echo -e "${CURSORUP}"
-    sed -i "|^PasswordAuthentication .*$|d" /etc/ssh/sshd_config
+    sed -i "/^PasswordAuthentication .*$/d" /etc/ssh/sshd_config
     sed -i "s|#PasswordAuthentication .*$|PasswordAuthentication no|" /etc/ssh/sshd_config
     systemctl restart sshd.service
     echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE}."
