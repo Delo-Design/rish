@@ -42,6 +42,7 @@ export RISH_HOME=${_script_dir}
 cd ${RISH_HOME}
 source windows.sh
 source clonesite.sh
+source checkip.sh
 
 # если настройка скрипта уже была произведена, но сессия не была перезапущена - подгрузим пароль базы данных
 if [[ -z "${MYSQLPASS}" ]]
@@ -1155,6 +1156,7 @@ else
   "Удалить базу данных пользователя" \
   "Обновить mc.menu" \
   "Клонирование сайта" \
+  "Проверка IP всех сайтов сервера" \
   "Выйти")
   Down
   echo
@@ -1245,6 +1247,9 @@ else
         ;;
       4)
         CloneSite
+        ;;
+      5)
+        CheckIP
         ;;
       *)
         RemoveRim
