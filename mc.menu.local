@@ -29,11 +29,11 @@ T   Добавить сайт в роутер
   fi
   echo "Проверяем пароль..."
   if {
-  sleep 2
+  sleep 3
   echo "${RouterLogin}"
-  sleep 1
-  echo "${RouterPass}"
-  sleep 1
+  sleep 2
+  echo "${RouterPass}"дай
+  sleep 2
   exit
   } | telnet 192.168.1.1 | grep -q "KEENETIC"
   then
@@ -42,11 +42,11 @@ T   Добавить сайт в роутер
       ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
       echo ${ipaddress}
       {
-      sleep 2
+      sleep 3
       echo "${RouterLogin}"
-      sleep 1
+      sleep 2
       echo "${RouterPass}"
-      sleep 1
+      sleep 2
       echo "ip host %f ${ipaddress}"
       sleep 2
       echo "system configuration save"
@@ -98,11 +98,11 @@ S   Убрать сайт из роутера
   ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
     echo "Проверяем пароль..."
   if {
-  sleep 2
+  sleep 3
   echo "${RouterLogin}"
-  sleep 1
+  sleep 2
   echo "${RouterPass}"
-  sleep 1
+  sleep 2
   exit
   } | telnet 192.168.1.1 | grep -q "KEENETIC"
   then
@@ -113,13 +113,13 @@ S   Убрать сайт из роутера
       echo "Подождите пожалуйста."
       array=()
       {
-      sleep 2
+      sleep 3
       echo "${RouterLogin}"
-      sleep 1
+      sleep 2
       echo "${RouterPass}"
-      sleep 1
+      sleep 2
       echo "sh ru"
-      sleep 1
+      sleep 2
       exit
       } | telnet 192.168.1.1 | grep "ip host" | tr -s '\r\n' '\n' > /tmp/rish.temporary.file
       mapfile -t array < /tmp/rish.temporary.file
@@ -141,11 +141,11 @@ S   Убрать сайт из роутера
       SiteAddress=$( echo "${array[${choice}]}" | awk '{ print $2 }' )
       echo -e "Удаляем запись: ${GREEN}${SiteAddress}${WHITE} ${RED}${IPSite}${WHITE}"
       {
-        sleep 2
+        sleep 3
         echo "${RouterLogin}"
-        sleep 1
+        sleep 2
         echo "${RouterPass}"
-        sleep 1
+        sleep 2
         echo "no ip host ${SiteAddress} ${IPSite}"
         sleep 2
         echo "system configuration save"
