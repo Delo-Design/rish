@@ -199,7 +199,7 @@ local NAME
         break
       fi
       NAME=$( echo ${NAME} | tr -cd "[:alnum:]")
-      echo -e "${WHITE}Будет создан пользователь с именем: ${RED}${NAME}${WHITE}"
+      echo -e "${WHITE}Будет создан пользователь с именем: ${LRED}${NAME}${WHITE}"
       if vertical_menu "current" 2 0 5 "Да" "Нет"
       then
         if id -u ${NAME} >/dev/null 2>&1
