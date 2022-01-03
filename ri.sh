@@ -184,22 +184,39 @@ Down
 CreateUser() {
 local NAME
 # try to create user
-   if (( $# == 0 ))
+  if (( $# == 0 ))
   then
     while true; do
+      echo -e "При создании пользователя используйте только латинские буквы."
       echo -e -n "${WHITE}Введите имя пользователя (для выхода наберите EXIT):${GREEN}"
       read -e -p " " -i  "siteuser" NAME
       if [[ -z "${NAME}" ]]
       then
         continue
       fi
-      if id -u ${NAME} >/dev/null 2>&1
+      if  [[ ${NAME} == "EXIT" ]] || [[ ${NAME} == "exit" ]]
       then
-        echo -e "${WHITE}Такой пользователь уже есть ${LRED}${NAME}${WHITE}"
-      else
         break
       fi
+      NAME=$( echo ${NAME} | tr -cd "[:alnum:]")
+      echo -e "${WHITE}Будет создан пользователь с именем: ${RED}${NAME}${WHITE}"
+      if vertical_menu "current" 2 0 5 "Да" "Нет"
+      then
+        if id -u ${NAME} >/dev/null 2>&1
+        then
+          echo -e "${WHITE}Такой пользователь уже есть ${LRED}${NAME}${WHITE}"
+        else
+          break
+        fi
+      fi
     done
+    if  [[ ${NAME} == "EXIT" ]] || [[ ${NAME} == "exit" ]]
+    then
+      echo -e ${WHITE}
+      return 0
+    else
+      echo -e "${WHITE}Создаем пользователя ${GREEN}${NAME}${WHITE}"
+    fi
     echo -e ${WHITE}
     echo "При создании новых сайтов Joomla требуется указать учетную запись для администратора."
     echo "Вы можете указать имя этой учетной записи, чтобы в дальнейшем не тратить время на ее изменение."
@@ -209,15 +226,6 @@ local NAME
     read -e -p "Введите имя учетной записи для создания сайтов по умолчанию (можно не заполнять - нажмите Enter)" DEFAULTSITEACCOUNT
   else
     NAME=$1
-  fi
-
-
-  if  [[ ${NAME} == "EXIT" ]] || [[ ${NAME} == "exit" ]]
-  then
-    echo -e ${WHITE}
-    return 0
-  else
-    echo -e "${WHITE}Создаем пользователя ${GREEN}${NAME}${WHITE}"
   fi
 
   if id -u ${NAME} >/dev/null 2>&1
