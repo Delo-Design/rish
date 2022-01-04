@@ -839,6 +839,7 @@ j   Скачать Joomla в папку
 
 + d /var/www/ & t d
 p       настроить Joomla в папке
+  source /root/rish/windows.sh
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
@@ -867,13 +868,14 @@ p       настроить Joomla в папке
 		sed -i "s&\$tmp_path .*$&\$tmp_path = '%d\/%f\/tmp';&" %d/%f/configuration.php
 		echo -e "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
 		sed -i "s&\$host .*$&\$host = 'localhost';&" %d/%f/configuration.php
-		echo -e "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
+		echo -e "Хост базы данных установлен в ${GREEN}localhost${WHITE}"
 		echo
 	else
 		echo
 		echo -e "Сайт не имеет файла configuration.php"
 		echo
 	fi
+  vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 + d /var/www/ & t d
 s       Установка/обновление phpmysql
