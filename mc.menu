@@ -868,7 +868,6 @@ p       настроить Joomla в папке
 		echo -e "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
 		sed -i "s&\$host .*$&\$host = 'localhost';&" %d/%f/configuration.php
 		echo -e "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
-
 		echo
 	else
 		echo
