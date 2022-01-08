@@ -594,42 +594,12 @@ k       удалить базу данных
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
-	ask() {
-		# https://gist.github.com/davejamesmiller/1965569
-		local prompt default reply
-		if [ "${2:-}" = "Y" ]; then
-			prompt="Y/n или Д/н"
-			default=Y
-		elif [ "${2:-}" = "N" ]; then
-			prompt="y/N или д/Н"
-			default=N
-		else
-			prompt="y/n"
-			default=
-		fi
-		while true; do
-			if [ -z "$1" ]
-			then
-			  echo -n "[$prompt]"
-			else
-			  echo -n "$1 [$prompt] "
-			fi
-			read reply </dev/tty
-			if [ -z "$reply" ]; then
-				reply=$default
-				echo $default
-			fi
-			case "$reply" in
-				Y*|y*|Д*|д*) return 0 ;;
-				N*|n*|Н*|н*) return 1 ;;
-			esac
-		done
-	}
+	source /root/rish/windows.sh
 	echo -e "Установить всем папкам права - ${GREEN}755${WHITE}, а файлам - ${GREEN}644${WHITE}?"
-	if ask "" Y
-	then
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
 		find %d"/"%f -type d -print0 | xargs -0 chmod 755
-		if [[ ! -z `find %d"/"%f -type f -print0` ]]
+		if ! find %d"/"%f -type f -exec false {} +
 		then
 			find %d"/"%f -type f -print0 | xargs -0 chmod 644
 		fi
@@ -644,10 +614,11 @@ k       удалить базу данных
 	fi
 	echo -e "Установить владельцем всех папок и файлов в папке ${GREEN}%d/%f${WHITE}"
 	echo -e "Пользователя ${GREEN}$r${WHITE}"
-	if ask "" Y
-	then
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
 		chown -R ${r}:${r} %d"/"%f
 	fi
+	vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 r   Перезапустить сервер apache
         if apachectl configtest

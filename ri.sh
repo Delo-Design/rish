@@ -607,6 +607,8 @@ then
   Install "httpd mod_ssl"
 
   Down
+  sed -i "/^Protocols .*$/d" /etc/httpd/conf.d/ssl.conf
+  sed -i "s|Listen 443 https.*$|Listen 443 https\nProtocols h2 http/1.1|" /etc/httpd/conf.d/ssl.conf
   systemctl enable httpd
   echo
   systemctl start httpd
