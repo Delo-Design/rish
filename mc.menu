@@ -1008,6 +1008,7 @@ O   Обновление RISH
   source /root/rish/windows.sh
   cd /root
   rm -f rish8.tar.gz > /dev/null
+  rm -rf rish
   wget https://rish.su/rish8.tar.gz
   tar --no-same-owner -xvf rish8.tar.gz
   rm rish8.tar.gz
