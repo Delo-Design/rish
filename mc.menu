@@ -536,7 +536,7 @@ k       удалить базу данных
 			  ;;
 			esac
 
-+ d /var/www/ & t d7       отозвать сертификат
++ d /var/www/ & t d       отозвать сертификат
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
@@ -617,6 +617,7 @@ k       удалить базу данных
   if vertical_menu "current" 2 0 5 "Да" "Нет"
   then
 		chown -R ${r}:${r} %d"/"%f
+		echo -e "Владельцем всех файлов установлен ${GREEN}${r}${WHITE}"
 	fi
 	vertical_menu "current" 2 0 5 "Нажмите Enter"
 
@@ -1008,7 +1009,7 @@ O   Обновление RISH
   cd /root
   rm -f rish8.tar.gz > /dev/null
   wget https://rish.su/rish8.tar.gz
-  tar -xvf rish8.tar.gz
+  tar --no-same-owner -xvf rish8.tar.gz
   rm rish8.tar.gz
   cd /root/rish
   findlocal="local"
