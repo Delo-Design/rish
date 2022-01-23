@@ -134,25 +134,7 @@ Warning()
     Warningn "$@\n"
 }
 
-OpenFirewall() {
-    if command -v firewall-cmd >/dev/null 2>&1  && systemctl status firewalld  >/dev/null
-    then
-        if firewall-cmd --list-all  | grep http > /dev/null && firewall-cmd --list-all  | grep https > /dev/null
-        then
-            Info "${GREEN}Firewall${WHITE} уже открыт"
-        else
-            echo -e "Открываем ${GREEN}firewall${WHITE}"
-            Down
-            ZoneName=$(firewall-cmd --get-default-zone)
-            firewall-cmd --zone=${ZoneName} --permanent --add-service=http
-            firewall-cmd --zone=${ZoneName} --permanent --add-service=https
-            firewall-cmd --reload
-            Up
-        fi
-    else
-        echo -e "${GREEN}Firewall${WHITE} не установлен"
-    fi
-}
+
 
 Install() {
 if ! rpm -q $@ >/dev/null 2>&1
@@ -178,6 +160,35 @@ else
     echo -e "${GREEN}$@${WHITE} уже установлен"
 fi
 Down
+}
+
+OpenFirewall() {
+    if command -v firewall-cmd >/dev/null 2>&1  && systemctl status firewalld  >/dev/null
+    then
+        if firewall-cmd --list-all  | grep http > /dev/null && firewall-cmd --list-all  | grep https > /dev/null
+        then
+            Info "${GREEN}Firewall${WHITE} уже открыт"
+        else
+            echo -e "Открываем ${GREEN}firewall${WHITE}"
+            Down
+            ZoneName=$(firewall-cmd --get-default-zone)
+            firewall-cmd --zone=${ZoneName} --permanent --add-service=http
+            firewall-cmd --zone=${ZoneName} --permanent --add-service=https
+            firewall-cmd --reload
+            Up
+        fi
+    else
+        echo -e "${GREEN}Firewall${WHITE} не установлен"
+        Install "firewalld"
+        Down
+        systemctl enable firewalld
+        systemctl start firewalld
+        ZoneName=$(firewall-cmd --get-default-zone)
+        firewall-cmd --zone=${ZoneName} --permanent --add-service=http
+        firewall-cmd --zone=${ZoneName} --permanent --add-service=https
+        firewall-cmd --reload
+        Up
+    fi
 }
 
 # shellcheck disable=SC2120
