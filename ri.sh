@@ -111,15 +111,6 @@ then
   FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 fi
 
-Infon() {
-    printf "${GREEN}$@${WHITE}"
-}
-
-Info()
-{
-    Infon "$@\n"
-}
-
 Error()
 {
     printf "\033[1;31m$@\033[0m\n"
@@ -167,7 +158,7 @@ OpenFirewall() {
     then
         if firewall-cmd --list-all  | grep http > /dev/null && firewall-cmd --list-all  | grep https > /dev/null
         then
-            Info "${GREEN}Firewall${WHITE} уже открыт"
+            echo -e "${GREEN}Firewall${WHITE} уже открыт"
         else
             echo -e "Открываем ${GREEN}firewall${WHITE}"
             Down
@@ -471,11 +462,11 @@ DeleteUser() {
 }
 
 
-Info "System memory:"
+echo -e "${GREEN}System memory:${WHITE}"
 free -m
 echo ""
 
-Info "Disk space:"
+echo -e "${GREEN}Disk space:${WHITE}"
 df -h -P -l -x tmpfs -x devtmpfs
 echo ""
 
