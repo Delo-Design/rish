@@ -176,7 +176,7 @@ S   Убрать сайт из роутера
         sleep 2
         echo "system configuration save"
         exit
-      } | telnet 192.168.1.1
+      } | telnet ${RouterIP}
       echo
       echo "Удалить еще одну запись?"
       if vertical_menu "current" 2 0 5 "Нет" "да"
