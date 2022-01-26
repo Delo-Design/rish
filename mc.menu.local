@@ -78,6 +78,22 @@ T   Добавить сайт в роутер
 + d /var/www/ & t d
 S   Убрать сайт из роутера
  source /root/rish/windows.sh
+ askrouter () {
+    echo "Вы впервые обращаетесь к роутеру из этой учетной записи."
+    echo "Пожалуйста введите логин и пароль для вашего роутера."
+    echo -e "Они будут сохранены в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
+    echo
+    echo -e -n "${WHITE}Введите логин для входа в роутер:${GREEN}"
+    read -e -r -p " " -i  "admin" RouterLogin
+    echo -e -n "${WHITE}Введите пароль для входа в роутер:${GREEN}"
+    read -e -r -p " " -i  "" RouterPass
+    RouterIP=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,16}' |  awk '{print $NF;exit}' )
+    RouterIP=${RouterIP%\.*}.1
+    echo -e -n "${WHITE}Введите адрес роутера:${GREEN}"
+    read -e -r -p " " -i  "${RouterIP}" RouterIP
+    echo -e ${WHITE}
+    echo "router ${RouterLogin} ${RouterPass} ${RouterIP}" >> /home/${r}/.pass.txt
+ }
  clear
  GREEN='\033[0;32m'
  RED='\033[0;31m'
@@ -96,17 +112,14 @@ S   Убрать сайт из роутера
   then
     RouterLogin=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $2}' )
     RouterPass=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $3}' )
+    RouterIP=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $4}' )
+    if [[ -z ${RouterIP} ]]
+    then
+      sed -i '/router.*/d' /home/${r}/.pass.txt
+      askrouter
+    fi
   else
-    echo "Вы впервые обращаетесь к роутеру из этой учетной записи."
-    echo "Пожалуйста введите логин и пароль для вашего роутера."
-    echo -e "Они будут сохранены в файле ${GREEN}/home/${r}/.pass.txt${WHITE}"
-    echo
-    echo -e -n "${WHITE}Введите логин для входа в роутер:${GREEN}"
-    read -e -r -p " " -i  "admin" RouterLogin
-    echo -e -n "${WHITE}Введите пароль для входа в роутер:${GREEN}"
-    read -e -r -p " " -i  "" RouterPass
-    echo -e ${WHITE}
-    echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
+      askrouter
   fi
   ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
     echo "Проверяем пароль..."
