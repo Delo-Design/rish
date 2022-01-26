@@ -130,7 +130,7 @@ S   Убрать сайт из роутера
   echo "${RouterPass}"
   sleep 2
   exit
-  } | telnet 192.168.1.1 | grep -q "KEENETIC"
+  } | telnet ${RouterIP} | grep -q "KEENETIC"
   then
     while true
     do
@@ -147,7 +147,7 @@ S   Убрать сайт из роутера
       echo "sh ru"
       sleep 2
       exit
-      } | telnet 192.168.1.1 | grep "ip host" | tr -s '\r\n' '\n' > /tmp/rish.temporary.file
+      } | telnet ${RouterIP} | grep "ip host" | tr -s '\r\n' '\n' > /tmp/rish.temporary.file
       mapfile -t array < /tmp/rish.temporary.file
       rm -f /tmp/rish.temporary.file
       for((i=0;i<${#array[@]};i++))
