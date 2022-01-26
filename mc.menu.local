@@ -53,14 +53,16 @@ T   Добавить сайт в роутер
     if [[ -e "/home/${r}/.pass.txt" ]]
     then
       ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
-      echo ${ipaddress}
+      echo
+      echo -e -n "${WHITE}Укажите домен для добавления в роутер:${GREEN}"
+      read -e -r -p " " -i  "%f" RouterSite
       {
       sleep 3
       echo "${RouterLogin}"
       sleep 2
       echo "${RouterPass}"
       sleep 2
-      echo "ip host %f ${ipaddress}"
+      echo "ip host ${RouterSite} ${ipaddress}"
       sleep 2
       echo "system configuration save"
       exit
