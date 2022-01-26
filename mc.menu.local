@@ -56,6 +56,7 @@ T   Добавить сайт в роутер
       echo
       echo -e -n "${WHITE}Укажите домен для добавления в роутер:${GREEN}"
       read -e -r -p " " -i  "%f" RouterSite
+      echo -e ${WHITE}
       {
       sleep 3
       echo "${RouterLogin}"
