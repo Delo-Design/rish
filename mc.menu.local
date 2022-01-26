@@ -15,6 +15,7 @@ T   Добавить сайт в роутер
   then
     RouterLogin=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $2}' )
     RouterPass=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $3}' )
+    RouterIP=$( cat /home/${r}/.pass.txt | grep "router" | awk '{ print $4}' )
   else
     echo "Вы впервые обращаетесь к роутеру из этой учетной записи."
     echo "Пожалуйста введите логин и пароль для вашего роутера."
@@ -24,8 +25,12 @@ T   Добавить сайт в роутер
     read -e -r -p " " -i  "admin" RouterLogin
     echo -e -n "${WHITE}Введите пароль для входа в роутер:${GREEN}"
     read -e -r -p " " -i  "" RouterPass
+    RouterIP=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,16}' |  awk '{print $NF;exit}' )
+    RouterIP=${RouterIP%\.*}.1
+    echo -e -n "${WHITE}Введите адрес роутера:${GREEN}"
+    read -e -r -p " " -i  "" RouterIP
     echo -e ${WHITE}
-    echo "router ${RouterLogin} ${RouterPass}" >> /home/${r}/.pass.txt
+    echo "router ${RouterLogin} ${RouterPass} ${RouterIP}" >> /home/${r}/.pass.txt
   fi
   echo "Проверяем пароль..."
   if {
@@ -35,7 +40,7 @@ T   Добавить сайт в роутер
   echo "${RouterPass}"дай
   sleep 2
   exit
-  } | telnet 192.168.1.1 | grep -q "KEENETIC"
+  } | telnet ${RouterIP} | grep -q "KEENETIC"
   then
     if [[ -e "/home/${r}/.pass.txt" ]]
     then
@@ -51,7 +56,7 @@ T   Добавить сайт в роутер
       sleep 2
       echo "system configuration save"
       exit
-      } | telnet 192.168.1.1
+      } | telnet ${RouterIP}
     else
       echo "Неверно выбран каталог сайта"
     fi
