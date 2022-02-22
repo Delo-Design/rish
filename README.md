@@ -2,6 +2,8 @@
 
 SSH Web-server control panel
 
+![appletouch](https://user-images.githubusercontent.com/3103677/151532067-f10dfc07-b86c-44de-a083-c28b21f82d57.png)
+
 SSH панель конфигурации и установки web сервера 
 
 Официальный сайт RISH https://rish.su
@@ -19,6 +21,7 @@ SSH панель конфигурации и установки web сервер
 Команда установки
 
     curl get.rish.su | sh
+
 
 Возможно, что в минимальной установке CentOS будет отсутствовать команда curl и ее понадобится установить отдельно:
 
