@@ -536,57 +536,31 @@ k       удалить базу данных
 			  ;;
 			esac
 
-+ d /var/www/ & t d       отозвать сертификат
++ d /var/www/ & t d
+8 отозвать сертификат
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
-	ask() {
-		# https://gist.github.com/davejamesmiller/1965569
-		local prompt default reply
-		if [ "${2:-}" = "Y" ]; then
-			prompt="Y/n или Д/н"
-			default=Y
-		elif [ "${2:-}" = "N" ]; then
-			prompt="y/N или д/Н"
-			default=N
-		else
-			prompt="y/n"
-			default=
-		fi
-		while true; do
-			if [ -z "$1" ]
-			then
-			  echo -n "[$prompt]"
-			else
-			  echo -n "$1 [$prompt] "
-			fi
-			read reply </dev/tty
-			if [ -z "$reply" ]; then
-				reply=$default
-			fi
-			case "$reply" in
-				Y*|y*|Д*|д*) return 0 ;;
-				N*|n*|Н*|н*) return 1 ;;
-			esac
-		done
-	}
-	echo -e "отозвать сертификат ${GREEN}%f${WHITE}"
-	certbot revoke --cert-path /etc/letsencrypt/live/%f/cert.pem
-	rm /etc/httpd/conf.d/%f-le-ssl.conf &>/dev/null
-	if ask "Перезапускаем сервер для активации изменений?" Y
-	then
-        if apachectl configtest
-        then
-        	apachectl restart
-        	echo "сервер перезагружен"
-        else
-        	echo "сервер не был перезагружен"
-        fi
-	else
-		echo "Сервер перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
-	fi
-
+	source /root/rish/windows.sh
+  if vertical_menu "current" 2 0 5 "Отозвать сертификат %f" "Нет"
+  then
+    echo -e "отозвать сертификат ${GREEN}%f${WHITE}"
+    certbot revoke --cert-path /etc/letsencrypt/live/%f/cert.pem
+    rm /etc/httpd/conf.d/%f-le-ssl.conf &>/dev/null
+    if vertical_menu "current" 2 0 5 "Да" "Нет"
+    then
+          if apachectl configtest
+          then
+            apachectl restart
+            echo "сервер перезагружен"
+          else
+            echo "сервер не был перезагружен"
+          fi
+    else
+      echo "Сервер перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
+    fi
+  fi
 
 + d /var/www/ & t d
 9   нacтpoить пpaвa дocтyпa кaтaлoгa
