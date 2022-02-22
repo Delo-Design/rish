@@ -548,7 +548,7 @@ k       удалить базу данных
     echo -e "отозвать сертификат ${GREEN}%f${WHITE}"
     certbot revoke --cert-path /etc/letsencrypt/live/%f/cert.pem
     rm /etc/httpd/conf.d/%f-le-ssl.conf &>/dev/null
-    if vertical_menu "current" 2 0 5 "Да" "Нет"
+    if vertical_menu "current" 2 0 5 "Перезапустить apache" "Нет"
     then
           if apachectl configtest
           then
@@ -560,6 +560,8 @@ k       удалить базу данных
     else
       echo "Сервер перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
     fi
+  else
+    echo "Сертификат отозван не был"
   fi
 
 + d /var/www/ & t d
