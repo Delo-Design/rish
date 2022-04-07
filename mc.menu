@@ -708,7 +708,7 @@ j   Скачать Joomla в папку
       sed -i "s/name=\"db_pass\".*/name=\"db_pass\" default=\"${dbpass}\"/" ${directory}/%f/installation/model/forms/database.xml
       sed -i "s/name=\"db_name\".*/name=\"db_name\" default=\"%f\"/" ${directory}/%f/installation/model/forms/database.xml
     else
-      echo -e"Установка Joomla version ${GREEN}4${WHITE}"
+      echo -e "Установка Joomla version ${GREEN}4${WHITE}"
       if cat /home/${r}/.pass.txt | grep -q "defaultsiteaccount"
       then
         echo "Будет использована учетная запись"
@@ -984,22 +984,41 @@ O   Обновление RISH
   source /root/rish/windows.sh
   cd /root
   rm -f rish8.tar.gz > /dev/null
-  rm -rf rish
-  wget https://rish.su/rish8.tar.gz
-  tar --no-same-owner -xvf rish8.tar.gz
-  rm rish8.tar.gz
-  cd /root/rish
-  findlocal="local"
-  findlocal=${findlocal}"rish"
-  if grep -q ${findlocal} /etc/mc/mc.menu
+Update(){
+   if tar -tzf rish8.tar.gz > /dev/null 2>&1
+   then
+    rm -rf rish
+    tar --no-same-owner -xvf rish8.tar.gz
+    rm rish8.tar.gz
+    cd /root/rish
+    findlocal="local"
+    findlocal=${findlocal}"rish"
+    if grep -q ${findlocal} /etc/mc/mc.menu
+    then
+      cat mc.menu.local >> mc.menu
+    fi
+    rm /etc/mc/mc.menu
+    cp mc.menu /etc/mc/mc.menu
+    chmod u+x ri.sh
+    chmod u+x clonesite.sh
+    chmod u+x backup.sh
+   else
+    echo "Скачанный архив поврежден"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+   fi
+}
+  if wget https://rish.su/rish8.tar.gz
   then
-    cat mc.menu.local >> mc.menu
+    Update
+  else
+    if wget https://api.github.com/repos/Delo-Design/rish/releases/latest -O - | awk -F \" -v RS="," '/browser_download_url/ {print $(NF-1)}' | xargs wget
+    then
+     Update
+    else
+     echo "Не удалось скачать архив"
+     vertical_menu "current" 2 0 5 "Нажмите Enter"
+    fi
   fi
-  rm /etc/mc/mc.menu
-  cp mc.menu /etc/mc/mc.menu
-  chmod u+x ri.sh
-  chmod u+x clonesite.sh
-  chmod u+x backup.sh
   echo "Обновление завершено"
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 
