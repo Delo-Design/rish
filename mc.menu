@@ -984,7 +984,7 @@ O   Обновление RISH
   source /root/rish/windows.sh
   cd /root
   rm -f rish8.tar.gz > /dev/null
-Update(){
+ Update(){
    if tar -tzf rish8.tar.gz > /dev/null 2>&1
    then
     rm -rf rish
@@ -1006,7 +1006,7 @@ Update(){
     echo "Скачанный архив поврежден"
     vertical_menu "current" 2 0 5 "Нажмите Enter"
    fi
-}
+ }
   if wget https://rish.su/rish8.tar.gz
   then
     Update
