@@ -128,7 +128,7 @@ Warning()
 
 
 Install() {
-if ! rpm -q $@ >/dev/null 2>&1
+if ! rpm -q "$@" >/dev/null 2>&1
 then
   Up
   echo -e "Ставим ${GREEN}${@}${WHITE}"
@@ -533,16 +533,14 @@ then
 
   if command -v sestatus >/dev/null 2>&1
   then
-     if [[ -f /etc/selinux/config ]]
-     then
-        if [[ `cat /etc/selinux/config | grep "SELINUX=enforcing"` ]]
-        then
+    SELINUX_STATE=$(getenforce)
+    if [ "$SELINUX_STATE" == "Enforcing" ]; then
+      echo "SELinux is enabled"
           sed -i "s/SELINUX=enforcing/SELINUX=disabled/" /etc/selinux/config
           echo
           Error "Включен selinux."
           echo "Мы установили значение в конфигурационном файле для отключения selinux"
           echo "Вам остается только выполнить перезагрузку сервера."
-
           tet=$(pwd)
           Down
           echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
@@ -557,13 +555,12 @@ then
             echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
             exit 0
           fi
-        fi
-     else
-        echo "Конфигурационный файл selinux /etc/selinux/config не доступен,"
-        echo "Хотя система selinux на компьютере присутствует"
-        RemoveRim
-        exit 0
-     fi
+
+    elif [ "$SELINUX_STATE" == "Permissive" ]; then
+      echo "SELinux is permissive"
+      echo "Отключите SELinux"
+      exit
+    fi
   fi
 
   Down
