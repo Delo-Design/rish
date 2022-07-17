@@ -960,8 +960,8 @@ then
     echo "# http://downloads.mariadb.org/mariadb/repositories/"
     echo "[mariadb]"
     echo "name = MariaDB"
-    echo "baseurl = http://mirror.mephi.ru/mariadb/yum/10.6/fedora${FedoraVersion}-${ServerArch}"
-    echo "gpgkey=http://mirror.mephi.ru/mariadb/yum/RPM-GPG-KEY-MariaDB"
+    echo "baseurl = http://mirror.mariadb.org/yum/10.6/fedora${FedoraVersion}-${ServerArch}"
+    echo "gpgkey=http://mirror.mariadb.org/yum/RPM-GPG-KEY-MariaDB"
     echo "gpgcheck=1"
     } > MariaDB.repo
   else
