@@ -111,21 +111,6 @@ then
   FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 fi
 
-Error()
-{
-    printf "\033[1;31m$@\033[0m\n"
-}
-
-Warningn() {
-    printf "\033[1;35m$@\033[0m"
-}
-
-Warning()
-{
-    Warningn "$@\n"
-}
-
-
 
 Install() {
 if ! rpm -q "$@" >/dev/null 2>&1
@@ -514,7 +499,7 @@ then
   else
     localectl set-locale LANG=en_US.UTF-8
     echo
-    Warning "\nБыла установлена кодировка UTF-8 для консоли. Надо перезагрузить сервер. "
+    echo -e "${VIOLET}\nБыла установлена кодировка UTF-8 для консоли.${WHITE}${RED} Надо перезагрузить сервер.${WHITE} "
     tet=$(pwd)
     echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
     Down
@@ -538,7 +523,7 @@ then
       echo "SELinux is enabled"
           sed -i "s/SELINUX=enforcing/SELINUX=disabled/" /etc/selinux/config
           echo
-          Error "Включен selinux."
+          echo -e "Включен ${RED}selinux${WHITE}."
           echo "Мы установили значение в конфигурационном файле для отключения selinux"
           echo "Вам остается только выполнить перезагрузку сервера."
           tet=$(pwd)
@@ -684,8 +669,7 @@ then
     fi
     reply=${options[${ret}]}
     Up
-    Warning "Выбран php версии ${reply}"
-
+    echo -e "${VIOLET}Выбран php версии ${reply}${WHITE}"
     Down
 
     dnf module -y reset php
@@ -1192,8 +1176,8 @@ EOF
     echo -e "Авторизация по паролю ${RED}разрешена${WHITE}."
   fi
   echo -e "Конфигурирование сервера ${GREEN}завершено${WHITE}"
-  Warning "Советуем сейчас отключиться и подключиться к серверу заново, во избежание неверной работы скриптов."
-  echo -e "Перед отключением не забудьте добавить свой открытый (public) ключ для авторизации без пароля."
+  echo -e "${VIOLET}Советуем сейчас отключиться и подключиться к серверу заново, во избежание неверной работы скриптов.${WHITE}"
+  echo -e "Перед отключением ${RED}не забудьте${WHITE} добавить свой открытый (public) ключ для авторизации без пароля."
   echo -e "С помощью команды ${GREEN}mcedit /root/.ssh/authorized_keys${WHITE} откройте файл и добавьте туда свой открытый ключ."
 
 else
