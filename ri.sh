@@ -12,7 +12,7 @@ WHITE='\033[0m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
 ServerArch=$( arch )
-
+OS_VERSION=$( hostnamectl | grep -Eo 'Operating.*' |  sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 
 SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server'
 size=$(stty size)
@@ -638,7 +638,11 @@ then
   Down
   apachectl restart
   Up
-  if [[ ${ServerArch} == "aarch64" ]]
+
+
+
+
+  if [[ ${ServerArch} == "aarch64" &&  ${CURRENT_OS} =~ "Fedora" ]]
   then
     echo -e "Ставим стандартный php из репозиториев системы"
     Down
@@ -655,18 +659,26 @@ then
 
     cd /etc/yum.repos.d
     Down
+    if [[ ${OS_VERSION} == "8"  ]]
+    then
+      dnf config-manager --set-enabled powertools
+    elif [[ ${OS_VERSION} == "9"  ]]
+    then
+      dnf config-manager --set-enabled crb
+    fi
     if echo ${CURRENT_OS} | egrep -q "Fedora"
     then
       FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
       dnf install -y https://rpms.remirepo.net/fedora/remi-release-${FedoraVersion}.rpm
+      dnf config-manager --set-enabled remi
     else
-      dnf install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm
+      dnf install -y https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION}.rpm
     fi
     mapfile -t options < <( dnf module list -y php | grep -Eo 'remi-[0-9].[0-9]')
     echo -e "Выберите ${GREEN}версию PHP${WHITE} для установки"
     vertical_menu "current" 2 0 5 "${options[@]}"
     ret=$?
-    if (( ${ret} == 255 ))
+    if (( ret == 255 ))
     then
       exit
     fi
@@ -675,7 +687,7 @@ then
     Warning "Выбран php версии ${reply}"
 
     Down
-    dnf config-manager --set-enabled remi
+
     dnf module -y reset php
     dnf module enable -y php:"${reply}"
 
@@ -689,6 +701,10 @@ then
     (( upperY-- ))
     Up
   fi
+
+
+
+
   php -v
   Down
 
