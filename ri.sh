@@ -905,7 +905,6 @@ then
 
   apachectl restart
 
-  r=$( wget -qO- ident.me )
   ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
   echo -e "Попробуйте ${GREEN}открыть этот адрес${WHITE} в своем браузере:"
   echo -e "${GREEN}http://"${ipaddress}${WHITE}
@@ -965,31 +964,53 @@ then
 
   cd /etc/yum.repos.d/
 
-  if echo ${CURRENT_OS} | egrep -q "Fedora"
+  echo "MariaDB на данный момент имеет два релиза с долгосрочной поддержкой:"
+  echo "10.6 со сроком поддержки до 6 июля 2026"
+  echo "10.11 со сроком поддержки до 16 февраля 2028"
+  echo
+  echo "Какой релиз ставить?"
+  if vertical_menu "current" 2 0 5 "MariaDB 10.11" "MariaDB 10.6"
   then
-    if [[ ${ServerArch} == "x86_64" ]]
-    then
-        ServerArch="amd64"
-    fi
+    Maria_Version="10.11"
+  else
+    Maria_Version="10.6"
+  fi
+  echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
+
+  if [[ ${CURRENT_OS} =~ "Fedora" ]]
+  then
     {
-    echo "# MariaDB 10.6 CentOS repository list - created 2021-09-30 08:32 UTC"
-    echo "# http://downloads.mariadb.org/mariadb/repositories/"
-    echo "[mariadb]"
-    echo "name = MariaDB"
-    echo "baseurl = http://mirror.mariadb.org/yum/10.6/fedora${FedoraVersion}-${ServerArch}"
-    echo "gpgkey=http://mirror.mariadb.org/yum/RPM-GPG-KEY-MariaDB"
-    echo "gpgcheck=1"
+      echo "# MariaDB 10.11 Fedora repository list - created 2023-03-19 15:47 UTC"
+      echo "# https://mariadb.org/download/"
+      echo "[mariadb]"
+      echo "name = MariaDB"
+      echo "baseurl = https://rpm.mariadb.org/${Maria_Version}/fedora/\$releasever/\$basearch"
+      echo "gpgkey= https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
+      echo "gpgcheck=1"
+    } > MariaDB.repo
+  elif [[  ${OS_VERSION} == "8" ]]
+  then
+    {
+      echo "# MariaDB 10.11 RedHatEnterpriseLinux repository list - created 2023-03-19 16:07 UTC"
+      echo "# https://mariadb.org/download/"
+      echo "[mariadb]"
+      echo "name = MariaDB"
+      echo "# rpm.mariadb.org is a dynamic mirror if your preferred mirror goes offline. See https://mariadb.org/mirrorbits/ for details."
+      echo "baseurl = https://rpm.mariadb.org/${Maria_Version}/rhel/\$releasever/\$basearch"
+      echo "module_hotfixes = 1"
+      echo "gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
+      echo "gpgcheck = 1"
     } > MariaDB.repo
   else
     {
-    echo "# MariaDB 10.6 CentOS repository list - created 2021-09-30 08:32 UTC"
-    echo "# http://downloads.mariadb.org/mariadb/repositories/"
-    echo "[mariadb]"
-    echo "name = MariaDB"
-    echo "baseurl = http://yum.mariadb.org/10.6/centos8-amd64"
-    echo "module_hotfixes=1"
-    echo "gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB"
-    echo "gpgcheck=1"
+      echo "# MariaDB 10.11 RedHatEnterpriseLinux repository list - created 2023-03-19 16:07 UTC"
+      echo "# https://mariadb.org/download/"
+      echo "[mariadb]"
+      echo "name = MariaDB"
+      echo "# rpm.mariadb.org is a dynamic mirror if your preferred mirror goes offline. See https://mariadb.org/mirrorbits/ for details."
+      echo "baseurl = https://rpm.mariadb.org/${Maria_Version}/rhel/\$releasever/\$basearch"
+      echo "gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
+      echo "gpgcheck = 1"
     } > MariaDB.repo
   fi
   Install "MariaDB-server MariaDB-client"
