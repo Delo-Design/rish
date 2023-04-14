@@ -1,4 +1,4 @@
-# RISH
+# RISH – Robust Internet Server Host 
 
 SSH Web-server control panel
 
