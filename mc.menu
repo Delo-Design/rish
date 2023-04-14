@@ -987,44 +987,93 @@ R   Управление Сервером
 	cd ${r}
 
 O   Обновление RISH
+	GREEN='\033[0;32m'
+	RED='\033[0;31m'
+	LRED='\033[1;31m'
+	WHITE='\033[0m'
   source /root/rish/windows.sh
   cd /root
+  clear
   rm -f rish8.tar.gz > /dev/null
- Update(){
-   if tar -tzf rish8.tar.gz > /dev/null 2>&1
-   then
-    rm -rf rish
-    tar --no-same-owner -xvf rish8.tar.gz
-    rm rish8.tar.gz
-    cd /root/rish
-    findlocal="local"
-    findlocal=${findlocal}"rish"
-    if grep -q ${findlocal} /etc/mc/mc.menu
-    then
-      cat mc.menu.local >> mc.menu
-    fi
-    rm /etc/mc/mc.menu
-    cp mc.menu /etc/mc/mc.menu
-    chmod u+x ri.sh
-    chmod u+x clonesite.sh
-    chmod u+x backup.sh
+  # Функция для сравнения версий
+  version_gt() {
+  printf '%s\n' "$@" | sort -V
+    test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"
+  }
+  Update(){
+  # Извлекаем файл версии из архива
+  if tar -xzf "rish8.tar.gz" --strip-components=1 "rish/version"
+  then
+   # Если файл версии не существует в папке rish, то устанавливаем версию 0.0.0
+   if [ ! -f "/root/rish/version" ]; then
+      echo "Ваша версия RISH не известна."
+      echo "0.0.0" > "/root/rish/version"
+      folder_version=$(cat "/root/rish/version")
    else
-    echo "Скачанный архив поврежден"
-    vertical_menu "current" 2 0 5 "Нажмите Enter"
+      folder_version=$(cat "/root/rish/version")
+      echo "Ваша версия RISH ${folder_version}"
    fi
- }
-  if wget https://rish.su/rish8.tar.gz
+   archive_version=$(cat "/root/version")
+   rm -f "/root/version" > /dev/null
+   if version_gt "${archive_version}" "${folder_version}"; then
+     echo "Доступна более новая версия RISH для обновления – ${GREEN}${archive_version}${WHITE}"
+     echo "Рекомендуем обновиться до этой версии."
+     echo
+     echo "Обновить до версии ${GREE}${folder_version}${WHITE}?"
+     if vertical_menu "current" 2 0 5 "Да" "Нет"
+     then
+       if tar -tzf rish8.tar.gz > /dev/null 2>&1
+       then
+        tar --no-same-owner -xvf rish8.tar.gz
+        rm rish8.tar.gz
+        cd /root/rish
+        findlocal="local"
+        findlocal=${findlocal}"rish"
+        if grep -q ${findlocal} /etc/mc/mc.menu
+        then
+          cat mc.menu.local >> mc.menu
+        fi
+        rm /etc/mc/mc.menu
+        cp mc.menu /etc/mc/mc.menu
+        chmod u+x ri.sh
+        chmod u+x clonesite.sh
+        chmod u+x backup.sh
+       else
+        echo "Скачанный архив поврежден"
+        vertical_menu "current" 2 0 5 "Нажмите Enter"
+        exit 1
+       fi
+     fi
+   else
+     echo "Ваша версия RISH актуальна - обновление не требуется."
+     echo
+   fi
+  else
+    echo "Внутри архива отсутствует файл версии. Что-то пошло не так."
+    echo "Обновление невозможно."
+    echo
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+    exit 1
+  fi
+  }
+  if wget https://rish.su/rish8.tar.gz > /dev/null 2>&1
   then
     Update
   else
-    if wget https://api.github.com/repos/Delo-Design/rish/releases/latest -O - | awk -F \" -v RS="," '/browser_download_url/ {print $(NF-1)}' | xargs wget
+    if wget https://api.github.com/repos/Delo-Design/rish/releases/latest -O - | awk -F \" -v RS="," '/browser_download_url/ {print $(NF-1)}' | xargs wget > /dev/null 2>&1
     then
      Update
     else
      echo "Не удалось скачать архив"
      vertical_menu "current" 2 0 5 "Нажмите Enter"
+     exit 1
     fi
   fi
-  echo "Обновление завершено"
+  rm -f rish8.tar.gz > /dev/null
   vertical_menu "current" 2 0 5 "Нажмите Enter"
+
+Z   Статистика сайтов сервера
+    source /root/rish/checkip.sh
+    source /root/rish/windows.sh
+    CheckIP()
 

@@ -43,6 +43,18 @@ cd ${RISH_HOME}
 source windows.sh
 source clonesite.sh
 source checkip.sh
+if (( lines < 40 || columns < 140 )); then
+  echo
+  echo "Размер окна вашего терминала слишком маленький."
+  echo -e "Советуем увеличить окно терминала до размера ${RED}140x40${WHITE} символов."
+  echo "Иначе вывод на экран возможно будет некорректным."
+  echo
+  if vertical_menu "current" 2 0 5  "Остановить выполнение скрипта установки" "Хорошо понятно. Продолжаем"
+  then
+    exit 1
+  fi
+fi
+
 
 # если настройка скрипта уже была произведена, но сессия не была перезапущена - подгрузим пароль базы данных
 if [[ -z "${MYSQLPASS}" ]]
@@ -631,7 +643,7 @@ then
   then
     echo -e "Ставим стандартный php из репозиториев системы"
     Down
-    dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
+    dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json php-gmp
     echo -e "Ставим ${GREEN}imagick${WHITE}?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
@@ -675,7 +687,7 @@ then
     dnf module -y reset php
     dnf module enable -y php:"${reply}"
 
-    dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json
+    dnf install -y php-fpm php-opcache php-cli php-gd php-mbstring php-mysqlnd php-xml php-soap php-xmlrpc php-zip php-intl php-json php-gmp
     echo -e "Ставим ${GREEN}imagick${WHITE}?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
