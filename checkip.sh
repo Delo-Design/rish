@@ -10,10 +10,12 @@
 function check_certificate() {
     local DOMAIN=$1
     local PORT=443 # Установка стандартного порта 443
-    local CERT_INFO=$(echo | openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -text 2>/dev/null)
+    local CERT_INFO
+    CERT_INFO=$(echo | openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -text 2>/dev/null)
 
     if [ -n "$CERT_INFO" ]; then
-        local COMMON_NAMES=$(echo "$CERT_INFO" | grep -o "DNS:[^ ,]*" | sed 's/DNS://g')
+        local COMMON_NAMES
+        COMMON_NAMES=$(echo "$CERT_INFO" | grep -o "DNS:[^ ,]*" | sed 's/DNS://g')
         local DOMAIN_FOUND=false
 
         for CN in $COMMON_NAMES; do
@@ -35,13 +37,18 @@ function check_certificate() {
 function check_certificate_expiration() {
     local DOMAIN=$1
     local PORT=443
-    local CERT=$(echo | openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -enddate)
+    local CERT
+    CERT=$(echo | openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -enddate)
 
     if [ -n "$CERT" ]; then
-        local END_DATE=$(echo "$CERT" | cut -d'=' -f2)
-        local FORMATTED_END_DATE=$(date -d "${END_DATE}" +"%d %B %Y")
-        local END_DATE_TS=$(date -d "${END_DATE}" +%s)
-        local CURRENT_DATE_TS=$(date +%s)
+        local END_DATE
+        END_DATE=$(echo "$CERT" | cut -d'=' -f2)
+        local FORMATTED_END_DATE
+        FORMATTED_END_DATE=$(date -d "${END_DATE}" +"%d %B %Y")
+        local END_DATE_TS
+        END_DATE_TS=$(date -d "${END_DATE}" +%s)
+        local CURRENT_DATE_TS
+        CURRENT_DATE_TS=$(date +%s)
 
         local DAYS_LEFT=$(((END_DATE_TS - CURRENT_DATE_TS) / 86400))
         printf "SSL %4s дней," "${DAYS_LEFT}"
@@ -52,7 +59,6 @@ function check_certificate_expiration() {
 
 CheckIP() {
   clear
-
   echo "Что значат цвета IP:"
   echo -e "${RED}Красный цвет${WHITE} – сайт недоступен (проблемы с доменом)"
   echo -e "${GREEN}Зеленый цвет${WHITE} – все ок, сайт доступен по IP адресу этого сервера"
@@ -61,8 +67,10 @@ CheckIP() {
 
   myip="("$(ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' | awk '{print $NF;exit}')")"
   echo -e "Адрес этого сервера: ${GREEN}${myip}${WHITE}"
-  local FREE_SPACE=$(df -Pm / | awk 'NR==2 {print $4}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-  local ALL_SITES_SIZE_MB=$(du -sm "/var/www" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
+  local FREE_SPACE
+  FREE_SPACE=$(df -Pm / | awk 'NR==2 {print $4}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
+  local ALL_SITES_SIZE_MB
+  ALL_SITES_SIZE_MB=$(du -sm "/var/www" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
   echo -e "На сервере свободно: ${GREEN}${FREE_SPACE}${WHITE} Mb. Сайты занимают ${GREEN}${ALL_SITES_SIZE_MB}${WHITE} Mb."
   echo "───────────────────────────────────────────"
   for file in /var/www/*; do
@@ -79,7 +87,8 @@ CheckIP() {
         if [ -d "$PathToSiteName" ]; then
           local SiteName="${PathToSiteName##*/}"
           if curl -I http://"$SiteName" &>/dev/null; then
-            local ip=$(ping -c 1 $SiteName | grep PING | awk '{ print $3 }')
+            local ip
+            ip=$(ping -c 1 $SiteName | grep PING | awk '{ print $3 }')
             if [[ "$myip" == "$ip" ]]; then
               printf "   ${GREEN}%-17s${WHITE}" "$ip"
             else
@@ -100,8 +109,7 @@ CheckIP() {
             printf "        %8s" "-"
           fi
           FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-          printf "${LWHITE}%6s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
-
+          printf " ${LWHITE}%7s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
           echo
         fi
       done
