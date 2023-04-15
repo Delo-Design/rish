@@ -1022,9 +1022,15 @@ O   Обновление RISH
      echo "Но если нужно - вы можете переустановить RISH."
      echo
    fi
-   echo -e "Установить версию ${GREE}${archive_version}${WHITE}?"
+   echo -e "Установить версию ${GREEN}${archive_version}${WHITE}?"
    if vertical_menu "current" 2 0 5 "Да" "Нет"
    then
+     #обновляем версию RISH
+     #проверим есть ли idn2
+     if ! rpm -q "idn2" >/dev/null 2>&1
+     then
+      dnf install -y idn2
+     fi
      if tar -tzf rish8.tar.gz > /dev/null 2>&1
      then
       tar --no-same-owner -xvf rish8.tar.gz

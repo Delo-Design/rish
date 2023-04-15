@@ -586,6 +586,7 @@ then
   Install mc
   Install cronie
   Install logrotate
+  Install idn2
   if ! echo ${CURRENT_OS} | egrep -q "Fedora"
   then
     Install epel-release

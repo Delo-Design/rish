@@ -56,6 +56,24 @@ function check_certificate_expiration() {
         echo -e -n " -"
     fi
 }
+unicode_printf() {
+  local field_width="$1"
+  local unicode_string="$2"
+  local string_length
+  local formatted_string
+  # Вычисляем количество символов в строке
+  string_length=$(echo -n "$unicode_string" | awk '{print length}')
+  # Вычисляем количество пробелов для заполнения
+  local padding=$((field_width - string_length))
+  # Если строка короче заданной ширины поля, добавляем пробелы
+  for ((i=1; i<=padding; i++)); do
+    formatted_string+=" "
+  done
+  # Добавляем пробелы справа от строки
+  unicode_string+="$formatted_string"
+  # Выводим отформатированную строку
+  echo -n "$unicode_string"
+}
 
 CheckIP() {
   clear
@@ -90,16 +108,32 @@ CheckIP() {
             local ip
             ip=$(ping -c 1 $SiteName | grep PING | awk '{ print $3 }')
             if [[ "$myip" == "$ip" ]]; then
-              printf "   ${GREEN}%-17s${WHITE}" "$ip"
+              printf "   ${GREEN}%-19s${WHITE}" "$ip"
             else
-              printf "   %-17s" "$ip"
+              printf "   %-19s" "$ip"
             fi
             check_certificate "$SiteName"
-            printf " ${LGREEN}%-30s${WHITE}" "$SiteName"
+            if [[ "$SiteName" =~ (xn\-\-) ]]
+            then
+              unicode_domain=$(idn2 -d "$SiteName")
+            else
+              unicode_domain=$SiteName
+            fi
+            echo -e -n " ${LGREEN}"
+            unicode_printf 32 "$unicode_domain"
+            echo -e -n " ${WHITE}"
             check_certificate_expiration "$SiteName"
           else
-            printf "   %-26s" " "
-            printf "${RED}%-30s${WHITE}" "$SiteName"
+            printf "   %-27s" " "
+            if [[ "$SiteName" =~ (xn\-\-) ]]
+            then
+              unicode_domain=$(idn2 -d "$SiteName")
+            else
+              unicode_domain=$SiteName
+            fi
+            echo -e -n " ${RED}"
+            unicode_printf 32 "$unicode_domain"
+            echo -e -n " ${WHITE}"
             printf "              "
           fi
           if [ -f "${PathToSiteName}"/administrator/manifests/files/joomla.xml ]; then
