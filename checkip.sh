@@ -109,7 +109,7 @@ CheckIP() {
             printf "        %8s" "-"
           fi
           FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-          printf " ${LWHITE}%7s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
+          printf " ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
           echo
         fi
       done
