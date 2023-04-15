@@ -29,7 +29,7 @@ function check_certificate() {
             echo -e -n "${RED}https://${WHITE}"
         fi
     else
-        echo " http://"
+        echo -n " http://"
     fi
 }
 function check_certificate_expiration() {
@@ -44,7 +44,7 @@ function check_certificate_expiration() {
         local CURRENT_DATE_TS=$(date +%s)
 
         local DAYS_LEFT=$(((END_DATE_TS - CURRENT_DATE_TS) / 86400))
-        printf ", SSL осталось %4s дней" "${DAYS_LEFT}"
+        printf "SSL %4s дней," "${DAYS_LEFT}"
     else
         echo -e -n " -"
     fi
@@ -53,7 +53,7 @@ function check_certificate_expiration() {
 CheckIP() {
   clear
 
-  echo "Что значат цвета:"
+  echo "Что значат цвета IP:"
   echo -e "${RED}Красный цвет${WHITE} – сайт недоступен (проблемы с доменом)"
   echo -e "${GREEN}Зеленый цвет${WHITE} – все ок, сайт доступен по IP адресу этого сервера"
   echo -e "Белый цвет – сайт доступен по другому IP адресу"
@@ -78,7 +78,7 @@ CheckIP() {
       for PathToSiteName in ${file}/www/*; do
         if [ -d "$PathToSiteName" ]; then
           local SiteName="${PathToSiteName##*/}"
-          if ping -c 1 "$SiteName" &>/dev/null; then
+          if curl -I http://"$SiteName" &>/dev/null; then
             local ip=$(ping -c 1 $SiteName | grep PING | awk '{ print $3 }')
             if [[ "$myip" == "$ip" ]]; then
               printf "   ${GREEN}%-17s${WHITE}" "$ip"
@@ -87,19 +87,21 @@ CheckIP() {
             fi
             check_certificate "$SiteName"
             printf " ${LGREEN}%-30s${WHITE}" "$SiteName"
+            check_certificate_expiration "$SiteName"
           else
-            printf "%-17s" " "
-            printf " ${RED}%-30s${WHITE}" "$SiteName"
+            printf "   %-26s" " "
+            printf "${RED}%-30s${WHITE}" "$SiteName"
+            printf "              "
           fi
           if [ -f "${PathToSiteName}"/administrator/manifests/files/joomla.xml ]; then
             JoomlaVersion=$(cat "${PathToSiteName}"/administrator/manifests/files/joomla.xml | grep "<version>.*</version>" | sed -rn 's/.*>([0-9.]+)<.*/\1/p')
-            printf " Joomla %-8s" "${JoomlaVersion}"
+            printf " Joomla %8s" "${JoomlaVersion}"
           else
-            printf "        %-8s" "-"
+            printf "        %8s" "-"
           fi
           FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
           printf "${LWHITE}%6s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
-          check_certificate_expiration "$SiteName"
+
           echo
         fi
       done

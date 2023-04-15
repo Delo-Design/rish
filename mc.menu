@@ -1006,8 +1006,7 @@ O   Обновление RISH
    # Если файл версии не существует в папке rish, то устанавливаем версию 0.0.0
    if [ ! -f "/root/rish/version" ]; then
       echo "Ваша версия RISH не известна."
-      echo "0.0.0" > "/root/rish/version"
-      folder_version=$(cat "/root/rish/version")
+      folder_version="0.0.0"
    else
       folder_version=$(cat "/root/rish/version")
       echo -e "Ваша версия RISH ${folder_version}"
@@ -1077,5 +1076,4 @@ O   Обновление RISH
 Z   Статистика сайтов сервера
     source /root/rish/checkip.sh
     source /root/rish/windows.sh
-    CheckIP()
-
+    CheckIP
