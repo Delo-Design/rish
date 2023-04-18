@@ -305,11 +305,11 @@ shell_patterns=0
   echo -e "Вы действительно хотите удалить сайт ${LRED}%f${WHITE}?"
   vertical_menu "current" 2 0 5 "Нет" "Да"
   choice=$?
-  if [[ "$choice"== "255" ]]
+  if [[ "$choice" == "255" ]]
   then
     exit
   fi
-  if [[ "$choice"== "0" ]]
+  if [[ "$choice" == "0" ]]
   then
     exit
   fi
