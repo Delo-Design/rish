@@ -139,9 +139,9 @@ shell_patterns=0
         if apachectl configtest
         then
         	apachectl restart
-        	echo "Cервер apache перезагружен"
+        	echo "Сервер apache перезагружен"
         else
-        	echo "Cервер не был перезагружен"
+        	echo "Сервер не был перезагружен"
         fi
 	else
 		echo "Сервер apache перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
@@ -217,6 +217,7 @@ shell_patterns=0
 
 =+ f \.sql$
 5       импopт бaзы дaнных из фaйлa .sql
+    source /root/rish/windows.sh
     ask() {
 		local prompt default reply
 		if [ "${2:-}" = "Y" ]; then
