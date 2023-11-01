@@ -1180,8 +1180,17 @@ EOF
   if vertical_menu "current" 2 0 5 "Да" "Нет"
   then
     echo -e "${CURSORUP}"
-    sed -i "/^PasswordAuthentication .*$/d" /etc/ssh/sshd_config
-    sed -i "s|#PasswordAuthentication .*$|PasswordAuthentication no|" /etc/ssh/sshd_config
+    # Резервное копирование оригинального файла конфигурации
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+    # Удаление всех строк с PasswordAuthentication
+    sed -i '/^#\?PasswordAuthentication/d' /etc/ssh/sshd_config
+    # Добавление строки с отключением аутентификации по паролю перед первым блоком Match
+    awk '/^Match/ && !done {print "PasswordAuthentication no"; done=1} 1' /etc/ssh/sshd_config > /etc/ssh/sshd_config.tmp && mv /etc/ssh/sshd_config.tmp /etc/ssh/sshd_config
+
+    # Если строка PasswordAuthentication no не была добавлена, добавить её в конец файла
+    if ! grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config; then
+        echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+    fi
     systemctl restart sshd.service
     echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE}."
   else
@@ -1202,7 +1211,9 @@ EOF
     cat "/root/.ssh/rish-key"
     cat "/root/.ssh/rish-key.pub" >> /root/.ssh/authorized_keys 2> /dev/null
     echo -e "После того как скопируете этот ключ, нажмите Enter, чтобы очистить экран"
+    echo -e "Оба файла после этого будут уничтожены."
     vertical_menu "current" 2 0 5 "Очистить экран"
+    rm -f /root/.ssh/rish-key /root/.ssh/rish-key.pub
     clear
     echo -e "${VIOLET}Советуем сейчас отключиться и подключиться к серверу заново.${WHITE}"
   else
