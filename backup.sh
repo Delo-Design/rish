@@ -1,26 +1,57 @@
 #!/bin/bash
 clear
-#конфигурационный файл для ydcmd
-cnf=/root/.ydcmd.cfg
-backupall=/root/backup_list_all
-#директория из которой создается бекап (где лежат сайты по каталогам - один каталог - один сайт)
-directory=/var/www/*/www
-#временная папка для создания бекапа
-DIR_BACKUP=/root/backup
-#сколько последних архиваций хранить
-keeplast=5
-#разбивать архив на части по сколько мегабайт
-splitarchive=500m
-#размер записей tar
-recordsize=1m
-#через сколько записей вызывать chekpoint
-checkpoint=10
 
+if [[ -x "/usr/bin/ydcmd" ]]; then
+    ydcmd_path="/usr/bin/ydcmd"
+elif [[ -x "/usr/local/bin/ydcmd" ]]; then
+    ydcmd_path="/usr/local/bin/ydcmd"
+else
+    cp /root/rish/ydcmd.py /usr/local/bin/ydcmd || { echo "Ошибка: ydcmd.py не найден"; exit 1; }
+    chmod +x /usr/local/bin/ydcmd
+    ydcmd_path="/usr/local/bin/ydcmd"
+fi
+
+# Путь к конфигурационному файлу
+config_file="/root/rish/rish_config.sh"
+
+# Проверяем существование файла
+if [ ! -f "$config_file" ]; then
+    # Создаем файл, если он не существует
+    touch "$config_file"
+fi
+
+# Определяем переменные, их значения и комментарии
+declare -A vars
+vars=(
+    ["cnf"]="#конфигурационный файл для ydcmd\ncnf=/root/.ydcmd.cfg"
+    ["backupall"]="#\nbackupall=/root/backup_list_all"
+    ["directory"]="#директория из которой создается бекап (где лежат сайты по каталогам - один каталог - один сайт)\ndirectory=/var/www/*/www"
+    ["DIR_BACKUP"]="#временная папка для создания бекапа\nDIR_BACKUP=/root/backup"
+    ["keeplast"]="#сколько последних архиваций хранить\nkeeplast=5"
+    ["splitarchive"]="#разбивать архив на части по сколько мегабайт\nsplitarchive=500m"
+    ["recordsize"]="#размер записей tar\nrecordsize=1m"
+    ["checkpoint"]="#через сколько записей вызывать checkpoint\ncheckpoint=10"
+    ["server"]="#Директория бекапа сервера в месте архивирования (куда складывать копии).\n#Если на одном диске будут бекапы разных серверов - надо изменить название для каждого\nserver=\"backup_server\""
+)
+
+# Функция для добавления переменной и комментария, если они отсутствуют
+add_var_if_not_exists() {
+    local var_name="$1"
+    local var_value="$2"
+    if ! grep -P "^\s*${var_name}\s*=" "$config_file" > /dev/null 2>&1; then
+        echo -e "$var_value" >> "$config_file"
+    fi
+}
+
+# Проверяем каждую переменную
+for var in "${!vars[@]}"; do
+    add_var_if_not_exists "$var" "${vars[$var]}"
+done
+
+source "$config_file"
 source /root/rish/windows.sh
 
-#Директория бекапа сервера в месте архивирования (куда складывать копии).
-#Если на одном диске будут бекапы разных серверов - надо изменить название для каждого
-server="backup_server"
+
 
 DATE=$(/bin/date '+%Y.%m.%d')
 
@@ -98,11 +129,11 @@ backupall() {
 		   rm ./$DB.sql
 		fi
 		echo -e "\033[1AАрхив сайта создан. Передаем на место хранения."
-		/usr/bin/ydcmd --config=$cnf put --progress  $DIR_BACKUP/ disk:/
+		$ydcmd_path --config=$cnf put --progress  $DIR_BACKUP/ disk:/
 		#sshpass -p 'hzGZadbd1Geg' scp  -r $DIR_BACKUP/* ih1515719@193.124.176.46:/
 		rm -rf $DIR_BACKUP/*
 	done < $backupall
-	/usr/bin/ydcmd --keep=$keeplast --type=dir clean disk:/"$server"
+	$ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server"
 }
 
 if [[ "$1" == "auto" ]]
@@ -148,11 +179,11 @@ configcnf() {
    echo
    echo -e "${GREEN}Скопируйте указанную строку в браузер${WHITE}, выдайте разрешения и полученный код введите по запросу."
    echo
-   ydcmd token
+   $ydcmd_path token
    echo
    echo -e -n "${GREEN}Введите код: ${WHITE}"
    read TOKEN
-   tt=$( ydcmd token $TOKEN | awk '{print $4}' )
+   tt=$( $ydcmd_path token $TOKEN | awk '{print $4}' )
    cd ~
    echo "[ydcmd]" > $cnf
    echo "token = ${tt}" >> $cnf
@@ -165,34 +196,14 @@ echo "*  Скрипт автоматического архивирования 
 echo "*                                                       *"
 echo "*********************************************************"
 echo
-if ! `type ydcmd > /dev/null 2>&1`
-then
-    echo "Для работы архивации необходима команда ydcmd"
-    echo "Устанавливаем ydcmd?"
-    	vertical_menu "current" 2 0 5 "Да" "Нет"
-      cr=$?
-     if (( cr==0 ))
-     then
-      cd /etc/yum.repos.d/
-      rm -f home:antonbatenev:ydcmd.repo > /dev/null
-      if echo ${CURRENT_OS} | grep -Eq "Fedora"
-      then
-        dnf config-manager --add-repo https://download.opensuse.org/repositories/home:antonbatenev:ydcmd/Fedora_${FedoraVersion}/home:antonbatenev:ydcmd.repo
-      else
-        wget https://download.opensuse.org/repositories/home:antonbatenev:ydcmd/CentOS_8/home:antonbatenev:ydcmd.repo
-      fi
-      yum install -y ydcmd
-    else
-      exit
-    fi
-fi
+
 
 if [ ! -f $cnf ]
 then
 	configcnf
 fi
 
-if /usr/bin/ydcmd --config=$cnf info
+if $ydcmd_path --config=$cnf info
 then
     echo
     echo -e "Конфигурационный файл настроен ${GREEN}корректно${WHITE}"
@@ -226,7 +237,7 @@ while true
 do
 	  IFS=$' \t\n'
     echo "Выберите действие:"
-    vertical_menu "current" 2 0 5 "Архивация всех сайтов сервера" "Обновить файл-список всех архивируемых сайтов"  "Обновить привязку аккаунта яндекс-диска" "Выйти"
+    vertical_menu "current" 2 0 5 "default=3" "Архивация всех сайтов сервера" "Обновить файл-список всех архивируемых сайтов"  "Обновить привязку аккаунта яндекс-диска" "Выйти"
     choice=$?
     case "${choice}" in
       0)
@@ -242,7 +253,7 @@ do
       fi
       configcnf
       echo
-      if /usr/bin/ydcmd --config=$cnf info
+      if $ydcmd_path --config=$cnf info
       then
             echo
             echo -e "Конфигурационный файл настроен ${GREEN}корректно${WHITE}"

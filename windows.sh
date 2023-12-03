@@ -104,12 +104,22 @@ function vertical_menu {
 	lines=${size% *}
 	columns=${size#* }
 
+# Обработка и удаление аргумента default, если он присутствует
+  local default_selected_index=0
+  local new_menu_items=()
+  for arg in "$@"; do
+      if [[ $arg == default=* ]]; then
+          default_selected_index=${arg#default=}
+      else
+          new_menu_items+=("$arg")
+      fi
+  done
 
-	ms=( "$@" )
-	left_x=${ms[1]}
-	top_y=${ms[0]}
-	MaxWindowWidth=${ms[3]}
-	menu_items=( "${ms[@]:4}" )
+  ms=( "${new_menu_items[@]:0:4}" )
+  menu_items=( "${new_menu_items[@]:4}" )
+  left_x=${ms[1]}
+  top_y=${ms[0]}
+  MaxWindowWidth=${ms[3]}
 	current_y=$(get_cursor_row)
 
 	if (( ${ms[2]}==0 ))
@@ -162,8 +172,8 @@ function vertical_menu {
     trap "cursor_blink_on; stty echo; printf '\n'; exit" 2
     cursor_blink_off
 
-    local selected=0
-    local previous_selected=0
+    local selected=${default_selected_index}
+    local previous_selected=${default_selected_index}
     while true; do
         # print options by overwriting the last lines
 
