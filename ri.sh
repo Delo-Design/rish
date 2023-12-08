@@ -125,30 +125,25 @@ fi
 
 
 Install() {
-    if ! rpm -q "$@" >/dev/null 2>&1; then
+    if ! rpm -q $@ >/dev/null 2>&1; then
         Up
-        echo -e "Ставим ${GREEN}${@}${WHITE}"
+        echo -e "Ставим ${GREEN}$@${WHITE}"
         Down
-
-        if yum -y install "$@"; then
+        if yum -y install $@; then
             (( upperY -- ))
             Up
             echo -e "${GREEN}$@${WHITE} установлен"
         else
+            Up
             echo -e "Установить ${RED}$@${WHITE} не удалось, очищаем кэш и пытаемся снова"
-
-            # Очистка кэша yum
+            # Очистка кэша yum и повторная попытка установки
+            Down
             yum clean all
             yum makecache
-
-            # Повторная попытка установки
-            if yum -y install "$@"; then
-                (( upperY -- ))
-                Up
+            Up
+            if yum -y install $@; then
                 echo -e "${GREEN}$@${WHITE} установлен после очистки кэша"
             else
-                (( upperY -- ))
-                Up
                 echo -e "Установить ${RED}$@${WHITE} не удалось даже после очистки кэша"
                 RemoveRim
                 exit 1
