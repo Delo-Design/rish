@@ -125,30 +125,43 @@ fi
 
 
 Install() {
-if ! rpm -q "$@" >/dev/null 2>&1
-then
-  Up
-  echo -e "Ставим ${GREEN}${@}${WHITE}"
-  Down
-  if yum -y install $@
-  then
-    (( upperY -- ))
-    Up
-    echo -e "${GREEN}$@${WHITE} установлен "
-  else
-    (( upperY -- ))
-    Up
-    echo -e "Установить ${RED}$@${WHITE} не удалось"
-    RemoveRim
-    exit 1
-  fi
-  echo
-else
-  Up
-    echo -e "${GREEN}$@${WHITE} уже установлен"
-fi
-Down
+    if ! rpm -q "$@" >/dev/null 2>&1; then
+        Up
+        echo -e "Ставим ${GREEN}${@}${WHITE}"
+        Down
+
+        if yum -y install "$@"; then
+            (( upperY -- ))
+            Up
+            echo -e "${GREEN}$@${WHITE} установлен"
+        else
+            echo -e "Установить ${RED}$@${WHITE} не удалось, очищаем кэш и пытаемся снова"
+
+            # Очистка кэша yum
+            yum clean all
+            yum makecache
+
+            # Повторная попытка установки
+            if yum -y install "$@"; then
+                (( upperY -- ))
+                Up
+                echo -e "${GREEN}$@${WHITE} установлен после очистки кэша"
+            else
+                (( upperY -- ))
+                Up
+                echo -e "Установить ${RED}$@${WHITE} не удалось даже после очистки кэша"
+                RemoveRim
+                exit 1
+            fi
+        fi
+        echo
+    else
+        Up
+        echo -e "${GREEN}$@${WHITE} уже установлен"
+    fi
+    Down
 }
+
 
 OpenFirewall() {
     if command -v firewall-cmd >/dev/null 2>&1  && systemctl status firewalld  >/dev/null
