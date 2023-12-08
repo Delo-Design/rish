@@ -140,10 +140,11 @@ Install() {
             Down
             yum clean all
             yum makecache
-            Up
             if yum -y install $@; then
+                Up
                 echo -e "${GREEN}$@${WHITE} установлен после очистки кэша"
             else
+                Up
                 echo -e "Установить ${RED}$@${WHITE} не удалось даже после очистки кэша"
                 RemoveRim
                 exit 1
