@@ -322,7 +322,7 @@ fi
 echo "Перезагрузка сервера"
 if apachectl configtest
 then
-        apachectl restart
+        systemctl reload httpd
         echo "Сервер перезагружен"
 else
         echo "Сервер не был перезагружен"
