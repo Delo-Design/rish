@@ -138,7 +138,7 @@ shell_patterns=0
   then
         if apachectl configtest
         then
-        	apachectl restart
+        	systemctl reload httpd
         	echo "Сервер apache перезагружен"
         else
         	echo "Сервер не был перезагружен"
@@ -332,7 +332,7 @@ shell_patterns=0
   fi
   if apachectl configtest
   then
-    apachectl restart
+    systemctl reload httpd
     echo "Сервер перезагружен."
   else
     echo -e "Сервер не был перезагружен. ${RED}Ошибка${WHITE} в конфигурации апача."
@@ -532,7 +532,7 @@ k       удалить базу данных
        } > $ttssl
       if apachectl configtest
       then
-        apachectl restart
+        systemctl reload httpd
         echo "Сервер перезагружен."
       else
         echo -e "Сервер не был перезагружен. ${RED}Ошибка${WHITE} в конфигурации апача."
@@ -559,7 +559,7 @@ k       удалить базу данных
     then
           if apachectl configtest
           then
-            apachectl restart
+            systemctl reload httpd
             echo "сервер перезагружен"
           else
             echo "сервер не был перезагружен"
@@ -607,7 +607,7 @@ k       удалить базу данных
 r   Перезапустить сервер apache
         if apachectl configtest
         then
-        apachectl restart
+        systemctl reload httpd
         echo "сервер перезагружен"
         else
         echo "сервер не был перезагружен"
