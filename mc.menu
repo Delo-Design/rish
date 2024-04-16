@@ -1,11 +1,13 @@
 shell_patterns=0
 
 + d /var/www/ & t d
-1   архив сайта
+1  Архив сайта
   GREEN='\033[0;32m'
   LGREEN='\033[1;32m'
   RED='\033[0;31m'
   WHITE='\033[0m'
+  source /root/rish/windows.sh
+	clear
 	echo -e "Создаем архив сайта ${GREEN}%f${WHITE}"
 	if [[ -n "$(mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1)" ]]
 	then
@@ -13,142 +15,43 @@ shell_patterns=0
 		mysqldump -u root -p$MYSQLPASS %f > %f.sql
 		echo -e "База ${GREEN}%f.sql${WHITE} создана"
 	else
-		echo "Базы данных у сайта нет"
+		echo -e "Базы данных у сайта ${RED}нет${WHITE}"
 	fi
 	echo "Ждите пока идет создание архива сайта..."
 	tar -czf %f".tar.gz" %f && \
-	echo %f".tar.gz created."
+	echo %f".tar.gz создан."
+	vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 + d /var/www/ & t d
-4       архив базы данных сайта
-	echo "Идет создание базы данных %f"
-	mysqldump -u root -p$MYSQLPASS %f > %f.sql
-	echo "База данных %f создана"
-
-+ d /var/www/ & t d
-2   cоздать сайт по имени папки
-  source /root/rish/windows.sh
-	RED='\033[0;31m'
+4       Архив базы данных сайта
+  MYSQLPASS="2"
   GREEN='\033[0;32m'
+  RED='\033[0;31m'
   WHITE='\033[0m'
-  clear
-  if [[ "%f" == ".." ]]
-  then
-    echo -e "${RED}%f${WHITE} - это не папка!"
-    vertical_menu "current" 2 0 5 "Нажмите Enter"
-    exit
-  fi
-  pattern=" |'"
-  if [[ "%f" =~ $pattern ]]
-  then
-    echo -e "Имя папки ${RED}'%f'${WHITE} содержит пробелы"
-    vertical_menu "current" 2 0 5 "Нажмите Enter"
-    exit
-  fi
-  r=%d
-	r=${r#/var/www/}
-	r=${r%/www*}
-	cd /etc/httpd/conf.d
-	if [[ ${r} == "html" ]]
+  source /root/rish/windows.sh
+	clear
+	if [[ -n "$(mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1)" ]]
 	then
-		if [[ -e /etc/httpd/conf.d/php.conf ]]
-		then
-			echo "<VirtualHost *:80>" > %f.conf
-			echo "ServerAdmin webmaster@localhost" >> %f.conf
-			echo "ServerName "%f >> %f.conf
-			echo "ServerAlias www."%f >> %f.conf
-			echo "DocumentRoot "%d"/"%f >> %f.conf
-			echo "<Directory "%d"/"%f">" >> %f.conf
-			echo "Options -Indexes +FollowSymLinks" >> %f.conf
-			echo "AllowOverride All" >> %f.conf
-			echo "Order allow,deny" >> %f.conf
-			echo "allow from all" >> %f.conf
-			echo "</Directory>" >> %f.conf
-			echo "ServerSignature Off" >> %f.conf
-			echo "ErrorLog /var/log/httpd/"%f"-error-log" >> %f.conf
-			echo "LogLevel warn" >> %f.conf
-			echo "CustomLog /var/log/httpd/"%f"-access-log combined" >> %f.conf
-			echo "</VirtualHost>" >> %f.conf
-			echo -e "Сайт ${GREEN}%f${WHITE} создан для ${GREEN}${r}${WHITE}"
-			echo -e "Сервер с одним пользователем ${GREEN}apache${WHITE}"
-		else
-			echo "<VirtualHost *:80>" > %f.conf
-			echo "ServerAdmin webmaster@localhost" >> %f.conf
-			echo "ServerName "%f >> %f.conf
-			echo "ServerAlias www."%f >> %f.conf
-			echo "DocumentRoot "%d"/"%f >> %f.conf
-			echo '<Proxy "unix:/var/run/php-fpm/www.sock|fcgi://php-fpm">' >> %f.conf
-			echo 'ProxySet disablereuse=on connectiontimeout=3 timeout=60' >> %f.conf
-			echo '</Proxy>' >> %f.conf
-			echo '<FilesMatch \.php$>' >> %f.conf
-			echo 'SetHandler proxy:fcgi://php-fpm' >> %f.conf
-			echo '</FilesMatch>' >> %f.conf
-			echo 'DirectoryIndex index.php index.html' >> %f.conf
-			echo "<Directory "%d"/"%f">" >> %f.conf
-			echo "Options -Indexes +FollowSymLinks" >> %f.conf
-			echo "AllowOverride All" >> %f.conf
-			echo "Order allow,deny" >> %f.conf
-			echo "allow from all" >> %f.conf
-			echo "</Directory>" >> %f.conf
-			echo "ServerSignature Off" >> %f.conf
-			echo "ErrorLog /var/log/httpd/"%f"-error-log" >> %f.conf
-			echo "LogLevel warn" >> %f.conf
-			echo "CustomLog /var/log/httpd/"%f"-access-log combined" >> %f.conf
-			echo "</VirtualHost>" >> %f.conf
-			echo -e "Сайт ${GREEN}%f${WHITE} создан для ${GREEN}${r}${WHITE} (${GREEN}apache${WHITE})"
-			echo "Сервер со многими пользователями"
-		fi
+		echo "Идет создание архива базы данных"
+		mysqldump -u root -p$MYSQLPASS %f > %f.sql
+		echo -e "База ${GREEN}%f.sql${WHITE} создана"
 	else
-		echo "<VirtualHost *:80>" > %f.conf
-		echo "ServerAdmin webmaster@localhost" >> %f.conf
-		echo "ServerName "%f >> %f.conf
-		echo "ServerAlias www."%f >> %f.conf
-		echo "DocumentRoot "%d"/"%f >> %f.conf
-		echo '<Proxy "unix:/var/run/php-fpm/'${r}'.sock|fcgi://php-fpm">' >> %f.conf
-		echo 'ProxySet disablereuse=on connectiontimeout=3 timeout=60' >> %f.conf
-		echo '</Proxy>' >> %f.conf
-		echo '<FilesMatch \.php$>' >> %f.conf
-		echo 'SetHandler proxy:fcgi://php-fpm' >> %f.conf
-		echo '</FilesMatch>' >> %f.conf
-		echo 'DirectoryIndex index.php index.html' >> %f.conf
-		echo "<Directory "%d"/"%f">" >> %f.conf
-		echo "Options -Indexes +FollowSymLinks" >> %f.conf
-		echo "AllowOverride All" >> %f.conf
-		echo "Order allow,deny" >> %f.conf
-		echo "allow from all" >> %f.conf
-		echo "</Directory>" >> %f.conf
-		echo "ServerSignature Off" >> %f.conf
-		echo "ErrorLog /var/www/${r}/logs/"%f"-error-log" >> %f.conf
-		echo "LogLevel warn" >> %f.conf
-		echo "CustomLog /var/www/${r}/logs/"%f"-access-log combined" >> %f.conf
-		echo "</VirtualHost>" >> %f.conf
-		echo -e "Сайт ${GREEN}%f${WHITE} создан для ${GREEN}${r}${WHITE}"
+		echo -e "Базы данных у сайта ${RED}нет${WHITE}"
 	fi
-	if [[ ${r} == "html" ]]
-	then
-		r="apache"
-	fi
-	echo
-	echo -e "Владельцем всех папок и файлов в папке ${GREEN}%d/%f${WHITE}"
-	echo -e "Установлен пользователь ${GREEN}$r${WHITE}"
-	echo
-	chown -R ${r}:${r} %d"/"%f
-	echo -e "Перезапускаем сервер для активации сайта ${LRED}%f${WHITE}?"
-  if vertical_menu "current" 2 0 5 "Да" "Нет"
-  then
-        if apachectl configtest
-        then
-        	systemctl reload httpd
-        	echo "Сервер apache перезагружен"
-        else
-        	echo "Сервер не был перезагружен"
-        fi
-	else
-		echo "Сервер apache перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
-	fi
+	vertical_menu "current" 2 0 5 "Нажмите Enter"
+
++ d /var/www/ & t d
+2  Создать сайт
+  source /root/rish/create_site.sh
+  create_site "%f" "%d"
+
++ d /var/www/ & t d
+7       Сменить версию PHP для сайта
+  source /root/rish/change_php_version.sh
+  change_php_version  "%f" "%d"
 
 =+ f \.sql$
-3       coздaть бaзy пo имeни фaйлa .sql
+3       Сoздaть бaзy пo имeни фaйлa .sql
         GREEN='\033[0;32m'
         RED='\033[0;31m'
         LRED='\033[1;31m'
@@ -182,75 +85,44 @@ shell_patterns=0
 	fi
 
 + d /var/www/ & t d
-3       coздaть бaзy mysql пo имени папки
+3       Сoздaть бaзy MySQL пo имени папки
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
+	MYSQLPASS="2"
+	source /root/rish/windows.sh
+	clear
 	if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
-    then
-    	echo -e "База с именем ${GREEN}%f${WHITE} ${RED}уже существует${WHITE}"
-    	exit
-    fi
+  then
+    echo -e "База с именем ${GREEN}%f${WHITE} ${RED}уже существует${WHITE}"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+    exit
+  fi
 	r=%d
 	r=${r#/var/www/}
 	r=${r%/www*}
-	if [[ ${r} == "html" ]]
+	echo -e "Будет создана база MySQL с именем ${GREEN}%f${WHITE}."
+	echo -e "Права будут выданы пользователю ${GREEN}${r}${WHITE}"
+	if vertical_menu "current" 2 0 5 "Да" "Нет"
 	then
-		if mysqladmin -u root -p$MYSQLPASS create %f
-		then
-		   echo -e "База mysql с именем ${GREEN}%f${WHITE} создана"
-		else
-		   echo -e ${RED}"Произошла ошибка"${WHITE}
-		fi
-	else
-		if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%f\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-		then
-		   	echo -e "База mysql с именем ${GREEN}%f${WHITE} создана"
-		   	mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%f\`.* TO '${r}'@'localhost';"
-			mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
-			echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
-		else
-		   echo -e ${RED}"Произошла ошибка"${WHITE}
-		fi
-	fi
+    if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%f\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+    then
+        echo -e "База mysql с именем ${GREEN}%f${WHITE} создана"
+        mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%f\`.* TO '${r}'@'localhost';"
+      mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+      echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
+    else
+       echo -e ${RED}"Произошла ошибка"${WHITE}
+    fi
+  else
+    echo -e "База не была создана."
+  fi
+  vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 =+ f \.sql$
-5       импopт бaзы дaнных из фaйлa .sql
-    source /root/rish/windows.sh
-    ask() {
-		local prompt default reply
-		if [ "${2:-}" = "Y" ]; then
-		prompt="Y/n или Д/н"
-		default=Y
-		elif [ "${2:-}" = "N" ]; then
-		prompt="y/N или д/Н"
-		default=N
-		else
-		prompt="y/n"
-		default=
-		fi
-		while true; do
-		# Ask the question (not using "read -p" as it uses stderr not stdout)
-		if [ -z "$1" ]
-		then
-		echo -n "[$prompt]"
-		else
-		echo -n "$1 [$prompt] "
-		fi
-		# Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
-		read reply </dev/tty
-		# Default?
-		if [ -z "$reply" ]; then
-		reply=$default
-		fi
-		# Check if the reply is valid
-		case "$reply" in
-		Y*|y*|Д*|д*) return 0 ;;
-		N*|n*|Н*|н*) return 1 ;;
-		esac
-		done
-    }
+5       Импopт бaзы дaнных из фaйлa .sql
+  source /root/rish/windows.sh
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
@@ -258,40 +130,45 @@ shell_patterns=0
 	r=%d
 	r=${r#/var/www/}
 	r=${r%/www*}
+	MYSQLPASS="2"
+	clear
+	echo -e "Будет произведен импорт базы данных ${GREEN}%b${WHITE} из файла ${GREEN}%f${WHITE}"
+	if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
     if [[ -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%b'" 2>&1`" ]]
     then
-    	echo -e "Базы данных с именем ${GREEN}%b${WHITE} не существует. Создать?"
-    	ask "" Y || $( echo "База не создана, импорт прерван."; exit )
-		if [[ ${r} == "html" ]]
-		then
-			if mysqladmin -u root -p$MYSQLPASS create %b
-			then
-			   echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
-			else
-			   echo -e ${RED}"Произошла ошибка"${WHITE}
-			fi
-		else
-			if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%b\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-			then
-				echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
-				mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%b\`.* TO '${r}'@'localhost';"
-				mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
-				echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
-			else
-			   echo -e ${RED}"Произошла ошибка"${WHITE}
-			fi
-		fi
+      echo -e "Базы данных с именем ${GREEN}%b${WHITE} не существует. Создать?"
+      if vertical_menu "current" 2 0 5 "Да" "Нет"
+      then
+        if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%b\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+        then
+          echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
+          mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%b\`.* TO '${r}'@'localhost';"
+          mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+          echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
+        else
+           echo -e ${RED}"Произошла ошибка"${WHITE}
+        fi
+      else
+        echo -e "База не была создана. Импорт прерван."
+        vertical_menu "current" 2 0 5 "Нажмите Enter"
+        exit
+      fi
     fi
-	echo -e "Идет импорт базы данных из файла ${GREEN}"%d"/"%f${WHITE}
-	if mysql -u root -p$MYSQLPASS %b < %d"/"%f
-	then
-	   echo -e "База данных ${GREEN}%b${WHITE} успешно импортирована"
-	else
-	   echo "Произошла ошибка импорта"
+    echo -e "Идет импорт базы данных из файла ${GREEN}"%d"/"%f${WHITE}
+    if mysql -u root -p$MYSQLPASS %b < %d"/"%f
+    then
+       echo -e "База данных ${GREEN}%b${WHITE} успешно импортирована"
+    else
+       echo "Произошла ошибка импорта"
+    fi
+  else
+    echo -e "База не была создана. Импорт прерван."
 	fi
+	vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 + d /var/www/ & t d
-8   удалить сайт
+8  Удалить сайт
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
@@ -349,12 +226,7 @@ shell_patterns=0
   r=%d
   r=${r#/var/www/}
   r=${r%/www*}
-  if [[ ${r} == "html" ]]
-  then
-        rm  /var/log/httpd/%f* &>/dev/null
-  else
-        rm  /var/www/${r}/logs/%f* &>/dev/null
-  fi
+  rm  /var/www/${r}/logs/%f* &>/dev/null
   if [[ $? -eq 0 ]]
   then
      echo -e "Логи сайта ${GREEN}удалены${WHITE}."
@@ -387,246 +259,51 @@ shell_patterns=0
   vertical_menu "current" 2 0 5 "Да"
 
 + d /var/www/ & t d
-k       удалить базу данных
-        GREEN='\033[0;32m'
-        RED='\033[0;31m'
-        LRED='\033[1;31m'
-        WHITE='\033[0m'
-    ask() {
-     # https://gist.github.com/davejamesmiller/1965569
-     local prompt default reply
-     if [ "${2:-}" = "Y" ]; then
-     prompt="Y/n или Д/н"
-     default=Y
-     elif [ "${2:-}" = "N" ]; then
-     prompt="y/N или д/Н"
-     default=N
-     else
-     prompt="y/n"
-     default=
-     fi
-     while true; do
-     # Ask the question (not using "read -p" as it uses stderr not stdout)
-     if [ -z "$1" ]
-     then
-     echo -n "[$prompt]"
-     else
-     echo -n "$1 [$prompt] "
-     fi
-     # Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
-     read reply </dev/tty
-     # Default?
-     if [ -z "$reply" ]; then
-     reply=$default
-     fi
-    # Check if the reply is valid
-     case "$reply" in
-     Y*|y*|Д*|д*) return 0 ;;
-     N*|n*|Н*|н*) return 1 ;;
-     esac
-     done
-    }
-        if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
-        then
-            echo -e "Вы хотите удалить базу данных ${LRED}%f${WHITE}?"
-            if ! ask "" N
-            then
-              echo "База данных не была удалена"
-              exit 0
-            fi
-            if mysqladmin -f -u root -p${MYSQLPASS} drop %f
-            then
-               echo -e "База данных ${GREEN}%f${WHITE} удалена"
-            else
-               echo -e "При удалении базы данных ${RED}%f${WHITE} произошли ${RED}ошибки${WHITE}"
-            fi
-        else
-           echo -e "У сайта ${RED}%f${WHITE} нет базы данных"
-        fi
-
-
-
-+ d /var/www/ & t d
-6   получить сертификат
-	GREEN='\033[0;32m'
-	RED='\033[0;31m'
-	LRED='\033[1;31m'
-	WHITE='\033[0m'
+k       Удалить базу данных
+  GREEN='\033[0;32m'
+  RED='\033[0;31m'
+  LRED='\033[1;31m'
+  WHITE='\033[0m'
+  MYSQLPASS="2"
+  clear
 	source /root/rish/windows.sh
-	clear
-	echo -e "Получение сертификата для сайта ${GREEN}"%f${WHITE}
-  vertical_menu "current" 2 0 5 "www.%f и %f" "%f"  "Самоподписанный сертификат"
-  choice=$?
-  		case "$choice" in
-			0)
-        certbot --apache -d %f -d www.%f
-				;;
-			1)
-			  certbot --apache -d %f
-			  ;;
-			2)
-			  cd /etc/httpd/conf.d
-        rr=$( grep DocumentRoot /etc/httpd/conf.d/%f.conf  | sed 's|.*/||' )
-        if [[ "%f" == "${rr}" ]]
-        then
-          documentroot=""
-          echo "DocumentRoot равен папке сайта"
-        else
-          documentroot="/"$rr
-          echo "DocumentRoot будет установлен: "${documentroot}
-        fi
-        rm -f %f-ssl*
-			  ttssl="%f-ssl.conf"
-			  localsitename="%f"
-			   printf "[dn]\nCN=${localsitename}\n[req]\ndistinguished_name = dn\n[EXT]\nsubjectAltName=DNS:${localsitename}, DNS:www.${localsitename}\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth" > tt1.txt
-        {
-          echo "[req]"
-          echo "distinguished_name = req_distinguished_name"
-          echo "x509_extensions = v3_req"
-          echo "prompt = no"
-          echo "[req_distinguished_name]"
-          echo "CN = %f"
-          echo "[v3_req]"
-          echo "keyUsage = critical, digitalSignature, keyAgreement"
-          echo "extendedKeyUsage = serverAuth"
-          echo "subjectAltName = @alt_names"
-          echo "[alt_names]"
-          echo "DNS.1 = www.%f"
-          echo "DNS.2 = %f"
-        } > rish_temp_file_for_creating_selfsigned_cert.txt
-      openssl req -x509 -out $localsitename.crt -keyout $localsitename.key \
-        -newkey rsa:2048 -nodes -sha256 -days 3650 -out /etc/pki/tls/certs/${localsitename}.crt -keyout /etc/pki/tls/private/${localsitename}.key \
-       -subj "/CN=${localsitename}"  -config rish_temp_file_for_creating_selfsigned_cert.txt
-       rm -f rish_temp_file_for_creating_selfsigned_cert.txt
-        localuser=%d
-        localuser=${localuser#/var/www/}
-        localuser=${localuser%/www*}
-        {
-        echo "<IfModule mod_ssl.c>"
-        echo "<VirtualHost *:443>"
-        echo "ServerAdmin webmaster@localhost"
-        echo "ServerName %f"
-        echo "ServerAlias www.%f"
-        echo "DocumentRoot /var/www/${localuser}/www/%f"${documentroot}
-        echo '<Proxy "unix:/var/run/php-fpm/'${localuser}'.sock|fcgi://php-fpm">'
-        echo 'ProxySet disablereuse=on connectiontimeout=3 timeout=60'
-        echo '</Proxy>'
-        echo '<FilesMatch \.php$>'
-        echo 'SetHandler proxy:fcgi://php-fpm'
-        echo '</FilesMatch>'
-        echo 'DirectoryIndex index.php index.html'
-        echo "<Directory /var/www/${localuser}/www/%f${documentroot}>"
-        echo "  Options -Indexes +FollowSymLinks"
-        echo "  AllowOverride All"
-        echo "  Order allow,deny"
-        echo "  Allow from all"
-        echo "</Directory>"
-        echo "ErrorLog /var/www/${localuser}/logs/%f-error-log"
-        echo "LogLevel warn"
-        echo "CustomLog /var/www/${localuser}/logs/%f-access-log combined"
-        echo "ServerSignature Off"
-        echo "SSLCertificateFile /etc/pki/tls/certs/%f.crt"
-        echo "SSLCertificateKeyFile /etc/pki/tls/private/%f.key"
-        echo "</VirtualHost>"
-        echo "</IfModule>"
-       } > $ttssl
-      if apachectl configtest
+  if [[ ! -z "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
+  then
+      echo -e "Вы хотите удалить базу данных ${LRED}%f${WHITE}?"
+      if vertical_menu "current" 2 0 5 "Нет" "Да"
       then
-        systemctl reload httpd
-        echo "Сервер перезагружен."
-      else
-        echo -e "Сервер не был перезагружен. ${RED}Ошибка${WHITE} в конфигурации апача."
-      fi
-      echo "Сертификат установлен"
-      echo
+        echo "База данных не была удалена"
         vertical_menu "current" 2 0 5 "Нажмите Enter"
-			  ;;
-			esac
-
-+ d /var/www/ & t d
-8   отозвать сертификат
-	GREEN='\033[0;32m'
-	RED='\033[0;31m'
-	LRED='\033[1;31m'
-	WHITE='\033[0m'
-	source /root/rish/windows.sh
-  if vertical_menu "current" 2 0 5 "Отозвать сертификат %f" "Нет"
-  then
-    echo -e "отозвать сертификат ${GREEN}%f${WHITE}"
-    certbot revoke --cert-path /etc/letsencrypt/live/%f/cert.pem
-    rm /etc/httpd/conf.d/%f-le-ssl.conf &>/dev/null
-    if vertical_menu "current" 2 0 5 "Перезапустить apache" "Нет"
-    then
-          if apachectl configtest
-          then
-            systemctl reload httpd
-            echo "сервер перезагружен"
-          else
-            echo "сервер не был перезагружен"
-          fi
-    else
-      echo "Сервер перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
-    fi
+        exit 0
+      fi
+      if mysqladmin -f -u root -p${MYSQLPASS} drop %f
+      then
+         echo -e "База данных ${GREEN}%f${WHITE} удалена"
+      else
+         echo -e "При удалении базы данных ${RED}%f${WHITE} произошли ${RED}ошибки${WHITE}"
+      fi
   else
-    echo "Сертификат отозван не был"
+     echo -e "У сайта ${RED}%f${WHITE} нет базы данных"
   fi
+  vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 + d /var/www/ & t d
-9   нacтpoить пpaвa дocтyпa кaтaлoгa
-	GREEN='\033[0;32m'
-	RED='\033[0;31m'
-	LRED='\033[1;31m'
-	WHITE='\033[0m'
-	source /root/rish/windows.sh
-	echo -e "Установить всем папкам права - ${GREEN}755${WHITE}, а файлам - ${GREEN}644${WHITE}?"
-  if vertical_menu "current" 2 0 5 "Да" "Нет"
-  then
-		find %d"/"%f -type d -print0 | xargs -0 chmod 755
-		if ! find %d"/"%f -type f -exec false {} +
-		then
-			find %d"/"%f -type f -print0 | xargs -0 chmod 644
-		fi
-		echo -e "Все папки получили права - ${GREEN}755${WHITE}, все файлы - ${GREEN}644${WHITE}"
-	fi
-	r=%d
-	r=${r#/var/www/}
-	r=${r%/www*}
-	if [[ ${r} == "html" ]]
-	then
-		r="apache"
-	fi
-	echo -e "Установить владельцем всех папок и файлов в папке ${GREEN}%d/%f${WHITE}"
-	echo -e "Пользователя ${GREEN}$r${WHITE}"
-  if vertical_menu "current" 2 0 5 "Да" "Нет"
-  then
-		chown -R ${r}:${r} %d"/"%f
-		echo -e "Владельцем всех файлов установлен ${GREEN}${r}${WHITE}"
-	fi
+6  Пoлyчить/Oтoзвaть/Пpoдлить SSL cert.
+	source /root/rish/certs.sh
+	certs %f
 	vertical_menu "current" 2 0 5 "Нажмите Enter"
 
-r   Перезапустить сервер apache
-        if apachectl configtest
-        then
-        systemctl reload httpd
-        echo "сервер перезагружен"
-        else
-        echo "сервер не был перезагружен"
-        fi
+r  Перезaпуск и стaтус серверa apache
+  source /root/rish/apache_restart.sh
+  apache_restart
 
-f       Перезапустить php-fpm
-        if ! php-fpm -t
-        then
-        echo "Ошибка в настройках. PHP-FPM не был перезагружен"
-        else
-        systemctl restart php-fpm
-        echo "PHP-FPM был перезагружен"
-        fi
+f       Статус и перезапуск php-fpm
+  source /root/rish/php_restart.sh
+  php_restart
 
-M       Перезапустить MariaDB
-    systemctl restart mariadb
-
-S       Статус MariaDB
-    systemctl status mariadb
+M       Статус и перезапуск MariaDB
+  source /root/rish/mariadb_restart.sh
+  mariadb_restart
 
 i       IP адрес сервера
 	clear
@@ -637,12 +314,13 @@ i       IP адрес сервера
 	read
 
 + d /var/www/ & t d
-j   Скачать Joomla в папку
+j  Скачать Joomla в папку
   clear
  	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	WHITE='\033[0m'
 	LRED='\033[1;31m'
+	MYSQLPASS="2"
 	source /root/rish/windows.sh
 	directory=%d
 	echo "Доступные версии Joomla для скачивания:"
@@ -793,7 +471,7 @@ j   Скачать Joomla в папку
 	sed -i '/Allow from*/d' ${directory}/%f/.htaccess
 
 + d /var/www/ & t d
-p       настроить Joomla в папке
+p       Настроить Joomla в папке
   source /root/rish/windows.sh
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
@@ -811,20 +489,26 @@ p       настроить Joomla в папке
 	if [[ -f "%d/%f/configuration.php" ]]
 	then
 		echo
-		echo -e "Сайт распознан как созданный на основе ${GREEN}Joomla${WHITE}"
-		sed -i "s/\$password.*$/\$password = '${MYSQLPASS}';/" %d/%f/configuration.php
-		echo "Новый пароль внесен в configuration.php"
-		sed -i "s/\$user.*$/\$user = '${r}';/" %d/%f/configuration.php
-		echo -e "Имя пользователя базы данных установлено ${GREEN}${r}${WHITE}"
-		sed -i "s/\$db .*$/\$db = '%f';/" %d/%f/configuration.php
-		echo -e "имя базы данных ${GREEN}%f${WHITE} установлено в configuration.php"
-		sed -i "s&\$log_path .*$&\$log_path = '%d\/%f\/administrator\/logs';&" %d/%f/configuration.php
-		echo -e "Путь к папке logs скорректирован ${GREEN}%d/%f/administrator/logs${WHITE}"
-		sed -i "s&\$tmp_path .*$&\$tmp_path = '%d\/%f\/tmp';&" %d/%f/configuration.php
-		echo -e "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
-		sed -i "s&\$host .*$&\$host = 'localhost';&" %d/%f/configuration.php
-		echo -e "Хост базы данных установлен в ${GREEN}localhost${WHITE}"
-		echo
+		echo -e "Сайт распознан как созданный на основе ${GREEN}Joomla${WHITE}."
+		echo -e "Вы хотите внести изменения в файл ${GREEN}configuration.php${WHITE}, чтобы сайт работал корректно?"
+    if vertical_menu "current" 2 0 5 "Да" "Нет"
+    then
+      sed -i "s/\$password.*$/\$password = '${MYSQLPASS}';/" %d/%f/configuration.php
+      echo "Новый пароль внесен в configuration.php"
+      sed -i "s/\$user.*$/\$user = '${r}';/" %d/%f/configuration.php
+      echo -e "Имя пользователя базы данных установлено ${GREEN}${r}${WHITE}"
+      sed -i "s/\$db .*$/\$db = '%f';/" %d/%f/configuration.php
+      echo -e "имя базы данных ${GREEN}%f${WHITE} установлено в configuration.php"
+      sed -i "s&\$log_path .*$&\$log_path = '%d\/%f\/administrator\/logs';&" %d/%f/configuration.php
+      echo -e "Путь к папке logs скорректирован ${GREEN}%d/%f/administrator/logs${WHITE}"
+      sed -i "s&\$tmp_path .*$&\$tmp_path = '%d\/%f\/tmp';&" %d/%f/configuration.php
+      echo -e "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
+      sed -i "s&\$host .*$&\$host = 'localhost';&" %d/%f/configuration.php
+      echo -e "Хост базы данных установлен в ${GREEN}localhost${WHITE}"
+      echo
+    else
+      echo "Никаких изменений в файл ${GREEN}configuration.php${WHITE} не вносилось."
+		fi
 	else
 		echo
 		echo -e "Сайт не имеет файла configuration.php"
@@ -833,161 +517,165 @@ p       настроить Joomla в папке
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 + d /var/www/ & t d
+9       Нacтpoить пpaвa дocтyпa кaтaлoгa
+	GREEN='\033[0;32m'
+	RED='\033[0;31m'
+	LRED='\033[1;31m'
+	WHITE='\033[0m'
+	source /root/rish/windows.sh
+	echo -e "Установить всем папкам права - ${GREEN}755${WHITE}, а файлам - ${GREEN}644${WHITE}?"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
+		find %d"/"%f -type d -print0 | xargs -0 chmod 755
+		if ! find %d"/"%f -type f -exec false {} +
+		then
+			find %d"/"%f -type f -print0 | xargs -0 chmod 644
+		fi
+		echo -e "Все папки получили права - ${GREEN}755${WHITE}, все файлы - ${GREEN}644${WHITE}"
+	fi
+	r=%d
+	r=${r#/var/www/}
+	r=${r%/www*}
+	if [[ ${r} == "html" ]]
+	then
+		r="apache"
+	fi
+	echo -e "Установить владельцем всех папок и файлов в папке ${GREEN}%d/%f${WHITE}"
+	echo -e "Пользователя ${GREEN}$r${WHITE}"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
+		chown -R ${r}:${r} %d"/"%f
+		echo -e "Владельцем всех файлов установлен ${GREEN}${r}${WHITE}"
+	fi
+	vertical_menu "current" 2 0 5 "Нажмите Enter"
+
++ d /var/www/ & t d
 s       Установка/обновление phpmyadmin
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
-    silent()
-    {
+  source /root/rish/windows.sh
+  silent()
+  {
     if [[ "$DEBUG" -eq 1 ]] ; then
     "$@"
     else
     "$@" &>/dev/null
     fi
-    }
-    ask() {
-    # https://gist.github.com/davejamesmiller/1965569
-    local prompt default reply
-    if [ "${2:-}" = "Y" ]; then
-    prompt="Y/n или Д/н"
-    default=Y
-    elif [ "${2:-}" = "N" ]; then
-    prompt="y/N или д/Н"
-    default=N
-    else
-    prompt="y/n"
-    default=
-    fi
-    while true; do
-    # Ask the question (not using "read -p" as it uses stderr not stdout)
-    if [ -z "$1" ]
-    then
-    echo -n "[$prompt]"
-    else
-    echo -n "$1 [$prompt] "
-    fi
-    # Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
-    read reply </dev/tty
-    # Default?
-    if [ -z "$reply" ]; then
-    reply=$default
-    fi
-    # Check if the reply is valid
-    case "$reply" in
-    Y*|y*|Д*|д*) return 0 ;;
-    N*|n*|Н*|н*) return 1 ;;
-    esac
-    done
-    }
-    clear
-	echo -e -n "${WHITE}В какую папку на сайте ставить phpmyadmin?:${GREEN}"
-	read -e -p " " -i  "pppma" NAME
-	echo -e "${WHITE}"
+  }
+  clear
+  echo -e -n "${WHITE}В какую папку на сайте ставить phpmyadmin?:${GREEN}"
+  read -e -p " " -i  "pppma" NAME
+  echo -e "${WHITE}"
+  if [[ -z ${NAME} ]]
+  then
+    PMA_PATH="%d/%f"
+  else
     PMA_PATH="%d/%f/${NAME}"
-    PMA_VERSION="latest"
-    PMA_LANGUAGE="all-languages"
-    PMA_CURRENT_VERSION=
-    PMA_TEMP_DIR="'./tmp/'"
-    PMA_ISSET=0
-    FORCE_INSTALL=0
-    LATEST=0
-    DEBUG=0
-    PMA_LATEST_VERSION_INFO_URL="https://www.phpmyadmin.net/home_page/version.php"
-    if [ "$PMA_VERSION" = "latest" ]; then
+  fi
+  PMA_VERSION="latest"
+  PMA_LANGUAGE="all-languages"
+  PMA_CURRENT_VERSION=
+  PMA_TEMP_DIR="'./tmp/'"
+  PMA_ISSET=0
+  FORCE_INSTALL=0
+  LATEST=0
+  DEBUG=0
+  PMA_LATEST_VERSION_INFO_URL="https://www.phpmyadmin.net/home_page/version.php"
+  if [ "$PMA_VERSION" = "latest" ]; then
     LATEST=1
     PMA_VERSION=$(wget -q -O /tmp/pma_lastest.html $PMA_LATEST_VERSION_INFO_URL && sed -ne '1p' /tmp/pma_lastest.html);
-    fi
-    PMA_DOWNLOAD_URL="https://files.phpmyadmin.net/phpMyAdmin/${PMA_VERSION}/phpMyAdmin-${PMA_VERSION}-${PMA_LANGUAGE}.tar.gz"
-    BLOWFISH_SECRET=$(tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null)
-    echo -n "Установленная версия: "
-    if [ -d "$PMA_PATH" -a -f "${PMA_PATH}/README" ]; then
-    PMA_ISSET=1
-    PMA_CURRENT_VERSION=$(sed -n 's/^Version \(.*\)$/\1/p' ${PMA_PATH}/README)
-    if ! [ -z "$PMA_CURRENT_VERSION" ]; then
-    echo "$PMA_CURRENT_VERSION"
-    else
-    echo "unknown version"
-    fi
-    else
-    echo "not installed"
-    fi
-    echo -n -e "Версия, доступная к установке: ${GREEN}"
-    if [ $LATEST -eq 1 ]; then
-    echo "${PMA_VERSION} (latest)"
-    else
-    echo "$PMA_VERSION"
-    fi
-    echo -e "${WHITE}"
-    if ! ask "Ставим phpmysql?" Y
-    then
+  fi
+  PMA_DOWNLOAD_URL="https://files.phpmyadmin.net/phpMyAdmin/${PMA_VERSION}/phpMyAdmin-${PMA_VERSION}-${PMA_LANGUAGE}.tar.gz"
+  BLOWFISH_SECRET=$(tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null)
+  echo -n "Установленная версия: "
+  if [ -d "$PMA_PATH" -a -f "${PMA_PATH}/README" ]; then
+  PMA_ISSET=1
+  PMA_CURRENT_VERSION=$(sed -n 's/^Version \(.*\)$/\1/p' ${PMA_PATH}/README)
+  if ! [ -z "$PMA_CURRENT_VERSION" ]; then
+  echo "$PMA_CURRENT_VERSION"
+  else
+  echo "unknown version"
+  fi
+  else
+  echo "not installed"
+  fi
+  echo -n -e "Версия, доступная к установке: ${GREEN}"
+  if [ $LATEST -eq 1 ]; then
+  echo "${PMA_VERSION} (latest)"
+  else
+  echo "$PMA_VERSION"
+  fi
+  echo -e "${WHITE}"
+  echo -e "Ставим phpmyadmin по адресу ${GREEN}%f/${NAME}${WHITE}?"
+  if ! vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
     echo "Установка прервана"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
     exit 1
-    fi
-    PMA_PARENT_PATH="$(echo "$PMA_PATH" | sed 's/\/[^/]*$//' | sed 's/\/$//')"
-    PMA_DIRNAME="$(echo "$PMA_PATH" | sed 's/.*\///')"
-    cd $PMA_PARENT_PATH
-    if [ $PMA_ISSET -eq 1 ]; then
-    echo "Создаем архив... "
-    CUR_TIME=$(date +%%Y-%%m-%%d-%%H-%%M-%%S)
-    silent tar -zcf "${CUR_TIME}".tar.gz "$PMA_DIRNAME"
-    if [ -f "${CUR_TIME}.tar.gz" ]; then
-    rm -rf "$PMA_PATH"
-    echo -n "Создан файл"
-    echo " (${CUR_TIME}.tar.gz)"
-    else
-    echo "Not created"
-    echo
-    exit 1
-    fi
-    fi
-    # Download new version
-    cd "$PMA_PARENT_PATH"
-    echo -n "Загружаем новую версию... "
-    silent wget -c "$PMA_DOWNLOAD_URL"
-    if [ -f "${PMA_PARENT_PATH}/phpMyAdmin-${PMA_VERSION}-${PMA_LANGUAGE}.tar.gz" ]; then
-    echo "Done"
-    else
-    echo "Unable to download!"
-    echo
-    exit 1
-    fi
-    # Install
-    echo -n "Устанавливаем... "
-    silent tar xzf phpMyAdmin-"$PMA_VERSION"-"$PMA_LANGUAGE".tar.gz
-    silent mv phpMyAdmin-"$PMA_VERSION"-"$PMA_LANGUAGE" "$PMA_DIRNAME"
-    silent rm phpMyAdmin-"$PMA_VERSION"-"$PMA_LANGUAGE".tar.gz*
-    if [ -d "$PMA_PATH" ]; then
-    echo "Done"
-    else
-    echo "Can't install!"
-    echo
-    exit 1
-    fi
-    rm -rf "$PMA_PATH"/setup
-    echo -n "Настраиваем... "
-    mkdir "$PMA_PATH"/tmp
-    cp "$PMA_PATH"/config.sample.inc.php "$PMA_PATH"/config.inc.php
-    sed -i "s|\$cfg\['blowfish_secret'\].*;|\$cfg['blowfish_secret'] = '${BLOWFISH_SECRET}';|" \
-    "$PMA_PATH"/config.inc.php
-    r=%d
-	r=${r#/var/www/}
-	r=${r%/www*}
-	if [[ ${r} == "html" ]]
-	then
-		chown -R apache:apache "$PMA_PATH"
-	else
-		chown -R ${r}:${r} "$PMA_PATH"
-	fi
-    echo "Done"
+  fi
+  PMA_PARENT_PATH="$(echo "$PMA_PATH" | sed 's/\/[^/]*$//' | sed 's/\/$//')"
+  PMA_DIRNAME="$(echo "$PMA_PATH" | sed 's/.*\///')"
+  cd $PMA_PARENT_PATH
+  if [ $PMA_ISSET -eq 1 ]; then
+  echo "Создаем архив... "
+  CUR_TIME=$(date +%%Y-%%m-%%d-%%H-%%M-%%S)
+  silent tar -zcf "${CUR_TIME}".tar.gz "$PMA_DIRNAME"
+  if [ -f "${CUR_TIME}.tar.gz" ]; then
+  rm -rf "$PMA_PATH"
+  echo -n "Создан файл"
+  echo " (${CUR_TIME}.tar.gz)"
+  else
+  echo "Not created"
+  echo
+  exit 1
+  fi
+  fi
+  # Download new version
+  cd "$PMA_PARENT_PATH"
+  echo -n "Загружаем новую версию... "
+  silent wget -c "$PMA_DOWNLOAD_URL"
+  if [ -f "${PMA_PARENT_PATH}/phpMyAdmin-${PMA_VERSION}-${PMA_LANGUAGE}.tar.gz" ]; then
+  echo "Done"
+  else
+  echo "Unable to download!"
+  echo
+  exit 1
+  fi
+  # Install
+  echo -n "Устанавливаем... "
+  silent tar xzf phpMyAdmin-"$PMA_VERSION"-"$PMA_LANGUAGE".tar.gz
+  silent mv phpMyAdmin-"$PMA_VERSION"-"$PMA_LANGUAGE" "$PMA_DIRNAME"
+  silent rm phpMyAdmin-"$PMA_VERSION"-"$PMA_LANGUAGE".tar.gz*
+  if [ -d "$PMA_PATH" ]; then
+  echo "Done"
+  else
+  echo "Can't install!"
+  echo
+  exit 1
+  fi
+  rm -rf "$PMA_PATH"/setup
+  echo -n "Настраиваем... "
+  mkdir "$PMA_PATH"/tmp
+  cp "$PMA_PATH"/config.sample.inc.php "$PMA_PATH"/config.inc.php
+  sed -i "s|\$cfg\['blowfish_secret'\].*;|\$cfg['blowfish_secret'] = '${BLOWFISH_SECRET}';|" \
+  "$PMA_PATH"/config.inc.php
+  r=%d
+  r=${r#/var/www/}
+  r=${r%/www*}
+  chown -R ${r}:${r} "$PMA_PATH"
+  echo "Done"
+  echo "Установка завершена"
+  vertical_menu "current" 2 0 5 "Нажмите Enter"
 
-R   Управление Сервером
+R  Управление Сервером
 	r=$( pwd )
     cd /root/rish
 	./ri.sh
 	cd ${r}
 
-O   Обновление RISH
+O  Обновление RISH
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
@@ -1080,7 +768,7 @@ O   Обновление RISH
   rm -f rish8.tar.gz > /dev/null
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 
-Z   Статистика сайтов сервера
+Z  Статистика сайтов сервера
     source /root/rish/checkip.sh
     source /root/rish/windows.sh
     CheckIP
