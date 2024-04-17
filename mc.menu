@@ -683,14 +683,14 @@ O  Обновление RISH
   source /root/rish/windows.sh
   cd /root
   clear
-  rm -f rish8.tar.gz > /dev/null
+  rm -f rish2.tar.gz > /dev/null
   # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
   version_gt() {
     test "$(printf '%%s\n' "$@" | sort -V | head -n 1)" != "$1"
   }
   Update(){
   # Извлекаем файл версии из архива
-  if tar -xzf "rish8.tar.gz" --strip-components=1 "rish/version"
+  if tar -xzf "rish2.tar.gz" --strip-components=1 "rish/version"
   then
    # Если файл версии не существует в папке rish, то устанавливаем версию 0.0.0
    if [ ! -f "/root/rish/version" ]; then
@@ -720,10 +720,10 @@ O  Обновление RISH
      then
       dnf install -y idn2
      fi
-     if tar -tzf rish8.tar.gz > /dev/null 2>&1
+     if tar -tzf rish2.tar.gz > /dev/null 2>&1
      then
-      tar --no-same-owner -xvf rish8.tar.gz
-      rm rish8.tar.gz
+      tar --no-same-owner -xvf rish2.tar.gz
+      rm rish2.tar.gz
       cd /root/rish
       findlocal="local"
       findlocal=${findlocal}"rish"
@@ -752,7 +752,7 @@ O  Обновление RISH
     exit 1
   fi
   }
-  if wget https://rish.su/rish8.tar.gz > /dev/null 2>&1
+  if wget https://rish.su/rish2.tar.gz > /dev/null 2>&1
   then
     Update
   else
@@ -765,7 +765,7 @@ O  Обновление RISH
      exit 1
     fi
   fi
-  rm -f rish8.tar.gz > /dev/null
+  rm -f rish2.tar.gz > /dev/null
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 Z  Статистика сайтов сервера
