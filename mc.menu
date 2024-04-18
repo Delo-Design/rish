@@ -42,13 +42,11 @@ shell_patterns=0
 
 + d /var/www/ & t d
 2  Создать сайт
-  source /root/rish/create_site.sh
-  create_site "%f" "%d"
+  bash /root/rish/create_site.sh "%f" "%d"
 
 + d /var/www/ & t d
 7       Сменить версию PHP для сайта
-  source /root/rish/change_php_version.sh
-  change_php_version  "%f" "%d"
+  bash /root/rish/change_php_version.sh "%f" "%d"
 
 =+ f \.sql$
 3       Сoздaть бaзy пo имeни фaйлa .sql
@@ -289,21 +287,16 @@ k       Удалить базу данных
 
 + d /var/www/ & t d
 6  Пoлyчить/Oтoзвaть/Пpoдлить SSL cert.
-	source /root/rish/certs.sh
-	certs %f
-	vertical_menu "current" 2 0 5 "Нажмите Enter"
+	bash /root/rish/certs.sh
 
 r  Перезaпуск и стaтус серверa apache
-  source /root/rish/apache_restart.sh
-  apache_restart
+  bash /root/rish/apache_restart.sh
 
 f       Статус и перезапуск php-fpm
-  source /root/rish/php_restart.sh
-  php_restart
+  bash /root/rish/php_restart.sh
 
 M       Статус и перезапуск MariaDB
-  source /root/rish/mariadb_restart.sh
-  mariadb_restart
+  bash /root/rish/mariadb_restart.sh
 
 i       IP адрес сервера
 	clear
@@ -671,7 +664,7 @@ s       Установка/обновление phpmyadmin
 
 R  Управление Сервером
 	r=$( pwd )
-    cd /root/rish
+  cd /root/rish
 	./ri.sh
 	cd ${r}
 

@@ -10,6 +10,9 @@ function change_php_version() {
   local path="$2"
   site_name="$1" # Имя сайта
   if [[ -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
+
+    php_version=$(grep -oP 'SetHandler "proxy:unix:/var/opt/remi/\Kphp[0-9]+' "/etc/httpd/conf.d/$site_name.conf")
+    echo -e "Сайт ${GREEN}${site_name}${WHITE} использует ${GREEN}${php_version}${WHITE}"
     username=$(echo "$path" | cut -d'/' -f4)
     mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
     echo
@@ -115,3 +118,7 @@ function change_php_version() {
   fi
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 }
+# Если идет прямой вызов - выполняем функцию. Если идет подключение через source - то ничего не делаем
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    change_php_version "$1" "$2"
+fi

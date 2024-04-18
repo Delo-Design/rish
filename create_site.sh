@@ -71,10 +71,11 @@ function create_site() {
   clear
   local path="$2"
   local php_mode
+  username=$(echo "$path" | cut -d'/' -f4)
+  echo -e "Создание сайта (vhost) для пользователя ${GREEN}${username}${WHITE}"
   if check_site "$1" "$2"; then
     echo -e "Создаем сайт (vhost) ${GREEN}${site_name}${WHITE}"
     mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
-    username=$(echo "$path" | cut -d'/' -f4)
     echo
     echo -e "Выберите нужную версию ${GREEN}PHP${WHITE} из доступных."
     echo
@@ -205,3 +206,7 @@ function create_site() {
 
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 }
+# Если идет прямой вызов - выполняем функцию. Если идет подключение через source - то ничего не делаем
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    create_site "$1" "$2"
+fi

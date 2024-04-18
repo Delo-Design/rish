@@ -119,3 +119,8 @@ certs() {
     echo -e "${RED}$site_name${WHITE} это не сайт (не vhost)"
   fi
 }
+# Если идет прямой вызов - выполняем функцию. Если идет подключение через source - то ничего не делаем
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    certs "$1"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+fi

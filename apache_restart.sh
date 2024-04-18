@@ -47,3 +47,7 @@ function apache_restart() {
   esac
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 }
+# Если идет прямой вызов - выполняем функцию. Если идет подключение через source - то ничего не делаем
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    apache_restart
+fi
