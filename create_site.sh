@@ -17,7 +17,7 @@ function check_site() {
   if [[ -d "$full_path" && "$site_name" =~ $regex ]]; then
     if [[ ! -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
       echo -e "Имя домена ${GREEN}$site_name${WHITE} корректное."
-      echo -e "Будет создан создан сайт (vhost) с именем ${GREEN}$site_name${WHITE}."
+      echo -e "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE}."
       vertical_menu "current" 2 0 5 "Да" "Нет" "Задать свое имя сайта"
       choice=$?
       echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
