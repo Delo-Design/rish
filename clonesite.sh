@@ -55,17 +55,67 @@ AddServer() {
   echo -e ${WHITE}
   ssh-keygen -t ed25519 -C "$comment" -f ~/.ssh/${server_name}-key -N ''
   {
-      echo
-      echo "Host ${server_name}"
-      echo "  Hostname ${ip_address}"
-      echo "  User root"
-      echo "  Compression yes"
-      echo "  IdentityFile ~/.ssh/${server_name}-key"
+    echo
+    echo "Host ${server_name}"
+    echo "  Hostname ${ip_address}"
+    echo "  User root"
+    echo "  Compression yes"
+    echo "  IdentityFile ~/.ssh/${server_name}-key"
   } >>~/.ssh/config
   echo "Пожалуйста, скопируйте следующую команду и вставьте её в терминал удалённого сервера после подключения:"
   echo -e "${LGREEN}echo '$(cat ~/.ssh/${server_name}-key.pub)' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys${WHITE}"
   echo "После этого можете продолжить работу."
   echo
+
+  # Сортируем файл config по алфавиту
+  # Путь к файлу конфигурации SSH
+  config_file="$HOME/.ssh/config"
+  temp_file="$HOME/.ssh/temp_config"
+  sorted_file="$HOME/.ssh/config.sorted"
+
+  # Создаем резервную копию файла конфигурации
+  cp "$config_file" "${config_file}.bak"
+
+  # Создаем временный файл, преобразуем все многострочные записи в однострочные
+  awk 'BEGIN {
+    first = 1;  # Флаг для отслеживания первой записи
+}
+{
+    if ($1 == "Host") {
+        if (!first) {
+            printf "\n\n";  # Добавляем два перевода строки только если это не первая запись
+        }
+        first = 0;  # Сбрасываем флаг первой записи после первой обработки
+        printf "%s", $0;  # Печатаем заголовок Host без начального перевода строки
+    } else {
+        # Удаляем начальные пробелы и табуляции, заменяем внутренние пробелы на один пробел
+        gsub(/^[ \t]+|[ \t]+$/, "", $0);
+        gsub(/[ \t]+/, " ", $0);
+        printf "@%s", $0;  # Добавляем разделитель @
+    }
+} END {print "";}' "$config_file" >"$temp_file"
+
+  # Удаление всех двойных переводов строк (пустых строк), которые могли появиться
+  sed '/^$/d' "$temp_file" >"$sorted_file"
+
+  # Сортировка строк
+  sort "$sorted_file" -o "$sorted_file"
+
+  # Преобразование обратно в многострочный формат
+  awk 'BEGIN {FS="@"} {
+    for (i = 1; i <= NF; i++) {
+        if (i == 1) {
+            print $i;  # Печать заголовка Host
+        } else if (length($i) > 0) {
+            print "    " $i;  # Добавление отступа и печать строки
+        }
+    }
+    print "";  # Добавляем пустую строку после каждого блока для разделения
+}' "$sorted_file" >"$config_file"
+
+  # Очистка временных файлов
+  rm -f "$temp_file" "$sorted_file"
+
 }
 CloneSite() {
 
@@ -74,11 +124,9 @@ CloneSite() {
   local count
   local onlydatabase=$1
 
-
   clear
-  if [[ $onlydatabase ]]
-  then
-     echo "Клонируем только базу данных."
+  if [[ $onlydatabase ]]; then
+    echo "Клонируем только базу данных."
   fi
 
   source /root/rish/rish_config.sh
@@ -116,7 +164,7 @@ CloneSite() {
       echo -e ${CURSORUP}"Отказ от клонирования."${ERASEUNTILLENDOFLINE}
       return
     fi
-    if ((choice < count )); then
+    if ((choice < count)); then
       break
     fi
     AddServer
@@ -197,7 +245,6 @@ CloneSite() {
     return
   fi
 
-
   rr=$(ssh $choosenserver 'grep DocumentRoot /etc/httpd/conf.d/'${remotesitename}'.conf' | sed 's|.*/||')
 
   if [[ "${remotesitename}" == "${rr}" ]]; then
@@ -233,8 +280,7 @@ CloneSite() {
     echo "базы данных у сайта нет"
   fi
 
-  if [[ $onlydatabase ]]
-  then
+  if [[ $onlydatabase ]]; then
     return
   fi
 
@@ -265,6 +311,7 @@ CloneSite() {
     echo -e "Создан новый сайт ${GREEN}${localsitename}${WHITE} пользователя ${GREEN}${localuser}${WHITE} "
     mkdir -p "$localsitename"
   fi
+  echo -e "Началось разархивирование сайта на локальном компьютере ${GREEN}${localsitename}${WHITE}."
   tar xzf $namearch -C ${pathtolocaluser}/$localsitename
   rm $namearch
 
@@ -349,29 +396,29 @@ CloneSite() {
   rm -f ${localsitename}*
 
   {
-      echo "<VirtualHost *:80>"
-      echo "ServerAdmin webmaster@localhost"
-      echo "ServerName ${localsitename}"
-      echo "ServerAlias www.${localsitename}"
-      echo "DocumentRoot /var/www/${localuser}/www/${localsitename}${documentroot}"
-      echo ""
-      echo "<FilesMatch \.php$>"
-      echo "    SetHandler \"proxy:unix:/var/opt/remi/${selected_php}/run/php-fpm/${localuser}.sock|fcgi://localhost\""
-      echo "</FilesMatch>"
-      echo ""
-      echo "DirectoryIndex index.php index.html"
-      echo ""
-      echo "<Directory /var/www/${localuser}/www/${localsitename}${documentroot}>"
-      echo "    Options -Indexes +FollowSymLinks"
-      echo "    AllowOverride All"
-      echo "    Require all granted"
-      echo "</Directory>"
-      echo ""
-      echo "ServerSignature Off"
-      echo "ErrorLog /var/www/${localuser}/logs/${localsitename}-error-log"
-      echo "LogLevel warn"
-      echo "CustomLog /var/www/${localuser}/logs/${localsitename}-access-log combined"
-      echo "</VirtualHost>"
+    echo "<VirtualHost *:80>"
+    echo "ServerAdmin webmaster@localhost"
+    echo "ServerName ${localsitename}"
+    echo "ServerAlias www.${localsitename}"
+    echo "DocumentRoot /var/www/${localuser}/www/${localsitename}${documentroot}"
+    echo ""
+    echo "<FilesMatch \.php$>"
+    echo "    SetHandler \"proxy:unix:/var/opt/remi/${selected_php}/run/php-fpm/${localuser}.sock|fcgi://localhost\""
+    echo "</FilesMatch>"
+    echo ""
+    echo "DirectoryIndex index.php index.html"
+    echo ""
+    echo "<Directory /var/www/${localuser}/www/${localsitename}${documentroot}>"
+    echo "    Options -Indexes +FollowSymLinks"
+    echo "    AllowOverride All"
+    echo "    Require all granted"
+    echo "</Directory>"
+    echo ""
+    echo "ServerSignature Off"
+    echo "ErrorLog /var/www/${localuser}/logs/${localsitename}-error-log"
+    echo "LogLevel warn"
+    echo "CustomLog /var/www/${localuser}/logs/${localsitename}-access-log combined"
+    echo "</VirtualHost>"
 
   } >>$localsitename".conf"
 
@@ -396,7 +443,7 @@ CloneSite() {
         echo "[alt_names]"
         echo "DNS.1 = www.${localsitename}"
         echo "DNS.2 = ${localsitename}"
-      } > rish_temp_file_for_creating_selfsigned_cert.txt
+      } >rish_temp_file_for_creating_selfsigned_cert.txt
       openssl req -x509 -nodes \
         -newkey rsa:2048 \
         -keyout /etc/pki/tls/private/${localsitename}.key \
