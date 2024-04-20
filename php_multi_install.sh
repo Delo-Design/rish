@@ -90,6 +90,7 @@ function php_multi_install() {
     echo -e "max_execution_time = ${GREEN}60${WHITE}"
     echo -e "max_input_vars = ${GREEN}20000${WHITE}"
 
+    echo
     echo -e "Ставим ${GREEN}imagick${WHITE}?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then

@@ -90,6 +90,12 @@ function change_php_version() {
     cp "/etc/httpd/conf.d/${site_name}.conf" "/etc/httpd/conf.d/${site_name}.conf.old"
     # Меняем путь к сокету
     sed -i -r "s|/var/opt/remi/php[0-9][0-9]/run/php-fpm/|/var/opt/remi/${selected_php}/run/php-fpm/|g" "/etc/httpd/conf.d/${site_name}.conf"
+    if [[ -f "/etc/httpd/conf.d/${site_name}-ssl.conf" ]]; then
+        sed -i -r "s|/var/opt/remi/php[0-9][0-9]/run/php-fpm/|/var/opt/remi/${selected_php}/run/php-fpm/|g" "/etc/httpd/conf.d/${site_name}-ssl.conf"
+    fi
+    if [[ -f "/etc/httpd/conf.d/${site_name}-le-ssl.conf" ]]; then
+        sed -i -r "s|/var/opt/remi/php[0-9][0-9]/run/php-fpm/|/var/opt/remi/${selected_php}/run/php-fpm/|g" "/etc/httpd/conf.d/${site_name}-le-ssl.conf"
+    fi
     if cmp -s "/etc/httpd/conf.d/${site_name}.conf" "/etc/httpd/conf.d/${site_name}.conf.old"; then
       echo -e "Замен в файле ${RED}не произведено${WHITE}."
       rm "/etc/httpd/conf.d/${site_name}.conf.old"

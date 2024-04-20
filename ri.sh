@@ -859,6 +859,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP="Установка MariaDB"
   if ! check_step "$STEP"; then
     Up
+    echo
     echo -e "Установка ${GREEN}MariaDB${WHITE} в качестве базы данных."
     Down
     mariadb_install
@@ -867,6 +868,9 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   STEP="Установка certbot"
   if ! check_step "$STEP"; then
+    Up
+    echo
+    Down
     echo -e "Ставим ${GREEN}certbot${WHITE} для получения SSL сертификатов?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"; then
       Install "certbot python3-certbot-apache"
