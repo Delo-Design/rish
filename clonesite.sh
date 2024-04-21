@@ -333,10 +333,10 @@ CloneSite() {
 
   echo -e "${CURSORUP}Выбрана версия ${GREEN}${selected_php}${WHITE}"
 
-  if [[ ! -f "/etc/opt/remi/${selected_php}/php-fpm.d/${username}.conf" ]]; then
+  if [[ ! -f "/etc/opt/remi/${selected_php}/php-fpm.d/${localuser}.conf" ]]; then
     # Если пул для этой версии PHP еще не был создан, то создаем
     echo
-    echo -e "Выберите режим работы PHP для пользователя ${GREEN}${username}${WHITE}:"
+    echo -e "Выберите режим работы PHP для пользователя ${GREEN}${localuser}${WHITE}:"
     vertical_menu "current" 2 0 5 "ondemand - оптимально расходует память" "dynamic - более оперативно реагирует на запросы"
     ret=$?
     local php_mode
