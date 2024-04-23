@@ -304,29 +304,9 @@ CreateUser() {
   chown ${NAME}:${NAME} /home/${NAME}/.pass.txt
 
   echo -e "Пароли записаны в файл ${GREEN}/home/${NAME}/.pass.txt${WHITE}"
-  if [[ $(getent group sftp) ]]; then
-    echo ""
-  else
-     groupadd sftp
-  fi
   usermod -a -G sftp ${NAME}
-  # редактируем /etc/ssh/sshd_config.
-  ## override default of no subsystems
-  ##Subsystem<---->sftp<-->/usr/libexec/openssh/sftp-server
-  #Subsystem sftp internal-sftp -u 022
-  #Match Group sftp
-  #ChrootDirectory /var/www/%u
-  #ForceCommand internal-sftp -u 022
-  sed -i '/Match Group sftp/d' /etc/ssh/sshd_config
-  sed -i '/ChrootDirectory \/var\/www\/%u/d' /etc/ssh/sshd_config
-  sed -i '/ForceCommand internal-sftp -u 022/d' /etc/ssh/sshd_config
-  r="Subsystem sftp internal-sftp -u 022\n"
-  r=${r}"Match Group sftp\n"
-  r=${r}"ChrootDirectory /var/www/%u\n"
-  r=${r}"ForceCommand internal-sftp -u 022"
-  sed -i "s&^Subsystem.*&${r}&" /etc/ssh/sshd_config
-  systemctl restart sshd
   usermod -aG ${NAME} apache
+
   mkdir /var/www/${NAME}
   mkdir /var/www/${NAME}/logs
   mkdir /var/www/${NAME}/www
@@ -957,16 +937,43 @@ EOF
   if ! check_step "$STEP"; then
     mkdir -p ~/.config/mc
     cd ${RISH_HOME}
-    if [[ -e mc.menu ]]
-    then
+    if [[ -e mc.menu ]]; then
       rm /etc/mc/mc.menu
-      if  ${LocalServer}
-      then
-        cat mc.menu.local >> mc.menu
+      if ${LocalServer}; then
+        cat mc.menu.local >>mc.menu
       fi
       cp mc.menu /etc/mc/mc.menu
     fi
     mark_step_completed "$STEP"
+  fi
+
+  STEP="Настройка ssh config для sftp пользователя на сайте"
+  if ! check_step "$STEP"; then
+
+    if [[ $(getent group sftp) ]]; then
+      echo ""
+    else
+      groupadd sftp
+    fi
+
+    # редактируем /etc/ssh/sshd_config.
+    ## override default of no subsystems
+    ##Subsystem<---->sftp<-->/usr/libexec/openssh/sftp-server
+    #Subsystem sftp internal-sftp -u 022
+    #Match Group sftp
+    #ChrootDirectory /var/www/%u
+    #ForceCommand internal-sftp -u 022
+
+    sed -i '/Match Group sftp/d' /etc/ssh/sshd_config
+    sed -i '/ChrootDirectory \/var\/www\/%u/d' /etc/ssh/sshd_config
+    sed -i '/ForceCommand internal-sftp -u 022/d' /etc/ssh/sshd_config
+    r="Subsystem sftp internal-sftp -u 022\n"
+    r=${r}"Match Group sftp\n"
+    r=${r}"ChrootDirectory /var/www/%u\n"
+    r=${r}"ForceCommand internal-sftp -u 022"
+    sed -i "s&^Subsystem.*&${r}&" /etc/ssh/sshd_config
+    systemctl restart sshd
+
   fi
 
   STEP="Создание первого пользователя"
@@ -1000,7 +1007,7 @@ EOF
         echo "PasswordAuthentication no" >>/etc/ssh/sshd_config
       fi
       systemctl restart sshd.service
-      echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE}."
+      echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE}.${ERASEUNTILLENDOFLINE}"
     else
       echo -e "${CURSORUP}Авторизация по паролю ${RED}разрешена${WHITE}."
       echo -e
@@ -1047,12 +1054,13 @@ EOF
 
 else
   source $config_file
-  options=("Создать пользователя" \
-    "Удалить пользователя" \
-    "Удалить базу данных пользователя" \
-    "Клонирование сайта" \
-    "Клонирование только базы данных сайта" \
-    "Установка новых версий PHP" \
+  options=("Создать пользователя"
+    "Удалить пользователя"
+    "Удалить базу данных пользователя"
+    "Клонирование сайта"
+    "Клонирование только базы данных сайта"
+    "Установка новых версий PHP"
+    "Запретить авторизацию по паролю по SSH"
     "Выйти")
   Down
   echo
@@ -1093,7 +1101,7 @@ else
     2)
       clear
       # Проверим на предмет неудаленных баз данных
-      usrs=($(cat /etc/passwd | grep home | awk -F: '{ print $1}' | sort) )
+      usrs=($(cat /etc/passwd | grep home | awk -F: '{ print $1}' | sort))
       if ((${#usrs[@]} > 0)); then
         echo "Выберите пользователя для удаления его базы данных"
         vertical_menu "current" 2 0 30 "${usrs[@]}"
@@ -1127,18 +1135,40 @@ else
       echo -e "Выбор и установка нужных версий ${GREEN}PHP${WHITE}"
       clear
       # Рисуем разделительную линию
-      cursor_to $(( ${rim} +1 )) 1
-      repl "─" $(( ${columns} ))
-      cursor_to $(( ${rim} +2 )) 1
+      cursor_to $((${rim} + 1)) 1
+      repl "─" $((${columns}))
+      cursor_to $((${rim} + 2)) 1
       Up
       echo -e "Идет получение списка доступных версий ${GREEN}PHP${WHITE}. Ждите."
       Down
       php_multi_install
       clear
       # Рисуем разделительную линию
-      cursor_to $(( ${rim} +1 )) 1
-      repl "─" $(( ${columns} ))
-      cursor_to $(( ${rim} +2 )) 1
+      cursor_to $((${rim} + 1)) 1
+      repl "─" $((${columns}))
+      cursor_to $((${rim} + 2)) 1
+      ;;
+    6)
+      echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
+      if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+        echo -e -n "${CURSORUP}"
+        # Резервное копирование оригинального файла конфигурации
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+        # Удаление всех строк с PasswordAuthentication
+        sed -i '/^#\?PasswordAuthentication/d' /etc/ssh/sshd_config
+        # Добавление строки с отключением аутентификации по паролю перед первым блоком Match
+        awk '/^Match/ && !done {print "PasswordAuthentication no"; done=1} 1' /etc/ssh/sshd_config >/etc/ssh/sshd_config.tmp && mv /etc/ssh/sshd_config.tmp /etc/ssh/sshd_config
+
+        # Если строка PasswordAuthentication no не была добавлена, добавить её в конец файла
+        if ! grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config; then
+          echo "PasswordAuthentication no" >>/etc/ssh/sshd_config
+        fi
+        systemctl restart sshd.service
+        echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE}.${ERASEUNTILLENDOFLINE}"
+      else
+        echo -e "${CURSORUP}Файл /etc/ssh/sshd_config ${VIOLET}не изменен${WHITE}.${ERASEUNTILLENDOFLINE}"
+        echo -e
+      fi
       ;;
     *)
       RemoveRim
