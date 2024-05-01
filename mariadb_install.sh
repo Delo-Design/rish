@@ -15,40 +15,8 @@ mariadb_install() {
   fi
   echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
 
-  if [[ ${CURRENT_OS} =~ "Fedora" ]]; then
-    {
-      echo "# MariaDB 10.11 Fedora repository list - created 2023-03-19 15:47 UTC"
-      echo "# https://mariadb.org/download/"
-      echo "[mariadb]"
-      echo "name = MariaDB"
-      echo "baseurl = https://rpm.mariadb.org/${Maria_Version}/fedora/\$releasever/\$basearch"
-      echo "gpgkey= https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
-      echo "gpgcheck=1"
-    } >MariaDB.repo
-  elif [[ ${OS_VERSION} == "8" ]]; then
-    {
-      echo "# MariaDB 10.11 RedHatEnterpriseLinux repository list - created 2023-03-19 16:07 UTC"
-      echo "# https://mariadb.org/download/"
-      echo "[mariadb]"
-      echo "name = MariaDB"
-      echo "# rpm.mariadb.org is a dynamic mirror if your preferred mirror goes offline. See https://mariadb.org/mirrorbits/ for details."
-      echo "baseurl = https://rpm.mariadb.org/${Maria_Version}/rhel/\$releasever/\$basearch"
-      echo "module_hotfixes = 1"
-      echo "gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
-      echo "gpgcheck = 1"
-    } >MariaDB.repo
-  else
-    {
-      echo "# MariaDB 10.11 RedHatEnterpriseLinux repository list - created 2023-03-19 16:07 UTC"
-      echo "# https://mariadb.org/download/"
-      echo "[mariadb]"
-      echo "name = MariaDB"
-      echo "# rpm.mariadb.org is a dynamic mirror if your preferred mirror goes offline. See https://mariadb.org/mirrorbits/ for details."
-      echo "baseurl = https://rpm.mariadb.org/${Maria_Version}/rhel/\$releasever/\$basearch"
-      echo "gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
-      echo "gpgcheck = 1"
-    } >MariaDB.repo
-  fi
+  bash /root/rish/mariadb_repo_setup.sh --mariadb-server-version=${Maria_Version}
+
   Install "MariaDB-server MariaDB-client"
   systemctl start mariadb
   systemctl enable mariadb

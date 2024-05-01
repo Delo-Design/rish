@@ -1,6 +1,6 @@
 #!/bin/bash
 clear
-
+MYSQLPASS="2"
 if [[ -x "/usr/bin/ydcmd" ]]; then
     ydcmd_path="/usr/bin/ydcmd"
 elif [[ -x "/usr/local/bin/ydcmd" ]]; then
@@ -103,14 +103,15 @@ backupall() {
 	#/usr/bin/ydcmd --config=$cnf --quiet mkdir disk:/backup"$server"/"$DATE"
 
 	while read line;do
-		mkdir -p $DIR_BACKUP/$server/$DATE/
-		IFS=";"
+    IFS=";"
 		set -- $line
-		USER=$1
+    USER=$1
 		SITE=$2
 		DB=$3
 		DB_USER=$4
 		DB_PASSWD=$5
+
+		mkdir -p $DIR_BACKUP/$server/$USER/$DATE/
 		echo -e -n "Архивация ${GREEN}"$SITE"${WHITE}. "
 		FILE_NAME=$DIR_BACKUP/"$SITE".tar.gz
 		cd "/var/www/${USER}/www"
@@ -119,13 +120,13 @@ backupall() {
 		   echo -n " Базы нет. "
 		   echo -e "Идет создание архива сайта"
 		   echo
-		   tar -czf -  $SITE --record-size=$recordsize --checkpoint=$checkpoint --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' | split -b $splitarchive --numeric-suffix - $DIR_BACKUP/"${server}/${DATE}/${SITE}.tar.gz-part-"
+		   tar -czf -  $SITE --record-size=$recordsize --checkpoint=$checkpoint --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' | split -b $splitarchive --numeric-suffix - $DIR_BACKUP/"${server}/${USER}/${DATE}/${SITE}.tar.gz-part-"
 		else
 		   mysqldump -u$DB_USER -p$DB_PASSWD $DB > $DB.sql
 		   echo -e -n " База ${GREEN}$DB${WHITE} создана. "
 		   echo -e "Идет создание архива сайта"
 		   echo
-		   tar -czf - $SITE $DB.sql --record-size=$recordsize --checkpoint=$checkpoint --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' | split -b $splitarchive --numeric-suffix - $DIR_BACKUP/"${server}/${DATE}/${SITE}.tar.gz-part-"
+		   tar -czf - $SITE $DB.sql --record-size=$recordsize --checkpoint=$checkpoint --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' | split -b $splitarchive --numeric-suffix - $DIR_BACKUP/"${server}/${USER}/${DATE}/${SITE}.tar.gz-part-"
 		   rm ./$DB.sql
 		fi
 		echo -e "\033[1AАрхив сайта создан. Передаем на место хранения."

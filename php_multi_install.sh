@@ -23,6 +23,10 @@ function php_multi_install() {
     fi
 
     echo
+    echo -e "Вы сможете доустановить невыбранные версии ${GREEN}PHP${WHITE} позднее, после установки RISH."
+    echo -e "Установка ${GREEN}PHP${WHITE} происходит по очереди, одна версия за другой."
+    echo -e "Выбирайте только реально необходимые, не ставьте все подряд."
+    echo
     echo -e "Выберите нужную версию ${GREEN}PHP${WHITE} из доступных."
     echo
     local current_y=$(get_cursor_row)

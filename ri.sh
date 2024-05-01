@@ -589,6 +589,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     Install "httpd mod_ssl"
     Up
     httpd -v
+    echo
     Down
     mark_step_completed "$STEP"
   fi
@@ -1023,11 +1024,19 @@ EOF
     echo -e "Чтобы вы смогли скопировать его на свой компьютер через буфер обмена."
     echo -e "Показать? "
     if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+      clear
       ssh-keygen -t ed25519 -C "rish-key" -f "/root/.ssh/rish-key" -N '' >/dev/null 2>&1
       cat "/root/.ssh/rish-key"
       cat "/root/.ssh/rish-key.pub" >>/root/.ssh/authorized_keys 2>/dev/null
+      echo
+      echo
+      echo -e "${VIOLET}Внимание!${WHITE}"
+      echo -e "Копировать ключ надо целиком, включая пустую строку за ним!"
+      echo -e "Последняя строка обязательно должна заканчиваться переводом строки!"
+      echo -e "Иначе при подключении вы получите сообщение о неверном формате ключа."
+      echo
       echo -e "После того как скопируете этот ключ, нажмите Enter, чтобы очистить экран"
-      echo -e "Оба файла после этого будут уничтожены."
+      echo -e "Оба файла ключа после этого будут уничтожены, но вы сможете подключиться с сохраненным ключом."
       vertical_menu "current" 2 0 5 "Очистить экран"
       rm -f /root/.ssh/rish-key /root/.ssh/rish-key.pub
       clear
