@@ -134,15 +134,14 @@ backupall() {
 		rm -rf $DIR_BACKUP/*
 	done < $backupall
   for userdir in /var/www/*; do
+    # Извлекаем имя пользователя из пути
+    user=$(basename "$userdir")
     # Проверяем, является ли элемент директорией
     if [ -d "$userdir" ] && [ "$user" != "cgi-bin" ] && [ "$user" != "html" ]; then
-        # Извлекаем имя пользователя из пути
-        user=$(basename "$userdir")
-        # Выполнение команды для директории пользователя
+        # Выполнение очистки для директории пользователя
         $ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server/$user"
     fi
   done
-	#$ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server"
 }
 
 if [[ "$1" == "auto" ]]
