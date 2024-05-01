@@ -135,10 +135,9 @@ backupall() {
 	done < $backupall
   for userdir in /var/www/*; do
     # Проверяем, является ли элемент директорией
-    if [ -d "$userdir" ]; then
+    if [ -d "$userdir" ] && [ "$user" != "cgi-bin" ] && [ "$user" != "html" ]; then
         # Извлекаем имя пользователя из пути
         user=$(basename "$userdir")
-        echo "Executing command for user: $user"
         # Выполнение команды для директории пользователя
         $ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server/$user"
     fi
