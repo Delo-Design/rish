@@ -113,7 +113,6 @@ backupall() {
 
 		mkdir -p $DIR_BACKUP/$server/$USER/$DATE/
 		echo -e -n "Архивация ${GREEN}"$SITE"${WHITE}. "
-		FILE_NAME=$DIR_BACKUP/"$SITE".tar.gz
 		cd "/var/www/${USER}/www"
 		if [ -z "$DB" ]
 		then
@@ -134,7 +133,17 @@ backupall() {
 		#sshpass -p 'hzGZadbd1Geg' scp  -r $DIR_BACKUP/* ih1515719@193.124.176.46:/
 		rm -rf $DIR_BACKUP/*
 	done < $backupall
-	$ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server"
+  for userdir in /var/www/*; do
+    # Проверяем, является ли элемент директорией
+    if [ -d "$userdir" ]; then
+        # Извлекаем имя пользователя из пути
+        user=$(basename "$userdir")
+        echo "Executing command for user: $user"
+        # Выполнение команды для директории пользователя
+        $ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server/$user"
+    fi
+  done
+	#$ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server"
 }
 
 if [[ "$1" == "auto" ]]
