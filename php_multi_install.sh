@@ -54,9 +54,9 @@ function php_multi_install() {
     echo "Доступно:"
     vertical_menu "current" 1 0 10 "${options[@]}"
     local ret=$?
+    cursor_to $(($current_y)) 0
+    echo -en ${ESC}"[0J"
     if (( ret == 255 )) || (( ret == ${#options[@]}-1 )); then
-      cursor_to $(($current_y)) 0
-      echo -en ${ESC}"[0J"
       return 0
     fi
     local selected_version=${options[${ret}]}
