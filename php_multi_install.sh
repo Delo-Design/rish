@@ -28,8 +28,8 @@ function php_multi_install() {
     echo -e "Выбирайте только реально необходимые, не ставьте все подряд."
     echo
     echo -e "Выберите нужную версию ${GREEN}PHP${WHITE} из доступных."
-    echo
     local current_y=$(get_cursor_row)
+    echo
     local size=$(stty size)
     local lines=${size% *}
     ((skip_lines=0))
