@@ -122,6 +122,7 @@ backupall() {
 		   tar -czf -  $SITE --record-size=$recordsize --checkpoint=$checkpoint --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' | split -b $splitarchive --numeric-suffix - $DIR_BACKUP/"${server}/${USER}/${DATE}/${SITE}.tar.gz-part-"
 		else
 		   mysqldump -u$DB_USER -p$DB_PASSWD $DB > $DB.sql
+		   sed -i '1{/999999.*sandbox/d}' $DB.sql
 		   echo -e -n " База ${GREEN}$DB${WHITE} создана. "
 		   echo -e "Идет создание архива сайта"
 		   echo
@@ -224,11 +225,11 @@ then
 	createlist
 	echo
 	echo -e "Список сайтов для архивации ${GREEN}создан${WHITE} (${backupall})"
-        echo
-        echo "Для запуска процесса архивации запустите скрипт повторно"
+  echo
+  echo "Для запуска процесса архивации запустите скрипт повторно"
 	echo
-        echo "Предварительная настройка завершена"
-
+  echo "Предварительная настройка завершена"
+  vertical_menu "current" 2 0 5 "Нажмите Enter"
 	exit 0
 else
 	echo -e "Список сайтов для архивации ${GREEN}найден${WHITE} (${backupall})"

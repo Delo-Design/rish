@@ -6,6 +6,7 @@ shell_patterns=0
   LGREEN='\033[1;32m'
   RED='\033[0;31m'
   WHITE='\033[0m'
+  MYSQLPASS=2
   source /root/rish/windows.sh
 	clear
 	echo -e "Создаем архив сайта ${GREEN}%f${WHITE}"
@@ -13,6 +14,7 @@ shell_patterns=0
 	then
 		echo "Идет создание архива базы данных"
 		mysqldump -u root -p$MYSQLPASS %f > %f.sql
+		sed -i '1{/999999.*sandbox/d}' %f.sql
 		echo -e "База ${GREEN}%f.sql${WHITE} создана"
 	else
 		echo -e "Базы данных у сайта ${RED}нет${WHITE}"
@@ -34,6 +36,7 @@ shell_patterns=0
 	then
 		echo "Идет создание архива базы данных"
 		mysqldump -u root -p$MYSQLPASS %f > %f.sql
+		sed -i '1{/999999.*sandbox/d}' %f.sql
 		echo -e "База ${GREEN}%f.sql${WHITE} создана"
 	else
 		echo -e "Базы данных у сайта ${RED}нет${WHITE}"
@@ -154,7 +157,13 @@ shell_patterns=0
       fi
     fi
     echo -e "Идет импорт базы данных из файла ${GREEN}"%d"/"%f${WHITE}
-    if mysql -u root -p$MYSQLPASS %b < %d"/"%f
+    # Проверка наличия опции --sandbox
+    if mysql --help | grep -q -- "--sandbox"; then
+      SANDBOX_OPTION="--sandbox"
+    else
+      SANDBOX_OPTION=""
+    fi
+    if mysql -u root -p$MYSQLPASS $SANDBOX_OPTION %b < %d"/"%f
     then
        echo -e "База данных ${GREEN}%b${WHITE} успешно импортирована"
     else
@@ -171,6 +180,7 @@ shell_patterns=0
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
+	MYSQLPASS="2"
 	clear
 	source /root/rish/windows.sh
   if ! [ -d "%d/%f" ]
@@ -190,13 +200,16 @@ shell_patterns=0
     exit
   fi
   echo "Проверяем наличие сертификата у сайта"
-  if certbot certificates --cert-name %f | grep %f &>/dev/null
+  if command -v certbot >/dev/null 2>&1
   then
-     echo "У сайта есть SSL сертификат"
-     echo "Производим отзыв сертификата"
-     certbot revoke --cert-path /etc/letsencrypt/live/%f/cert.pem
-  else
-     echo "У сайта нет SSL сертификата"
+    if certbot certificates --cert-name %f | grep %f &>/dev/null
+    then
+       echo "У сайта есть SSL сертификат"
+       echo "Производим отзыв сертификата"
+       certbot revoke --cert-path /etc/letsencrypt/live/%f/cert.pem
+    else
+       echo "У сайта нет SSL сертификата"
+    fi
   fi
   rm /etc/httpd/conf.d/%f* &>/dev/null
   if [[ $? -eq 0 ]]
@@ -386,7 +399,7 @@ j  Скачать Joomla в папку
       sed -i "s/name=\"db_pass\".*/name=\"db_pass\" default=\"${dbpass}\"/" ${directory}/%f/installation/model/forms/database.xml
       sed -i "s/name=\"db_name\".*/name=\"db_name\" default=\"%f\"/" ${directory}/%f/installation/model/forms/database.xml
     else
-      echo -e "Установка Joomla version ${GREEN}4${WHITE}"
+      echo -e "Установка Joomla version ${GREEN}${joomla_version}${WHITE}"
       if cat /home/${r}/.pass.txt | grep -q "defaultsiteaccount"
       then
         echo "Будет использована учетная запись"
@@ -676,10 +689,56 @@ O  Обновление RISH
   source /root/rish/windows.sh
   cd /root
   clear
-  rm -f rish8.tar.gz > /dev/null
+  rm -f rish2.tar.gz > /dev/null
+  #Вспомогательное внутри сценария
+  LOG_FILE="/root/rish/logfile_rish_install.log"
+  # Путь к конфигурационному файлу
+  config_file="/root/rish/rish_config.sh"
+  # Проверка на существование файла лога
+  if [ ! -f "$LOG_FILE" ]; then
+      echo "Отсутствует лог файл установки RISH. Установка была выполнена неверно."
+      echo "Обновление невозможно."
+      exit 1
+  fi
+  # Функция для проверки, был ли шаг выполнен
+  check_step() {
+      local step=$1
+      grep -Fxq "$step" "$LOG_FILE"
+  }
+  # Функция для записи выполненного шага
+  mark_step_completed() {
+      local step=$1
+      echo "$step" >> "$LOG_FILE"
+  }
+
+  source $config_file
   # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
   version_gt() {
     test "$(printf '%%s\n' "$@" | sort -V | head -n 1)" != "$1"
+  }
+  Install() {
+    if ! rpm -q $@ >/dev/null 2>&1; then
+        echo -e "Ставим ${GREEN}$@${WHITE}"
+        if yum -y install $@; then
+            echo -e "${GREEN}$@${WHITE} установлен"
+        else
+            echo -e "Установить ${RED}$@${WHITE} не удалось, очищаем кэш и пытаемся снова"
+            # Очистка кэша yum и повторная попытка установки
+            yum clean all
+            yum makecache
+            if yum -y install $@; then
+                echo -e "${GREEN}$@${WHITE} установлен после очистки кэша"
+            else
+                echo -e "Установить ${RED}$@${WHITE} не удалось даже после очистки кэша"
+                exit 1
+            fi
+        fi
+        echo
+    else
+        Up
+        echo -e "${GREEN}$@${WHITE} уже установлен"
+    fi
+    Down
   }
   Update(){
   # Извлекаем файл версии из архива
@@ -708,27 +767,24 @@ O  Обновление RISH
    if vertical_menu "current" 2 0 5 "Да" "Нет"
    then
      #обновляем версию RISH
-     #проверим есть ли idn2
-     if ! rpm -q "idn2" >/dev/null 2>&1
-     then
-      dnf install -y idn2
-     fi
      if tar -tzf rish2.tar.gz > /dev/null 2>&1
      then
       tar --no-same-owner -xvf rish2.tar.gz
       rm rish2.tar.gz
       cd /root/rish
-      findlocal="local"
-      findlocal=${findlocal}"rish"
-      if grep -q ${findlocal} /etc/mc/mc.menu
-      then
-        cat mc.menu.local >> mc.menu
-      fi
       rm /etc/mc/mc.menu
       cp mc.menu /etc/mc/mc.menu
+      if ${LocalServer}; then
+        cat mc.menu.local >> /etc/mc/mc.menu
+      fi
       chmod u+x ri.sh
       chmod u+x clonesite.sh
       chmod u+x backup.sh
+      STEP="Установка dnf-utils"
+      if ! check_step "$STEP"; then
+        Install dnf-utils
+        mark_step_completed "$STEP"
+      fi
      else
       echo "Скачанный архив поврежден"
       vertical_menu "current" 2 0 5 "Нажмите Enter"

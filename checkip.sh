@@ -85,11 +85,7 @@ CheckIP() {
 
   myip="("$(ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' | awk '{print $NF;exit}')")"
   echo -e "Адрес этого сервера: ${GREEN}${myip}${WHITE}"
-  local FREE_SPACE
-  FREE_SPACE=$(df -Pm / | awk 'NR==2 {print $4}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-  local ALL_SITES_SIZE_MB
-  ALL_SITES_SIZE_MB=$(du -sm "/var/www" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-  echo -e "На сервере свободно: ${GREEN}${FREE_SPACE}${WHITE} Mb. Сайты занимают ${GREEN}${ALL_SITES_SIZE_MB}${WHITE} Mb."
+
   echo "───────────────────────────────────────────"
   for file in /var/www/*; do
     if [ -d "$file" ]; then
@@ -149,5 +145,11 @@ CheckIP() {
       done
     fi
   done
+  echo "───────────────────────────────────────────"
+  local FREE_SPACE
+  FREE_SPACE=$(df -Pm / | awk 'NR==2 {print $4}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
+  local ALL_SITES_SIZE_MB
+  ALL_SITES_SIZE_MB=$(du -sm "/var/www" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
+  echo -e "На сервере свободно: ${GREEN}${FREE_SPACE}${WHITE} Mb. Сайты занимают ${GREEN}${ALL_SITES_SIZE_MB}${WHITE} Mb."
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 }

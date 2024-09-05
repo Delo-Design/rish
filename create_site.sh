@@ -11,7 +11,7 @@ function check_site() {
   local directory_path="$2"
   local full_path="$directory_path/$site_name"
   local choice
-  local regex="^[a-zA-Z0-9]+([-\.][a-zA-Z0-9]+)*(\.[a-zA-Z]{2,})?$|^[a-zA-Z0-9]+$"
+  local regex="^([a-zA-Z0-9]+([-\.][a-zA-Z0-9]+)*(\.[a-zA-Z]{2,})?|xn--[a-zA-Z0-9\-]+([-\.][a-zA-Z0-9\-]+)*(\.xn--[a-zA-Z0-9\-]+|[a-zA-Z]{2,})?|^[a-zA-Z0-9]+)$"
 
   # Проверяем, существует ли папка и корректно ли ее имя
   if [[ -d "$full_path" && "$site_name" =~ $regex ]]; then
@@ -36,13 +36,14 @@ function check_site() {
         ;;
       esac
     fi
+    echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
     site_name=""
   else
     # Если имя некорректное - пускай сам вводит что ему нужно
     site_name=""
   fi
-  echo -e -n "${WHITE}Введите свое имя сайта (Enter для выхода):${GREEN}"
-  read -e -p " " site_name
+  echo -e  "${WHITE}Введите свое имя сайта (Enter для выхода):${GREEN}"
+  read -e -p "" site_name
   while true; do
     if [[ -z "$site_name" ]]; then
       echo -e ${WHITE}
@@ -53,15 +54,15 @@ function check_site() {
       echo -e "${WHITE}Имя сайта ${GREEN}$site_name${WHITE} введено корректно."
       if [[ -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
         echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
-        echo -e -n "Введите корректное имя:${GREEN}"
-        read -e -p " " site_name
+        echo -e "Введите другое имя (Enter для выхода):${GREEN}"
+        read -e -p "" site_name
         continue # Пропускаем текущую итерацию цикла
       fi
       break
     else
       echo -e "${WHITE}Имя сайта ${RED}$site_name${WHITE} некорректное. "
-      echo -e -n "Введите корректное имя (Enter для выхода):${GREEN}"
-      read -e -p " " site_name
+      echo -e "Введите корректное имя (Enter для выхода):${GREEN}"
+      read -e -p "" site_name
     fi
   done
 
@@ -74,7 +75,12 @@ function create_site() {
   username=$(echo "$path" | cut -d'/' -f4)
   echo -e "Создание сайта (vhost) для пользователя ${GREEN}${username}${WHITE}"
   if check_site "$1" "$2"; then
-    echo -e "Создаем сайт (vhost) ${GREEN}${site_name}${WHITE}"
+    echo -e -n "Создаем сайт (vhost) ${GREEN}${site_name}"
+    if [[ "$site_name" =~ (xn\-\-) ]]
+    then
+     echo -e -n " ("$(idn2 -d "$site_name")")"
+    fi
+    echo -e ${WHITE}
     mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
     echo
     echo -e "Выберите нужную версию ${GREEN}PHP${WHITE} из доступных."

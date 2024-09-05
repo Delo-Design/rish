@@ -684,7 +684,11 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       dnf install -y https://rpms.remirepo.net/fedora/remi-release-${FedoraVersion}.rpm
       dnf config-manager --set-enabled remi
     else
-      dnf install -y https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION}.rpm
+      if ! dnf install -y https://rpms.remirepo.net/enterprise/remi-release-${OS_VERSION}.rpm
+      then
+        echo -e "${RED}Ошибка${WHITE} при попытке установить репозитарий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
+        exit 1
+      fi
     fi
     Up
     mark_step_completed "$STEP"
@@ -746,6 +750,12 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP="Установка unzip"
   if ! check_step "$STEP"; then
     Install unzip
+    mark_step_completed "$STEP"
+  fi
+
+  STEP="Установка dnf-utils"
+  if ! check_step "$STEP"; then
+    Install dnf-utils
     mark_step_completed "$STEP"
   fi
 
@@ -833,6 +843,53 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     cd ~
     if ! grep -q "EDITOR" ~/.bashrc; then
       echo "export EDITOR=mcedit" >>~/.bashrc
+    fi
+    mark_step_completed "$STEP"
+  fi
+
+  STEP="Установка репозиториев для MariaDB"
+  if ! check_step "$STEP"; then
+    Up
+    echo
+    echo -e "Установка и настройка репозиториев для ${GREEN}MariaDB${WHITE}."
+    Down
+    cd /etc/yum.repos.d/
+
+    echo
+    echo -e "${GREEN}MariaDB${WHITE} на данный момент имеет два релиза с долгосрочной поддержкой:"
+    echo "10.6  со сроком поддержки до 6 июля 2026"
+    echo "10.11 со сроком поддержки до 16 февраля 2028"
+    echo -e "${GREEN}11.4${WHITE}  со сроком поддержки до 29 мая 2029"
+    echo
+    echo "Какой релиз ставить?"
+    vertical_menu "current" 2 0 5 "MariaDB 11.4" "MariaDB 10.11" "MariaDB 10.6"
+    case "$choice" in
+    0)
+      Maria_Version="11.4"
+      ;;
+    1)
+      Maria_Version="10.11"
+      ;;
+    2)
+      Maria_Version="10.6"
+      ;;
+    esac
+
+    echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
+
+    if ! bash /root/rish/mariadb_repo_setup.sh --mariadb-server-version=${Maria_Version}
+    then
+      {
+        echo "[mariadb]"
+        echo "name = MariaDB"
+        echo "# rpm.mariadb.org is a dynamic mirror if your preferred mirror goes offline. See https://mariadb.org/mirrorbits/ for details."
+        echo "# baseurl = https://rpm.mariadb.org/${Maria_Version}/rhel/\$releasever/\$basearch"
+        echo "baseurl = https://mirror.docker.ru/mariadb/yum/${Maria_Version}/rhel/\$releasever/\$basearch"
+        echo "module_hotfixes = 1"
+        echo "# gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
+        echo "gpgkey = https://mirror.docker.ru/mariadb/yum/RPM-GPG-KEY-MariaDB"
+        echo "gpgcheck = 1"
+      } >mariadb.repo
     fi
     mark_step_completed "$STEP"
   fi
@@ -988,6 +1045,24 @@ EOF
     mark_step_completed "$STEP"
   fi
 
+  process_ssh_config_file() {
+    local config_file=$1
+
+    # Резервное копирование файла конфигурации
+    cp "$config_file" "${config_file}.bak"
+
+    # Удаление всех строк с PasswordAuthentication
+    sed -i '/^#\?PasswordAuthentication/d' "$config_file"
+
+    # Добавление строки с отключением аутентификации по паролю перед первым блоком Match
+    awk '/^Match/ && !done {print "PasswordAuthentication no"; done=1} 1' "$config_file" >"${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
+
+    # Если строка PasswordAuthentication no не была добавлена, добавить её в конец файла
+    if ! grep -q "^PasswordAuthentication no" "$config_file"; then
+      echo "PasswordAuthentication no" >>"$config_file"
+    fi
+  }
+
   STEP="Отключение авторизации по паролю для SSH."
   if ! check_step "$STEP"; then
     echo
@@ -996,19 +1071,17 @@ EOF
     echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"; then
       echo -e -n "${CURSORUP}"
-      # Резервное копирование оригинального файла конфигурации
-      cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
-      # Удаление всех строк с PasswordAuthentication
-      sed -i '/^#\?PasswordAuthentication/d' /etc/ssh/sshd_config
-      # Добавление строки с отключением аутентификации по паролю перед первым блоком Match
-      awk '/^Match/ && !done {print "PasswordAuthentication no"; done=1} 1' /etc/ssh/sshd_config >/etc/ssh/sshd_config.tmp && mv /etc/ssh/sshd_config.tmp /etc/ssh/sshd_config
-
-      # Если строка PasswordAuthentication no не была добавлена, добавить её в конец файла
-      if ! grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config; then
-        echo "PasswordAuthentication no" >>/etc/ssh/sshd_config
-      fi
+      # Обработка основного файла конфигурации
+      process_ssh_config_file /etc/ssh/sshd_config
+      # Обработка файлов в /etc/ssh/sshd_config.d
+      for file in /etc/ssh/sshd_config.d/*.conf; do
+        if [ -f "$file" ]; then
+          process_ssh_config_file "$file"
+        fi
+      done
       systemctl restart sshd.service
-      echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE}.${ERASEUNTILLENDOFLINE}"
+      echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE} ${ERASEUNTILLENDOFLINE} в файлах конфигурации."
+      sshd -T | grep passwordauthentication
     else
       echo -e "${CURSORUP}Авторизация по паролю ${RED}разрешена${WHITE}."
       echo -e
@@ -1076,11 +1149,14 @@ else
   echo -e "Версия ${GREEN}apache${WHITE}"
   httpd -v
   echo
+  sshd -T | grep passwordauthentication
+  echo
   echo -e "Установленные версии ${GREEN}PHP${WHITE}:"
   mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
   for installed in "${installed_versions[@]}"; do
     echo "       "$installed
   done
+  needs-restarting -r
 
   while true; do
 
@@ -1161,19 +1237,17 @@ else
       echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
         echo -e -n "${CURSORUP}"
-        # Резервное копирование оригинального файла конфигурации
-        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
-        # Удаление всех строк с PasswordAuthentication
-        sed -i '/^#\?PasswordAuthentication/d' /etc/ssh/sshd_config
-        # Добавление строки с отключением аутентификации по паролю перед первым блоком Match
-        awk '/^Match/ && !done {print "PasswordAuthentication no"; done=1} 1' /etc/ssh/sshd_config >/etc/ssh/sshd_config.tmp && mv /etc/ssh/sshd_config.tmp /etc/ssh/sshd_config
-
-        # Если строка PasswordAuthentication no не была добавлена, добавить её в конец файла
-        if ! grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config; then
-          echo "PasswordAuthentication no" >>/etc/ssh/sshd_config
-        fi
+        # Обработка основного файла конфигурации
+        process_ssh_config_file /etc/ssh/sshd_config
+        # Обработка файлов в /etc/ssh/sshd_config.d
+        for file in /etc/ssh/sshd_config.d/*.conf; do
+          if [ -f "$file" ]; then
+            process_ssh_config_file "$file"
+          fi
+        done
         systemctl restart sshd.service
-        echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE}.${ERASEUNTILLENDOFLINE}"
+        echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE} ${ERASEUNTILLENDOFLINE} в файлах конфигурации."
+        sshd -T | grep passwordauthentication
       else
         echo -e "${CURSORUP}Файл /etc/ssh/sshd_config ${VIOLET}не изменен${WHITE}.${ERASEUNTILLENDOFLINE}"
         echo -e

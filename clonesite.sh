@@ -264,6 +264,7 @@ CloneSite() {
   if [ -n "$ee" ]; then
     echo -e "идет создание архива базы данных ${GREEN}${remotesitename}${WHITE}"
     ssh $choosenserver 'mysqldump -u root -p$'{MYSQLPASS} $remotesitename >$remotesitename.sql
+    sed -i '1{/999999.*sandbox/d}' ${remotesitename}.sql
     echo -e "Архив базы данных ${GREEN}${remotesitename}${WHITE} скачан"
     if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE IF NOT EXISTS \`${localsitename}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
       echo -e "База mysql с именем ${GREEN}${localsitename}${WHITE} создана"
@@ -273,7 +274,12 @@ CloneSite() {
     else
       echo -e ${RED}"Произошла ошибка"${WHITE}
     fi
-    mysql -u root -p$MYSQLPASS $localsitename <$remotesitename".sql"
+    if mysql --help | grep -q -- "--sandbox"; then
+      SANDBOX_OPTION="--sandbox"
+    else
+      SANDBOX_OPTION=""
+    fi
+    mysql -u root -p$MYSQLPASS $SANDBOX_OPTION $localsitename <$remotesitename".sql"
     rm $remotesitename".sql"
     echo -e "База данных ${GREEN}$localsitename${WHITE} перенесена"
   else

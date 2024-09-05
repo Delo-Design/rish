@@ -1,21 +1,5 @@
 # shellcheck disable=SC3000-SC4000
 mariadb_install() {
-  cd /etc/yum.repos.d/
-
-  echo
-  echo -e "${GREEN}MariaDB${WHITE} на данный момент имеет два релиза с долгосрочной поддержкой:"
-  echo "10.6 со сроком поддержки до 6 июля 2026"
-  echo "10.11 со сроком поддержки до 16 февраля 2028"
-  echo
-  echo "Какой релиз ставить?"
-  if vertical_menu "current" 2 0 5 "MariaDB 10.11" "MariaDB 10.6"; then
-    Maria_Version="10.11"
-  else
-    Maria_Version="10.6"
-  fi
-  echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
-
-  bash /root/rish/mariadb_repo_setup.sh --mariadb-server-version=${Maria_Version}
 
   Install "MariaDB-server MariaDB-client"
   systemctl start mariadb

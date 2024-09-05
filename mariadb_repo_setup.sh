@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # shellcheck disable=2016 disable=1091 disable=2059
 
-version="2024-02-16"
+version="2024-05-30"
 
 # Notes:
+#   2024-05-30 - Update MariaDB default to 11.4, add support for 11.5
+#              - Add Ubuntu 24.04 LTS "noble"
 #   2024-02-16 - Update MariaDB default to 11.3, add support for 11.4
 #   2023-11-21 - Update MariaDB default to 11.2, add support for 11.3
 #   2023-08-21 - Update MariaDB default to 11.1, add support for 11.2
@@ -79,7 +81,7 @@ version="2024-02-16"
 supported="# The MariaDB Repository only supports these distributions:
 #    * RHEL/Rocky 8 & 9 (rhel)
 #    * RHEL/CentOS 7 (rhel)
-#    * Ubuntu 18.04 LTS (bionic), 20.04 LTS (focal), & 22.04 LTS (jammy)
+#    * Ubuntu 20.04 LTS (focal), 22.04 LTS (jammy), and 24.04 LTS (noble)
 #    * Debian 10 (buster), Debian 11 (bullseye), and Debian 12 (bookworm)
 #    * SLES 12 & 15 (sles)"
 
@@ -87,8 +89,8 @@ otherplatforms="# See https://mariadb.com/kb/en/mariadb/mariadb-package-reposito
 
 url_base="dlm.mariadb.com"
 url_mariadb_repo="https://${url_base}/repo/mariadb-server"
-mariadb_server_version=mariadb-11.3
-mariadb_server_version_real=mariadb-11.3
+mariadb_server_version=mariadb-11.4
+mariadb_server_version_real=mariadb-11.4
 mariadb_maxscale_version=latest
 write_to_stdout=0
 skip_key_import=0
@@ -190,8 +192,8 @@ verify_server_os_combo() {
   local not_available="MariaDB Server ${mariadb_server_version_real} is not available for $(cap ${os_type}) $(cap ${os_version})"
   case $mariadb_server_version_real in
     *10.1[0-1]*) ;; # need to handle 10.10+
-    *10.[0-4]*) case ${os_version} in jammy|bullseye) failed=1 ;; esac ;;
-    *10.5*) case ${os_version} in jammy) failed=1 ;; esac ;;
+    *10.[0-4]*) case ${os_version} in jammy|bullseye|noble) failed=1 ;; esac ;;
+    *10.5*) case ${os_version} in jammy|noble) failed=1 ;; esac ;;
   esac
   if (( $failed ))
   then
@@ -211,9 +213,9 @@ verify_server_os_combo() {
 verify_mariadb_server_version() {
   # version regex
   if (($skip_eol_check)); then
-    rx='^(mariadb-){0,1}(10\.[0-9]|10\.1[0-1]|10\.[0-9]\.[1-9]{0,1}[0-9]{1}|10\.1[0-1]\.[1-9]{1}[0-9]{0,1}|11\.[0-4]|11\.[0-4]\.[1-9]{1}[0-9]{0,1})$'
+    rx='^(mariadb-){0,1}(10\.[0-9]|10\.1[0-1]|10\.[0-9]\.[1-9]{0,1}[0-9]{1}|10\.1[0-1]\.[1-9]{1}[0-9]{0,1}|11\.[0-5]|11\.[0-5]\.[1-9]{1}[0-9]{0,1})$'
   else
-    rx='^(mariadb-){0,1}(10\.[4569]|10\.1[0-1]|10\.[4569]\.[1-9]{0,1}[0-9]{1}|10\.1[0-1]\.[1-9]{1}[0-9]{0,1}|11\.[0-4]|11\.[0-4]\.[1-9]{1}[0-9]{0,1})$'
+    rx='^(mariadb-){0,1}(10\.[4569]|10\.1[0-1]|10\.[4569]\.[1-9]{0,1}[0-9]{1}|10\.1[0-1]\.[1-9]{1}[0-9]{0,1}|11\.[0-5]|11\.[0-5]\.[1-9]{1}[0-9]{0,1})$'
   fi
   if [[ $@ =~ $rx ]] ; then
     case $os_type in
@@ -499,8 +501,8 @@ identify_os(){
                     precise ) ((skip_os_eol_check)) || error 'Ubuntu 12.04 LTS has reached End of Life and is no longer supported.' ;;
                     trusty  ) ((skip_os_eol_check)) || error 'Ubuntu 14.04 LTS has reached End of Life and is no longer supported.' ;;
                     xenial  ) ((skip_os_eol_check)) || error 'Ubuntu 16.04 LTS has reached End of Life and is no longer supported.' ;;
-                    bionic  ) extra_options=" lang=none target-=CNF" ;;
-                    focal|jammy ) ;;
+                    bionic  ) extra_options=" lang=none target-=CNF" ; ((skip_os_eol_check)) || error 'Ubuntu 18.04 LTS has reached End of Life and is no longer supported.' ;;
+                    focal|jammy|noble ) ;;
                     *) error "Detected Ubuntu but version ($os_version) is not supported." "Only Ubuntu LTS releases are supported."  "$otherplatforms" ;;
                 esac
                 if [[ $arch == aarch64 ]]
@@ -508,8 +510,8 @@ identify_os(){
                     case $os_version in
                         xenial ) ;;
                         bionic ) extra_options=" lang=none target-=CNF" ;;
-                        focal|jammy ) ;;
-                        *) error "Only 18.04/bionic, 20.04/focal, & 22.04/jammy are supported for ARM64. Detected version: '$os_version'" ;;
+                        focal|jammy|noble ) ;;
+                        *) error "Only 18.04/bionic, 20.04/focal, 22.04/jammy, & 24.04/noble are supported for ARM64. Detected version: '$os_version'" ;;
                     esac
                 fi
                 ;;
@@ -713,7 +715,7 @@ then
           error "--os-version='$os_version' is only valid if --os-type='sles', you gave '$os_type'" "$supported"
         fi
         ;;
-      xenial|bionic|focal|jammy)
+      xenial|bionic|focal|jammy|noble)
         if [ $os_type != 'ubuntu' ] ; then
           error "--os-version='$os_version' is only valid if --os-type='ubuntu', you gave '$os_type'" "$supported"
         fi
