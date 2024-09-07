@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 function create_swapfile() {
+    echo
     # Проверяем, есть ли активный swap
     if swapon --show | grep -q '^[^ ]'; then
         echo "Swap уже активен:"
@@ -14,7 +15,7 @@ function create_swapfile() {
         local SWAP_SIZE
 
         local def=""
-        echo -e "Размер памяти сервера:${GREEN}${TOTAL_MEM}${WHITE} Mb"
+        echo -e "Размер памяти сервера: ${GREEN}${TOTAL_MEM}${WHITE} Mb"
         if [ "$TOTAL_MEM" -lt 1024 ]; then
           echo "Для вас обязательно требуется включение swap файла. "
           def="default=1"
@@ -69,9 +70,28 @@ function create_swapfile() {
         # Добавляем в /etc/fstab для автоматической активации при загрузке
         if ! grep -q "$SWAP_FILE" /etc/fstab; then
             echo "$SWAP_FILE none swap sw 0 0" | tee -a /etc/fstab > /dev/null
-            echo "Swap добавлен в ${GREEN}/etc/fstab${WHITE}."
+            echo -e "Swap добавлен в ${GREEN}/etc/fstab${WHITE}."
         else
             echo "Swap уже присутствует в /etc/fstab."
         fi
+        
+        # Устанавливаем значение vm.swappiness, если swap активен
+        local SWAPPINESS_VALUE=10  # Здесь можно указать нужное значение
+        echo "Настройка vm.swappiness в $SWAPPINESS_VALUE"
+
+        # Устанавливаем значение на лету
+        sysctl vm.swappiness=$SWAPPINESS_VALUE
+
+        # Для постоянного изменения добавляем его в /etc/sysctl.conf, если его там нет
+        if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
+            echo "vm.swappiness=$SWAPPINESS_VALUE" | tee -a /etc/sysctl.conf
+            echo "vm.swappiness добавлен в /etc/sysctl.conf"
+        else
+            # Если параметр уже существует, заменим его на новое значение
+            sed -i "s/^vm.swappiness=.*/vm.swappiness=$SWAPPINESS_VALUE/" /etc/sysctl.conf
+            echo "vm.swappiness обновлен в /etc/sysctl.conf"
+        fi
+
     fi
+    echo
 }
