@@ -735,10 +735,8 @@ O  Обновление RISH
         fi
         echo
     else
-        Up
         echo -e "${GREEN}$@${WHITE} уже установлен"
     fi
-    Down
   }
   Update(){
   # Извлекаем файл версии из архива
