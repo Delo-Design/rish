@@ -710,7 +710,6 @@ O  Обновление RISH
       local step=$1
       echo "$step" >> "$LOG_FILE"
   }
-
   source $config_file
   # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
   version_gt() {
