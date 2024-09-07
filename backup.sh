@@ -79,7 +79,7 @@ createlist() {
 			let ii=$ii+1
 			printf "%3s. " $ii
 			printf "${GREEN}%s${WHITE} " "${r}"
-			if [ -n "`mysql  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='$db'" 2>&1`" ];
+			if [ -n "`mariadb -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='$db'" 2>&1`" ];
 			then
 				echo "База данных $db "
 			else

@@ -83,6 +83,7 @@ source checkip.sh
 source php_multi_install.sh
 source mariadb_install.sh
 source create_hotlist.sh
+source create_swapfile.sh
 
 if (( lines < 40 || columns < 140 )); then
   echo
@@ -336,7 +337,7 @@ CreateUser() {
 
   create_hotlist
 
-  if mysql  -e "CREATE USER ${NAME}@localhost IDENTIFIED BY '${pass2}';"
+  if mariadb  -e "CREATE USER ${NAME}@localhost IDENTIFIED BY '${pass2}';"
   then
     echo -e "пользователь ${GREEN}${NAME}${WHITE} успешно создан"
   else
@@ -380,7 +381,7 @@ DeleteUser() {
   fi
   # проверим на предмет неудаленных баз данных
   SiteuserMysqlPass=`cat /home/${1}/.pass.txt | grep Database | awk '{ print $2}'`
-  bases=( `mysql -u${1} -p${SiteuserMysqlPass}  --batch -e "SHOW DATABASES" | tail -n +3` )
+  bases=( `mariadb -u${1} -p${SiteuserMysqlPass}  --batch -e "SHOW DATABASES" | tail -n +3` )
   if (( ${#bases[@]} > 0 ))
   then
     echo "У пользователя есть неудаленные базы данных:"
@@ -428,7 +429,7 @@ DeleteUser() {
   gpasswd -d apache ${1}
   userdel --remove ${1}
   create_hotlist
-  mysql  -e "DROP USER IF EXISTS ${1}@localhost;"
+  mariadb  -e "DROP USER IF EXISTS ${1}@localhost;"
   echo -e "Пользователь ${RED}$1${WHITE} был удален."
 }
 
@@ -529,6 +530,14 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         fi
       fi
     fi
+    mark_step_completed "$STEP"
+  fi
+
+  STEP="Проверка и включение swap файла, если нужно"
+  if ! check_step "$STEP"; then
+    Down
+    create_swapfile
+    Up
     mark_step_completed "$STEP"
   fi
 
@@ -863,6 +872,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     echo
     echo "Какой релиз ставить?"
     vertical_menu "current" 2 0 5 "MariaDB 11.4" "MariaDB 10.11" "MariaDB 10.6"
+    choice=$?
     case "$choice" in
     0)
       Maria_Version="11.4"
@@ -1194,7 +1204,7 @@ else
         if ((choice < 255)); then
           echo -e ${CURSORUP}"Выбран пользователь ${GREEN}${usrs[${choice}]}${WHITE}${ERASEUNTILLENDOFLINE}"
           SiteuserMysqlPass=$(cat /home/${usrs[${choice}]}/.pass.txt | grep Database | awk '{ print $2}')
-          bases=($(mysql -u${usrs[${choice}]} -p${SiteuserMysqlPass} --batch -e "SHOW DATABASES" | tail -n +2 | sed '/information_schema/d'))
+          bases=($(mariadb -u${usrs[${choice}]} -p${SiteuserMysqlPass} --batch -e "SHOW DATABASES" | tail -n +2 | sed '/information_schema/d'))
           if ((${#bases[@]} > 0)); then
             echo -e "Выберите базу данных пользователя ${RED}"${usrs[${choice}]}"${WHITE} для удаления"
             vertical_menu "current" 2 0 30 "${bases[@]}"

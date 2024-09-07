@@ -257,7 +257,7 @@ CloneSite() {
 
   ext=${remotesitename##*.}
 
-  ee='mysql  -uroot -p${MYSQLPASS} -qfsBe'
+  ee='mariadb -uroot -p${MYSQLPASS} -qfsBe'
   ee=$ee' "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='"'${remotesitename}'\" "
   ee=$ee'2>&1'
   ee=$(ssh $choosenserver $ee)
@@ -266,20 +266,20 @@ CloneSite() {
     ssh $choosenserver 'mysqldump -u root -p$'{MYSQLPASS} $remotesitename >$remotesitename.sql
     sed -i '1{/999999.*sandbox/d}' ${remotesitename}.sql
     echo -e "Архив базы данных ${GREEN}${remotesitename}${WHITE} скачан"
-    if mysql -u root -p${MYSQLPASS} -e "CREATE DATABASE IF NOT EXISTS \`${localsitename}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
+    if mariadb -u root -p${MYSQLPASS} -e "CREATE DATABASE IF NOT EXISTS \`${localsitename}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
       echo -e "База mysql с именем ${GREEN}${localsitename}${WHITE} создана"
-      mysql -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`${localsitename}\`.* TO '${localuser}'@'localhost';"
-      mysql -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
+      mariadb -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`${localsitename}\`.* TO '${localuser}'@'localhost';"
+      mariadb -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
       echo -e "Права на базу выданы пользователю ${GREEN}${localuser}${WHITE}"
     else
       echo -e ${RED}"Произошла ошибка"${WHITE}
     fi
-    if mysql --help | grep -q -- "--sandbox"; then
+    if mariadb --help | grep -q -- "--sandbox"; then
       SANDBOX_OPTION="--sandbox"
     else
       SANDBOX_OPTION=""
     fi
-    mysql -u root -p$MYSQLPASS $SANDBOX_OPTION $localsitename <$remotesitename".sql"
+    mariadb -u root -p$MYSQLPASS $SANDBOX_OPTION $localsitename <$remotesitename".sql"
     rm $remotesitename".sql"
     echo -e "База данных ${GREEN}$localsitename${WHITE} перенесена"
   else
