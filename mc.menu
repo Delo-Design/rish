@@ -735,6 +735,7 @@ O  Обновление RISH
       chmod u+x ri.sh
       chmod u+x clonesite.sh
       chmod u+x backup.sh
+      echo
       bash postupdate.sh
      else
       echo "Скачанный архив поврежден"

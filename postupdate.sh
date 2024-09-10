@@ -65,8 +65,8 @@ if ! check_step "$STEP"; then
             # Если папки нет, создаем её и выводим сообщение
             mkdir "$dir/tmp"
             echo "Папка tmp создана в $dir"
+            chown $(basename "$dir"):$(basename "$dir") "$dir/tmp"
         fi
-      chown ${dir}:${dir} "$dir/tmp"
     fi
   done
   # Проходим по каждой версии PHP в /etc/opt/remi/
