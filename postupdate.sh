@@ -58,11 +58,15 @@ fi
 STEP="Добавление папки tmp всем пользователям"
 if ! check_step "$STEP"; then
   for dir in /var/www/*; do
-    # Проверяем, что это директория
-    if [ -d "$dir" ]; then
-      # Создаем папку tmp в каждой найденной директории
-      mkdir -p "$dir/tmp"
-      echo "Папка tmp создана в $dir"
+    # Проверяем, что это директория и она не является cgi-bin или html
+    if [ -d "$dir" ] && [[ $(basename "$dir") != "cgi-bin" && $(basename "$dir") != "html" ]]; then
+        # Проверяем, существует ли папка tmp
+        if [ ! -d "$dir/tmp" ]; then
+            # Если папки нет, создаем её и выводим сообщение
+            mkdir "$dir/tmp"
+            echo "Папка tmp создана в $dir"
+        fi
+      chown ${dir}:${dir} "$dir/tmp"
     fi
   done
   # Проходим по каждой версии PHP в /etc/opt/remi/

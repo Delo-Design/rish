@@ -1,5 +1,5 @@
 + d /var/www/ & t d
-T   Добавить сайт в роутер
+T  Добавить сайт в роутер
  #localrish
  source /root/rish/windows.sh
  askrouter () {
@@ -79,7 +79,7 @@ T   Добавить сайт в роутер
 
 
 + d /var/www/ & t d
-S   Убрать сайт из роутера
+S  Убрать сайт из роутера
  source /root/rish/windows.sh
  askrouter () {
     echo "Вы впервые обращаетесь к роутеру из этой учетной записи."
