@@ -327,10 +327,12 @@ CreateUser() {
   mkdir /var/www/${NAME}/session
   mkdir /var/www/${NAME}/wsdlcache
   mkdir /var/www/${NAME}/slowlog
+  mkdir /var/www/${NAME}/tmp
 
   chown ${NAME}:${NAME} /var/www/${NAME}/session
   chown ${NAME}:${NAME} /var/www/${NAME}/wsdlcache
   chown ${NAME}:${NAME} /var/www/${NAME}/slowlog
+  chown ${NAME}:${NAME} /var/www/${NAME}/tmp
 
   # Удаляем конфигурацию php по умолчанию (это файлы типа php74-php.conf)
   find /etc/httpd/conf.d -type f -name 'php[0-9][0-9]-php.conf' -exec rm -f {} +
@@ -1054,6 +1056,14 @@ EOF
     CreateUser "siteuser"
     mark_step_completed "$STEP"
   fi
+
+  STEP="Добавление папки tmp всем пользователям"
+  if ! check_step "$STEP"; then
+    #Это пустой шаг, чтобы добавить выполненный пункт в лог файл
+    #чтобы при обновлении скрипт обновления не пытался опять создавать папки tmp каждому пользователю
+    mark_step_completed "$STEP"
+  fi
+
 
   process_ssh_config_file() {
     local config_file=$1

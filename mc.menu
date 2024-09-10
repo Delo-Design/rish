@@ -690,52 +690,8 @@ O  Обновление RISH
   cd /root
   clear
   rm -f rish2.tar.gz > /dev/null
-  #Вспомогательное внутри сценария
-  LOG_FILE="/root/rish/logfile_rish_install.log"
-  # Путь к конфигурационному файлу
-  config_file="/root/rish/rish_config.sh"
-  # Проверка на существование файла лога
-  if [ ! -f "$LOG_FILE" ]; then
-      echo "Отсутствует лог файл установки RISH. Установка была выполнена неверно."
-      echo "Обновление невозможно."
-      exit 1
-  fi
-  # Функция для проверки, был ли шаг выполнен
-  check_step() {
-      local step=$1
-      grep -Fxq "$step" "$LOG_FILE"
-  }
-  # Функция для записи выполненного шага
-  mark_step_completed() {
-      local step=$1
-      echo "$step" >> "$LOG_FILE"
-  }
-  source $config_file
-  # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
   version_gt() {
     test "$(printf '%%s\n' "$@" | sort -V | head -n 1)" != "$1"
-  }
-  Install() {
-    if ! rpm -q $@ >/dev/null 2>&1; then
-        echo -e "Ставим ${GREEN}$@${WHITE}"
-        if yum -y install $@; then
-            echo -e "${GREEN}$@${WHITE} установлен"
-        else
-            echo -e "Установить ${RED}$@${WHITE} не удалось, очищаем кэш и пытаемся снова"
-            # Очистка кэша yum и повторная попытка установки
-            yum clean all
-            yum makecache
-            if yum -y install $@; then
-                echo -e "${GREEN}$@${WHITE} установлен после очистки кэша"
-            else
-                echo -e "Установить ${RED}$@${WHITE} не удалось даже после очистки кэша"
-                exit 1
-            fi
-        fi
-        echo
-    else
-        echo -e "${GREEN}$@${WHITE} уже установлен"
-    fi
   }
   Update(){
   # Извлекаем файл версии из архива
@@ -751,6 +707,7 @@ O  Обновление RISH
    fi
    archive_version=$(cat "/root/version")
    rm -f "/root/version" > /dev/null
+   def=""
    if version_gt "${archive_version}" "${folder_version}"; then
      echo -e "Доступна более новая версия RISH для обновления – ${GREEN}${archive_version}${WHITE}"
      echo "Рекомендуем обновиться до этой версии."
@@ -759,9 +716,10 @@ O  Обновление RISH
      echo "Ваша версия RISH актуальна - обновление не требуется."
      echo "Но если нужно - вы можете переустановить RISH."
      echo
+     def="default=1"
    fi
    echo -e "Установить версию ${GREEN}${archive_version}${WHITE}?"
-   if vertical_menu "current" 2 0 5 "Да" "Нет"
+   if vertical_menu "current" 2 0 5 "Да" "Нет" ${def}
    then
      #обновляем версию RISH
      if tar -tzf rish2.tar.gz > /dev/null 2>&1
@@ -777,11 +735,7 @@ O  Обновление RISH
       chmod u+x ri.sh
       chmod u+x clonesite.sh
       chmod u+x backup.sh
-      STEP="Установка dnf-utils"
-      if ! check_step "$STEP"; then
-        Install dnf-utils
-        mark_step_completed "$STEP"
-      fi
+      bash postupdate.sh
      else
       echo "Скачанный архив поврежден"
       vertical_menu "current" 2 0 5 "Нажмите Enter"

@@ -146,6 +146,10 @@ function create_site() {
       else
         php_mode="dynamic"
       fi
+      if [ ! -d "/var/www/${username}/tmp" ]; then
+        echo "Папка /var/www/${username}/tmp не существует, создаём..."
+        mkdir -p "/var/www/${username}/tmp"
+      fi
       {
         echo "[${username}]"
         echo "listen = /var/opt/remi/${selected_php}/run/php-fpm/${username}.sock"
@@ -166,6 +170,7 @@ function create_site() {
         echo "php_value[session.save_handler] = files"
         echo "php_value[session.save_path] = /var/www/${username}/session"
         echo "php_value[soap.wsdl_cache_dir] = /var/www/${username}/wsdlcache"
+        echo "php_value[upload_tmp_dir] = /var/www/${username}/tmp"
       } >"/etc/opt/remi/${selected_php}/php-fpm.d/${username}.conf"
 
       if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then
