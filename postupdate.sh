@@ -72,6 +72,7 @@ if ! check_step "$STEP"; then
         fi
     fi
   done
+  echo
   # Проходим по каждой версии PHP в /etc/opt/remi/
   for php_version_dir in /etc/opt/remi/*; do
       # Проверяем, что это директория
@@ -92,11 +93,12 @@ if ! check_step "$STEP"; then
                   echo "php_value[upload_tmp_dir] = /var/www/$username/tmp" >> "$conf_file"
                   echo -e "${GREEN}${username} ($(basename $php_version_dir))${WHITE}: Добавлен параметр php_value[upload_tmp_dir] в $conf_file"
               else
-                  echo -e "{username} ($(basename $php_version_dir)): Параметр php_value[upload_tmp_dir] уже существует в $conf_file"
+                  echo -e "${username} ($(basename $php_version_dir)): Параметр php_value[upload_tmp_dir] уже существует в $conf_file"
               fi
           done
       fi
   done
+  echo
   mapfile -t versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
 
   # Перезапуск всех версий
