@@ -50,7 +50,7 @@ ERASEUNTILLENDOFLINE='\033[K'
 ServerArch=$( arch )
 OS_VERSION=$( hostnamectl | grep -Eo 'Operating.*' |  sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 
-SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server'
+SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server|Oracle|ClearOS|Scientific Linux'
 size=$(stty size)
 lines=${size% *}
 columns=${size#* }

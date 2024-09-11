@@ -94,5 +94,28 @@ if ! check_step "$STEP"; then
           done
       fi
   done
+  def versions
+  mapfile -t versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
+
+  # Перезапуск всех версий
+  for version in "${versions[@]}"; do
+    if /opt/remi/${version}/root/usr/sbin/php-fpm -t; then
+      if systemctl restart "${version}-php-fpm"; then
+        echo -e "Версия ${GREEN}${version}${WHITE} корректно перезапущена."
+        echo
+      else
+        echo
+        echo -e "Ошибка при перезапуске ${RED}${version}-php-fpm${WHITE}. Проверьте журналы для диагностики."
+        echo
+      fi
+
+    else
+      echo
+      echo -e "Версия ${RED}${version}${WHITE} имеет проблемы в конфигурационных файлах."
+      echo -e "Сервис ${RED}не был перезапущен${WHITE} и продолжает работать."
+      echo
+      systemctl status "${version}-php-fpm"
+    fi
+  done
   mark_step_completed "$STEP"
 fi
