@@ -228,7 +228,23 @@ OpenFirewall() {
         Up
     fi
 }
+process_ssh_config_file() {
+  local config_file=$1
 
+  # Резервное копирование файла конфигурации
+  cp "$config_file" "${config_file}.bak"
+
+  # Удаление всех строк с PasswordAuthentication
+  sed -i '/^#\?PasswordAuthentication/d' "$config_file"
+
+  # Добавление строки с отключением аутентификации по паролю перед первым блоком Match
+  awk '/^Match/ && !done {print "PasswordAuthentication no"; done=1} 1' "$config_file" >"${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
+
+  # Если строка PasswordAuthentication no не была добавлена, добавить её в конец файла
+  if ! grep -q "^PasswordAuthentication no" "$config_file"; then
+    echo "PasswordAuthentication no" >>"$config_file"
+  fi
+}
 # shellcheck disable=SC2120
 CreateUser() {
   local NAME
@@ -1063,25 +1079,6 @@ EOF
     #чтобы при обновлении скрипт обновления не пытался опять создавать папки tmp каждому пользователю
     mark_step_completed "$STEP"
   fi
-
-
-  process_ssh_config_file() {
-    local config_file=$1
-
-    # Резервное копирование файла конфигурации
-    cp "$config_file" "${config_file}.bak"
-
-    # Удаление всех строк с PasswordAuthentication
-    sed -i '/^#\?PasswordAuthentication/d' "$config_file"
-
-    # Добавление строки с отключением аутентификации по паролю перед первым блоком Match
-    awk '/^Match/ && !done {print "PasswordAuthentication no"; done=1} 1' "$config_file" >"${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
-
-    # Если строка PasswordAuthentication no не была добавлена, добавить её в конец файла
-    if ! grep -q "^PasswordAuthentication no" "$config_file"; then
-      echo "PasswordAuthentication no" >>"$config_file"
-    fi
-  }
 
   STEP="Отключение авторизации по паролю для SSH."
   if ! check_step "$STEP"; then
