@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+WHITE='\033[0m'
 version_gt() {
   test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"
 }
@@ -64,7 +67,7 @@ if ! check_step "$STEP"; then
         if [ ! -d "$dir/tmp" ]; then
             # Если папки нет, создаем её и выводим сообщение
             mkdir "$dir/tmp"
-            echo "Папка tmp создана в $dir"
+            echo -e ${GREEN}$(basename "$dir")${WHITE}": папка tmp создана в $dir"
             chown $(basename "$dir"):$(basename "$dir") "$dir/tmp"
         fi
     fi
@@ -87,14 +90,13 @@ if ! check_step "$STEP"; then
               if ! grep -q "php_value\[upload_tmp_dir\]" "$conf_file"; then
                   # Если параметра нет, добавляем его в конец файла
                   echo "php_value[upload_tmp_dir] = /var/www/$username/tmp" >> "$conf_file"
-                  echo "Добавлен параметр php_value[upload_tmp_dir] в $conf_file"
+                  echo -e "${GREEN}${username} ($(basename $php_version_dir))${WHITE}: Добавлен параметр php_value[upload_tmp_dir] в $conf_file"
               else
-                  echo "Параметр php_value[upload_tmp_dir] уже существует в $conf_file"
+                  echo -e "{username} ($(basename $php_version_dir)): Параметр php_value[upload_tmp_dir] уже существует в $conf_file"
               fi
           done
       fi
   done
-  def versions
   mapfile -t versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
 
   # Перезапуск всех версий
