@@ -263,7 +263,7 @@ CloneSite() {
   ee=$(ssh $choosenserver $ee)
   if [ -n "$ee" ]; then
     echo -e "идет создание архива базы данных ${GREEN}${remotesitename}${WHITE}"
-    ssh $choosenserver 'mysqldump -u root -p$'{MYSQLPASS} $remotesitename >$remotesitename.sql
+    ssh $choosenserver 'mariadb-dump -u root -p$'{MYSQLPASS} $remotesitename >$remotesitename.sql
     sed -i '1{/999999.*sandbox/d}' ${remotesitename}.sql
     echo -e "Архив базы данных ${GREEN}${remotesitename}${WHITE} скачан"
     if mariadb -u root -p${MYSQLPASS} -e "CREATE DATABASE IF NOT EXISTS \`${localsitename}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then

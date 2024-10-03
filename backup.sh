@@ -121,7 +121,7 @@ backupall() {
 		   echo
 		   tar -czf -  $SITE --record-size=$recordsize --checkpoint=$checkpoint --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' | split -b $splitarchive --numeric-suffix - $DIR_BACKUP/"${server}/${USER}/${DATE}/${SITE}.tar.gz-part-"
 		else
-		   mysqldump -u$DB_USER -p$DB_PASSWD $DB > $DB.sql
+		   mariadb-dump -u$DB_USER -p$DB_PASSWD $DB > $DB.sql
 		   sed -i '1{/999999.*sandbox/d}' $DB.sql
 		   echo -e -n " База ${GREEN}$DB${WHITE} создана. "
 		   echo -e "Идет создание архива сайта"

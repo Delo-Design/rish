@@ -13,7 +13,7 @@ shell_patterns=0
 	if [[ -n "$(mariadb  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1)" ]]
 	then
 		echo "Идет создание архива базы данных"
-		mysqldump -u root -p$MYSQLPASS %f > %f.sql
+		mariadb-dump -u root -p$MYSQLPASS %f > %f.sql
 		sed -i '1{/999999.*sandbox/d}' %f.sql
 		echo -e "База ${GREEN}%f.sql${WHITE} создана"
 	else
@@ -35,7 +35,7 @@ shell_patterns=0
 	if [[ -n "$(mariadb  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1)" ]]
 	then
 		echo "Идет создание архива базы данных"
-		mysqldump -u root -p$MYSQLPASS %f > %f.sql
+		mariadb-dump -u root -p$MYSQLPASS %f > %f.sql
 		sed -i '1{/999999.*sandbox/d}' %f.sql
 		echo -e "База ${GREEN}%f.sql${WHITE} создана"
 	else
@@ -350,7 +350,7 @@ j  Скачать Joomla в папку
 	then
 	  echo -e "Установка Joomla version ${GREEN}3${WHITE}"
   else
-	  echo -e "Установка Joomla version ${GREEN}4${WHITE}"
+	  echo -e "Установка Joomla version ${GREEN}${joomla_version}${WHITE}"
   fi
 	if [ -n "$(ls -A ${directory}/%f)" ]; then
 	echo -e "Удалить содержимое папки ${GREEN}%f${WHITE}?"

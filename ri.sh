@@ -93,6 +93,7 @@ if (( lines < 40 || columns < 140 )); then
   echo
   if vertical_menu "current" 2 0 5  "Остановить выполнение скрипта установки" "Хорошо понятно. Продолжаем"
   then
+    echo -e "Продолжить выполнение можно выполнив команду ${GREEN}/root/rish/ri.sh${WHITE}"
     exit 1
   fi
 fi
@@ -1007,6 +1008,7 @@ RestartSec=180
 EOF
 
     Up
+    echo
     echo -e "Перезапускаем службу ${GREEN}баз данных${WHITE} после настройки"
     Down
     systemctl daemon-reload
@@ -1085,7 +1087,7 @@ EOF
     echo
     echo -e "Советуем запретить авторизацию по паролю при доступе по ${GREEN}SSH${WHITE}."
     echo -e "Вы всегда сможете авторизоваться по паролю на сервере через VNC."
-    echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
+      echo -e "Запретить авторизацию по ${VIOLET}паролю${WHITE} для SSH?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"; then
       echo -e -n "${CURSORUP}"
       # Обработка основного файла конфигурации
