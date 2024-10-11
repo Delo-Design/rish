@@ -12,31 +12,81 @@ function check_site() {
   local full_path="$directory_path/$site_name"
   local choice
   local regex="^([a-zA-Z0-9]+([-\.][a-zA-Z0-9]+)*(\.[a-zA-Z]{2,})?|xn--[a-zA-Z0-9\-]+([-\.][a-zA-Z0-9\-]+)*(\.xn--[a-zA-Z0-9\-]+|[a-zA-Z]{2,})?|^[a-zA-Z0-9]+)$"
+  local punycode_domain
+  # Есть ли кириллица в имени сайта?
+  if echo "$site_name" | awk 'BEGIN{found=0} /[А-Яа-яЁё]/ {found=1} END{exit !found}'; then
+    echo -e "Имя сайта ${GREEN}${site_name}${WHITE} содержит кириллические символы."
+    punycode_domain=$(idn2 --quiet  "$site_name" 2>/dev/null )
+    if [ -d "$directory_path/$punycode_domain" ]; then
+          echo -e "Переименование ${RED}${site_name}${WHITE} --> ${RED}${punycode_domain}${WHITE} невозможно."
+          echo -e "Каталог с именем ${GREEN}${punycode_domain}${WHITE} уже существует."
+          echo -e ""
+    else
+          # Переименовываем каталог
+          mv "$full_path" "$directory_path/$punycode_domain"
+          echo -e "Каталог переименован. ${GREEN}${site_name}${WHITE} --> ${GREEN}${punycode_domain}${WHITE}."
+          site_name=$punycode_domain
+          full_path="$directory_path/$site_name"
+    fi
+  fi
 
   # Проверяем, существует ли папка и корректно ли ее имя
   if [[ -d "$full_path" && "$site_name" =~ $regex ]]; then
+    # Проверяем, а не создан ли уже такой сайт?
     if [[ ! -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
-      echo -e "Имя домена ${GREEN}$site_name${WHITE} корректное."
-      echo -e "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE}."
-      vertical_menu "current" 2 0 5 "Да" "Нет" "Задать свое имя сайта"
-      choice=$?
-      echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
-      case "$choice" in
-      0)
-        return 0 # Выход из функции, если все в порядке
-        ;;
-      1)
-        return 1
-        ;;
-      255)
-        return 2
-        ;;
-      *)
-        site_name=""
-        ;;
-      esac
+      # Проверяем нет ли верхнего регистра в названии папки
+      if [[ "$site_name" =~ [[:upper:]] ]]; then
+          # Приводим имя к нижнему регистру
+          lower_name="${site_name,,}"
+          echo ${lower_name}
+          # Проверяем, не существует ли уже каталог с именем в нижнем регистре
+          if [ -d "$directory_path/$lower_name" ]; then
+              echo -e "Переименование ${GREEN}${site_name}${WHITE} --> ${GREEN}${lower_name}${WHITE} невозможно."
+              echo -e "Каталог с именем ${GREEN}${lower_name}${WHITE} уже существует."
+              echo -e ""
+              site_name=""
+          else
+              # Переименовываем каталог
+              mv "$full_path" "$directory_path/$lower_name"
+              echo -e "Каталог переименован. ${GREEN}${site_name}${WHITE} --> ${GREEN}${lower_name}${WHITE}."
+              site_name=$lower_name
+          fi
+      fi
+      if [[ -n "$site_name" ]]; then
+        # Проверяем, а не punycode ли?
+        if [[ "$site_name" =~ (xn\-\-) ]]
+        then
+          echo -e -n "Имя домена ${GREEN}$site_name${WHITE} "
+          echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE}) корректное"
+          echo
+          echo -e -n "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE} "
+          echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
+          echo
+        else
+          echo -e "Имя домена ${GREEN}$site_name${WHITE} корректное."
+          echo -e "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE}."
+        fi
+        vertical_menu "current" 2 0 5 "Да" "Нет" "Задать свое имя сайта"
+        choice=$?
+        echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
+        case "$choice" in
+        0)
+          return 0 # Выход из функции, если все в порядке
+          ;;
+        1)
+          return 1
+          ;;
+        255)
+          return 2
+          ;;
+        *)
+          site_name=""
+          ;;
+        esac
+      fi
+    else
+        echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
     fi
-    echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
     site_name=""
   else
     # Если имя некорректное - пускай сам вводит что ему нужно
@@ -44,14 +94,30 @@ function check_site() {
   fi
   echo -e  "${WHITE}Введите свое имя сайта (Enter для выхода):${GREEN}"
   read -e -p "" site_name
+  site_name="${site_name,,}"
   while true; do
     if [[ -z "$site_name" ]]; then
-      echo -e ${WHITE}
+      echo -e "${WHITE}"
       return 1
+    fi
+    # Проверяем, а не кириллицу ли ввели?
+    if echo "$site_name" | awk 'BEGIN{found=0} /[А-Яа-яЁё]/ {found=1} END{exit !found}'; then
+      echo -e "${WHITE}Имя сайта ${GREEN}${site_name}${WHITE} содержит кириллические символы."
+      echo -e "Будет преобразование в стандарт punycode."
+      site_name=$(idn2 --quiet  "$site_name" 2>/dev/null )
     fi
     # Проверяем корректность начального имени сайта
     if [[ "$site_name" =~ $regex ]]; then
-      echo -e "${WHITE}Имя сайта ${GREEN}$site_name${WHITE} введено корректно."
+      echo -e -n "${WHITE}Имя сайта ${GREEN}$site_name${WHITE} введено корректно."
+      # Проверяем, а не punycode ли?
+      if [[ "$site_name" =~ (xn\-\-) ]]
+      then
+          echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
+          echo
+      else
+          echo
+      fi
+
       if [[ -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
         echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
         echo -e "Введите другое имя (Enter для выхода):${GREEN}"
@@ -199,7 +265,15 @@ function create_site() {
         echo -e "${RED}${selected_php}-php-fpm${WHITE} перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
       fi
     fi
-    echo -e "Перезапускаем apache для активации сайта ${LRED}${site_name}${WHITE}?"
+    echo -e -n "Перезапускаем apache для активации сайта ${GREEN}${site_name}${WHITE}? "
+    # Проверяем, а не punycode ли?
+    if [[ "$site_name" =~ (xn\-\-) ]]
+    then
+        echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
+        echo
+    else
+        echo
+    fi
     if vertical_menu "current" 2 0 5 "Да" "Нет"; then
       if apachectl configtest; then
         systemctl reload httpd
