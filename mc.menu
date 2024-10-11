@@ -691,11 +691,6 @@ O  Обновление RISH
   clear
   rm -f rish2.tar.gz > /dev/null
   config_file="/root/rish/rish_config.sh"
-  if [ ! -f "$LOG_FILE" ]; then
-    echo "Отсутствует лог файл установки RISH. Установка была выполнена неверно."
-    echo "Обновление невозможно."
-    exit 1
-  fi
   source $config_file
   version_gt() {
     test "$(printf '%%s\n' "$@" | sort -V | head -n 1)" != "$1"
