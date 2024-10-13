@@ -2,7 +2,7 @@
 
 SSH Web-server control panel
 
-![appletouch](https://user-images.githubusercontent.com/3103677/151532067-f10dfc07-b86c-44de-a083-c28b21f82d57.png)
+![Untitled](https://github.com/user-attachments/assets/28bd8250-d369-488d-9c9c-bd77e8790d5b)
 
 SSH панель конфигурации и установки web сервера 
 
@@ -12,6 +12,7 @@ SSH панель конфигурации и установки web сервер
 
 * http/2
 * gzip and brotli компрессия
+
 * mpm event для apache
 * MariaDB 10.6, 10.11 или 11.4
 * Система не устанавливает никаких дополнительных сервисов и не расходует попусту ресурсов сервера
