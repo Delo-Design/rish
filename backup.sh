@@ -66,6 +66,24 @@ createlist() {
 	echo
 	echo -n "" > $backupall
   let ii=0
+
+  maxlen=0
+
+	# Первый проход для определения максимальной длины имени сайта
+	for file in $directory/*
+	do
+		if [ -d "$file" ]
+		then
+			r="${file##*/}"
+			# Определяем длину имени сайта
+			len=${#r}
+			if (( len > maxlen ))
+			then
+				maxlen=$len
+			fi
+		fi
+	done
+
 	for file in $directory/*
 	do
 		if [ -d "$file" ]
@@ -78,19 +96,21 @@ createlist() {
 			fi
 			let ii=$ii+1
 			printf "%3s. " $ii
-			printf "${GREEN}%s${WHITE} " "${r}"
+
 			if [ -n "`mariadb -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='$db'" 2>&1`" ];
 			then
-				echo "База данных $db "
+				db_output="База данных $db"
 			else
 				db=""
-				echo "----"
+				db_output="----"
 			fi
-			currentuser=$(stat -c %U "${file}")
+			printf "${GREEN}%-${maxlen}s${WHITE} %-30s\n" "$r" "$db_output"
+			currentuser=$(basename $(dirname $(dirname "$file")))
 			MYSQLPASS=$(cat /home/${currentuser}/.pass.txt | grep Database | awk '{ print $2}')
 			echo "${currentuser};$r;$db;${currentuser};$MYSQLPASS" >> $backupall
 		fi
 	done
+	echo
 }
 
 backupall() {
@@ -199,11 +219,7 @@ configcnf() {
    echo "verbose = yes" >> $cnf
 }
 
-echo "*********************************************************"
-echo "*                                                       *"
-echo "*  Скрипт автоматического архивирования сайтов сервера  *"
-echo "*                                                       *"
-echo "*********************************************************"
+echo "Скрипт автоматического архивирования сайтов сервера"
 echo
 
 
@@ -234,12 +250,14 @@ then
 else
 	echo -e "Список сайтов для архивации ${GREEN}найден${WHITE} (${backupall})"
 fi
+minute=$(shuf -i 0-59 -n 1)
+minute=$(printf "%2d" $minute)
 echo
-echo "******************************************************************"
-echo -e "* Для вызова скрипта в режиме CRON нужно добавить параметр auto. *"
-echo -e "* Настроить архивацию можно по команде crontab -e                *"
-echo -e "* 0 4 * * * /root/rish/backup.sh auto >/dev/null 2>&1            *"
-echo "******************************************************************"
+echo "┌────────────────────────────────────────────────────────────────┐"
+echo "│ Для вызова скрипта в режиме CRON нужно добавить параметр auto. │"
+echo "│ Настроить архивацию можно по команде crontab -e                │"
+echo "│ $minute 4 * * * /root/rish/backup.sh auto >/dev/null 2>&1           │"
+echo "└────────────────────────────────────────────────────────────────┘"
 echo
 echo
 while true

@@ -89,6 +89,10 @@ if ! check_step "$STEP"; then
 
               # Проверяем, существует ли параметр php_value[upload_tmp_dir]
               if ! grep -q "php_value\[upload_tmp_dir\]" "$conf_file"; then
+                  if [[ $(tail -c 1 "$conf_file") != $'\n' ]]; then
+                      # Если последняя строка файла не завершается переводом строки, добавляем перевод строки
+                      echo "" >> "$conf_file"
+                  fi
                   # Если параметра нет, добавляем его в конец файла
                   echo "php_value[upload_tmp_dir] = /var/www/$username/tmp" >> "$conf_file"
                   echo -e "${GREEN}${username} ($(basename $php_version_dir))${WHITE}: Добавлен параметр php_value[upload_tmp_dir] в $conf_file"

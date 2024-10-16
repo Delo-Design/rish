@@ -21,7 +21,7 @@ shell_patterns=0
 	fi
 	echo "Ждите пока идет создание архива сайта..."
 	tar -czf %f".tar.gz" %f && \
-	echo %f".tar.gz создан."
+	echo -e "${GREEN}"%f".tar.gz${WHITE} создан."
 	vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 + d /var/www/ & t d
