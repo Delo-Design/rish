@@ -89,8 +89,11 @@ if ! check_step "$STEP"; then
 
               # Проверяем, существует ли параметр php_value[upload_tmp_dir]
               if ! grep -q "php_value\[upload_tmp_dir\]" "$conf_file"; then
-                  if [[ $(tail -c 1 "$conf_file") != $'\n' ]]; then
-                      # Если последняя строка файла не завершается переводом строки, добавляем перевод строки
+                  # Проверка последнего символа с помощью od
+                  last_char=$(tail -c 1 "$conf_file" | od -An -t u1)
+                  # ASCII код для перевода строки (\n) — это 10
+                  if [ "$last_char" -ne 10 ]; then
+                      echo "Добавляем перевод строки в конец '$conf_file'"
                       echo "" >> "$conf_file"
                   fi
                   # Если параметра нет, добавляем его в конец файла
