@@ -133,4 +133,8 @@ fi
 
 # Удаление файла autoindex для httpd
 # файл autoindex может появиться при обновлении httpd
-rm -f /etc/httpd/conf.d/autoindex.conf
+if [ -f /etc/httpd/conf.d/autoindex.conf ]; then
+    echo "Файл /etc/httpd/conf.d/autoindex.conf найден. Удаляем его."
+    echo "Рекомендуем перезапустить сервер Apache после завершения обновления RISH."
+    rm -f /etc/httpd/conf.d/autoindex.conf
+fi
