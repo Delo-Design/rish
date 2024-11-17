@@ -1,8 +1,8 @@
 # RISH – Robust Internet Server Host 
 
-SSH Web-server control panel!
+SSH Web-server control panel
 
-[oblozhka2](https://github.com/user-attachments/assets/fb50e880-a5fb-44ed-9ad1-8c5cd0dcef51)
+![oblozhka2](https://github.com/user-attachments/assets/fb50e880-a5fb-44ed-9ad1-8c5cd0dcef51)
 
 SSH панель конфигурации и установки web сервера 
 
