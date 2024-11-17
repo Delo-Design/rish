@@ -594,13 +594,39 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   if ! check_step "$STEP"; then
     Install mc
     Install cronie
-    Install logrotate
     Install idn2
     if ! echo ${CURRENT_OS} | egrep -q "Fedora"; then
       Install epel-release
     fi
     Install wget
     Install tar
+    Install logrotate
+    TIMER_STATUS=$(systemctl is-active logrotate.timer 2>/dev/null)
+    TIMER_ENABLED=$(systemctl is-enabled logrotate.timer 2>/dev/null)
+
+    # Проверка и активация logrotate.timer
+    if [ "$TIMER_STATUS" != "active" ] || [ "$TIMER_ENABLED" != "enabled" ]; then
+        Up
+        echo "logrotate.timer не активен или не включен. Пытаемся включить и запустить..."
+        Down
+        # Включаем и запускаем таймер
+        systemctl enable logrotate.timer && systemctl start logrotate.timer
+
+        # Повторная проверка
+        NEW_TIMER_STATUS=$(systemctl is-active logrotate.timer 2>/dev/null)
+        NEW_TIMER_ENABLED=$(systemctl is-enabled logrotate.timer 2>/dev/null)
+        Up
+        if [ "$NEW_TIMER_STATUS" == "active" ] && [ "$NEW_TIMER_ENABLED" == "enabled" ]; then
+            echo -e "${GREEN}logrotate.timer${WHITE} успешно включен и запущен."
+        else
+            echo "Не удалось включить или запустить ${RED}logrotate.timer${WHITE}. Проверьте настройки вручную."
+        fi
+        Down
+    else
+        Up
+        echo "logrotate.timer активен и включен."
+        Down
+    fi
     mark_step_completed "$STEP"
   fi
 

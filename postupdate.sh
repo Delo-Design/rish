@@ -130,3 +130,7 @@ if ! check_step "$STEP"; then
   done
   mark_step_completed "$STEP"
 fi
+
+# Удаление файла autoindex для httpd
+# файл autoindex может появиться при обновлении httpd
+rm -f /etc/httpd/conf.d/autoindex.conf

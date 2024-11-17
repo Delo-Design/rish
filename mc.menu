@@ -51,6 +51,20 @@ shell_patterns=0
 7       Сменить версию PHP для сайта
   bash /root/rish/change_php_version.sh "%f" "%d"
 
+=+ f \.zip$
+7       Рaзaрхивирoвaть zip-фaйл
+  GREEN='\033[0;32m'
+  RED='\033[0;31m'
+  WHITE='\033[0m'
+  echo -e "Архив ${GREEN}%f${WHITE} будет извлечён в текущую директорию: ${GREEN}$(pwd)${WHITE}"
+  source /root/rish/windows.sh
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
+    unzip %f
+    echo
+  fi
+  vertical_menu "current" 2 0 5 "Нажмите Enter"
+
 =+ f \.sql$
 3       Сoздaть бaзy пo имeни фaйлa .sql
         GREEN='\033[0;32m'

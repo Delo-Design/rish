@@ -115,55 +115,67 @@ createlist() {
 
 backupall() {
 
-	if ! [[ -d $DIR_BACKUP ]]; then
-		mkdir $DIR_BACKUP
-	fi
-
-	#/usr/bin/ydcmd --config=$cnf --quiet mkdir disk:/backup"$server"
-	#/usr/bin/ydcmd --config=$cnf --quiet mkdir disk:/backup"$server"/"$DATE"
-
-	while read line;do
-    IFS=";"
-		set -- $line
-    USER=$1
-		SITE=$2
-		DB=$3
-		DB_USER=$4
-		DB_PASSWD=$5
-
-		mkdir -p $DIR_BACKUP/$server/$USER/$DATE/
-		echo -e -n "Архивация ${GREEN}"$SITE"${WHITE}. "
-		cd "/var/www/${USER}/www"
-		if [ -z "$DB" ]
-		then
-		   echo -n " Базы нет. "
-		   echo -e "Идет создание архива сайта"
-		   echo
-		   tar -czf -  $SITE --record-size=$recordsize --checkpoint=$checkpoint --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' | split -b $splitarchive --numeric-suffix - $DIR_BACKUP/"${server}/${USER}/${DATE}/${SITE}.tar.gz-part-"
-		else
-		   mariadb-dump -u$DB_USER -p$DB_PASSWD $DB > $DB.sql
-		   sed -i '1{/999999.*sandbox/d}' $DB.sql
-		   echo -e -n " База ${GREEN}$DB${WHITE} создана. "
-		   echo -e "Идет создание архива сайта"
-		   echo
-		   tar -czf - $SITE $DB.sql --record-size=$recordsize --checkpoint=$checkpoint --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' | split -b $splitarchive --numeric-suffix - $DIR_BACKUP/"${server}/${USER}/${DATE}/${SITE}.tar.gz-part-"
-		   rm ./$DB.sql
-		fi
-		echo -e "\033[1AАрхив сайта создан. Передаем на место хранения."
-		$ydcmd_path --config=$cnf put --progress  $DIR_BACKUP/ disk:/
-		#sshpass -p 'hzGZadbd1Geg' scp  -r $DIR_BACKUP/* ih1515719@193.124.176.46:/
-		rm -rf $DIR_BACKUP/*
-	done < $backupall
-  for userdir in /var/www/*; do
-    # Извлекаем имя пользователя из пути
-    user=$(basename "$userdir")
-    # Проверяем, является ли элемент директорией
-    if [ -d "$userdir" ] && [ "$user" != "cgi-bin" ] && [ "$user" != "html" ]; then
-        # Выполнение очистки для директории пользователя
-        $ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server/$user"
+    if ! [[ -d $DIR_BACKUP ]]; then
+        mkdir $DIR_BACKUP
     fi
-  done
+
+    while read line; do
+        IFS=";"
+        set -- $line
+        USER=$1
+        SITE=$2
+        DB=$3
+        DB_USER=$4
+        DB_PASSWD=$5
+        EXCLUDE_LIST=${6:-} # Если 6-й колонки нет, EXCLUDE_LIST будет пустой
+
+        # Обработка исключаемых папок
+        EXCLUDE_OPTS=()
+        if [ -n "$EXCLUDE_LIST" ]; then
+            IFS=',' read -ra EXCLUDE_DIRS <<< "$EXCLUDE_LIST"
+            for dir in "${EXCLUDE_DIRS[@]}"; do
+                EXCLUDE_OPTS+=(--exclude="$dir")
+            done
+        fi
+
+        mkdir -p $DIR_BACKUP/$server/$USER/$DATE/
+        echo -e -n "Архивация ${GREEN}"$SITE"${WHITE}. "
+        cd "/var/www/${USER}/www"
+        if [ -z "$DB" ]; then
+            echo -n " Базы нет. "
+            echo -e "Идет создание архива сайта"
+            echo
+            tar -czf - "${EXCLUDE_OPTS[@]}" $SITE \
+                --record-size=$recordsize --checkpoint=$checkpoint \
+                --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' \
+                | split -b $splitarchive --numeric-suffix - \
+                $DIR_BACKUP/"${server}/${USER}/${DATE}/${SITE}.tar.gz-part-"
+        else
+            mariadb-dump -u$DB_USER -p$DB_PASSWD $DB > $DB.sql
+            sed -i '1{/999999.*sandbox/d}' $DB.sql
+            echo -e -n " База ${GREEN}$DB${WHITE} создана. "
+            echo -e "Идет создание архива сайта"
+            echo
+            tar -czf - "${EXCLUDE_OPTS[@]}" $SITE $DB.sql \
+                --record-size=$recordsize --checkpoint=$checkpoint \
+                --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' \
+                | split -b $splitarchive --numeric-suffix - \
+                $DIR_BACKUP/"${server}/${USER}/${DATE}/${SITE}.tar.gz-part-"
+            rm ./$DB.sql
+        fi
+        echo -e "\033[1AАрхив сайта создан. Передаем на место хранения."
+        $ydcmd_path --config=$cnf put --progress $DIR_BACKUP/ disk:/
+        rm -rf $DIR_BACKUP/*
+    done < $backupall
+
+    for userdir in /var/www/*; do
+        user=$(basename "$userdir")
+        if [ -d "$userdir" ] && [ "$user" != "cgi-bin" ] && [ "$user" != "html" ]; then
+            $ydcmd_path --keep=$keeplast --type=dir clean disk:/"$server/$user"
+        fi
+    done
 }
+
 
 if [[ "$1" == "auto" ]]
 then
@@ -185,7 +197,7 @@ configcnf() {
    $ydcmd_path token
    echo
    echo -e -n "${GREEN}Введите код: ${WHITE}"
-   read TOKEN
+   read -e TOKEN
    tt=$( $ydcmd_path token $TOKEN | awk '{print $4}' )
    cd ~
    echo "[ydcmd]" > $cnf

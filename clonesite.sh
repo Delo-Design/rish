@@ -6,7 +6,7 @@ AddServer() {
   server_name=
   while true; do
     # Запрос IP-адреса у пользователя
-    read -p "Введите IP-адрес нового сервера или нажмите Enter для выхода: " ip_address
+    read -e -p "Введите IP-адрес нового сервера или нажмите Enter для выхода: " ip_address
 
     # Проверка на пустой ввод - выход из скрипта
     if [[ -z "$ip_address" ]]; then
