@@ -18,6 +18,6 @@ EOF
   echo "ENDGROUP" >>~/.config/mc/hotlist
   mapfile -t users < <(find "/var/www" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | grep -vE "^(cgi-bin|html)$" | sort)
   for user in "${users[@]}"; do
-    echo 'ENTRY "Путь к сайтам '${user}' /var/www/'${user}'/wwww" URL "/var/www/'${user}'/www"' >>~/.config/mc/hotlist
+    echo 'ENTRY "Путь к сайтам '${user}' /var/www/'${user}'/www" URL "/var/www/'${user}'/www"' >>~/.config/mc/hotlist
   done
 }
