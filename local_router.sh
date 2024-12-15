@@ -31,6 +31,8 @@ request_credentials() {
     echo
     # Вычисление MD5_HASH
     MD5_HASH=$(echo -n "$ROUTER_LOGIN:$REALM:$ROUTER_PASSWORD" | openssl md5 | awk '{print $2}')
+    sed -i '/^MD5_HASH=/d' "$CONFIG_FILE"
+    sed -i '/^ROUTER_LOGIN=/d' "$CONFIG_FILE"
     # Сохраняем логин и MD5_HASH в конфигурационный файл
     echo "ROUTER_LOGIN=\"$ROUTER_LOGIN\"" >> "$CONFIG_FILE"
     echo "MD5_HASH=\"$MD5_HASH\"" >> "$CONFIG_FILE"
@@ -50,11 +52,12 @@ if [ -z "$ROUTER_IP" ]; then
     DEFAULT_ROUTER_IP=$(ip route | grep default | awk '{print $3}')
     # Если автоматическое определение не удалось, используем 192.168.1.1
     if [ -z "$DEFAULT_ROUTER_IP" ]; then
+        echo "Не удалось определить адрес роутера. Используем адрес 192.168.1.1"
         DEFAULT_ROUTER_IP="192.168.1.1"
     fi
     # Предлагаем пользователю принять IP адрес или изменить его, используя read -e -i
     echo "Введите IP адрес роутера (нажмите Enter для значения по умолчанию):"
-    read -e -i "$DEFAULT_ROUTER_IP" ROUTER_IP
+    read -r -e -i "$DEFAULT_ROUTER_IP" ROUTER_IP
     # Перед добавлением новой записи удаляем старые из конфигурационного файла
     sed -i '/^ROUTER_IP=/d' "$CONFIG_FILE"
     # Сохраняем ROUTER_IP в конфигурационный файл
@@ -73,7 +76,7 @@ if ! check_router_ip "$ROUTER_IP"; then
     fi
     # Предлагаем пользователю ввести новый IP адрес
     echo "Введите новый IP адрес роутера (нажмите Enter для значения по умолчанию):"
-    read -e -i "$DEFAULT_ROUTER_IP" ROUTER_IP
+    read -r -e -i "$DEFAULT_ROUTER_IP" ROUTER_IP
     # Перед добавлением новой записи удаляем старые из конфигурационного файла
     sed -i '/^ROUTER_IP=/d' "$CONFIG_FILE"
     # Сохраняем новый ROUTER_IP в конфигурационный файл
@@ -105,6 +108,12 @@ fi
 
 # Функция для аутентификации
 authenticate() {
+    # Проверяем, задан ли ROUTER_LOGIN и MD5_HASH
+    if [ -z "$ROUTER_LOGIN" ] || [ -z "$MD5_HASH" ]; then
+        echo "Логин или MD5_HASH не найдены. Запрашиваю у пользователя..."
+        request_credentials
+    fi
+
     # Отправка GET-запроса на /auth и сохранение заголовков
     curl -s -D "$HEADER_FILE" -o /dev/null -c "$COOKIE_JAR" "http://$ROUTER_IP/auth"
 
@@ -125,11 +134,6 @@ authenticate() {
             echo "Realm не предоставлен, используем значение по умолчанию: $REALM"
         fi
 
-        # Проверяем, задан ли ROUTER_LOGIN и MD5_HASH
-        if [ -z "$ROUTER_LOGIN" ] || [ -z "$MD5_HASH" ]; then
-            echo "Логин или MD5_HASH не найдены. Запрашиваю у пользователя..."
-            request_credentials
-        fi
 
         # Вычисление SHA256 хеша: sha256(token + md5_hash)
         PASSWORD_HASH=$(echo -n "$TOKEN$MD5_HASH" | openssl sha256 | awk '{print $2}')
