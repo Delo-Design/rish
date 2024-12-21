@@ -600,6 +600,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     fi
     Install wget
     Install tar
+    Install glibc-gconv-extra
     Install logrotate
     TIMER_STATUS=$(systemctl is-active logrotate.timer 2>/dev/null)
     TIMER_ENABLED=$(systemctl is-enabled logrotate.timer 2>/dev/null)
@@ -626,14 +627,6 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         Up
         echo "logrotate.timer активен и включен."
         Down
-    fi
-    mark_step_completed "$STEP"
-  fi
-
-  STEP="Установка telnet"
-  if ! check_step "$STEP"; then
-    if ${LocalServer}; then
-      Install "telnet"
     fi
     mark_step_completed "$STEP"
   fi

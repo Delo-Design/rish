@@ -100,7 +100,7 @@ CheckIP() {
   echo -e "Белый цвет – сайт доступен по другому IP адресу"
   echo
 
-  local myip=$(ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' | awk '{print $NF;exit}')
+  local myip="("$(ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' | awk '{print $NF;exit}')")"
   echo -e "Адрес этого сервера: ${GREEN}${myip}${WHITE}"
 
   echo "───────────────────────────────────────────"
