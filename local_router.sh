@@ -20,14 +20,14 @@ source "$CONFIG_FILE"
 # Функция для запроса логина и пароля у пользователя и вычисления MD5_HASH
 request_credentials() {
     echo "Введите логин для роутера (или нажмите Enter для выхода):"
-    read -e ROUTER_LOGIN
+    read -r -e ROUTER_LOGIN
     # Проверяем, введен ли логин
     if [ -z "$ROUTER_LOGIN" ]; then
         echo "Логин не введен. Выход из скрипта."
         exit 1
     fi
     echo "Введите пароль для роутера:"
-    read -e ROUTER_PASSWORD
+    read -r -e ROUTER_PASSWORD
     echo
     # Вычисление MD5_HASH
     MD5_HASH=$(echo -n "$ROUTER_LOGIN:$REALM:$ROUTER_PASSWORD" | openssl md5 | awk '{print $2}')

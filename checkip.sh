@@ -75,6 +75,23 @@ unicode_printf() {
   echo -n "$unicode_string"
 }
 
+get_php_version() {
+    local DOMAIN=$1
+    local CONF_FILE="/etc/httpd/conf.d/${DOMAIN}.conf"
+
+    if [ -f "$CONF_FILE" ]; then
+        local PHP_VERSION
+        PHP_VERSION=$(grep -oP 'SetHandler\s+"proxy:unix:/var/opt/remi/php\K[0-9]+' "$CONF_FILE")
+        if [ -n "$PHP_VERSION" ]; then
+            echo "php ${PHP_VERSION}"
+        else
+            echo "-"
+        fi
+    else
+        echo "-"
+    fi
+}
+
 CheckIP() {
   clear
   echo "Что значат цвета IP:"
@@ -83,7 +100,7 @@ CheckIP() {
   echo -e "Белый цвет – сайт доступен по другому IP адресу"
   echo
 
-  myip="("$(ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' | awk '{print $NF;exit}')")"
+  local myip=$(ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' | awk '{print $NF;exit}')
   echo -e "Адрес этого сервера: ${GREEN}${myip}${WHITE}"
 
   echo "───────────────────────────────────────────"
@@ -100,47 +117,62 @@ CheckIP() {
       for PathToSiteName in ${file}/www/*; do
         if [ -d "$PathToSiteName" ]; then
           local SiteName="${PathToSiteName##*/}"
-          if curl -I http://"$SiteName" &>/dev/null; then
-            local ip
-            ip=$(ping -c 1 $SiteName | grep PING | awk '{ print $3 }')
-            if [[ "$myip" == "$ip" ]]; then
-              printf "   ${GREEN}%-19s${WHITE}" "$ip"
+          local CONF_FILE="/etc/httpd/conf.d/${SiteName}.conf"
+
+          if [ -f "$CONF_FILE" ]; then
+            if curl -I http://"$SiteName" &>/dev/null; then
+              local ip
+              ip=$(ping -c 1 $SiteName | grep PING | awk '{ print $3 }')
+              if [[ "$myip" == "$ip" ]]; then
+                printf "   ${GREEN}%-19s${WHITE}" "$ip"
+              else
+                printf "   %-19s" "$ip"
+              fi
+              check_certificate "$SiteName"
+              if [[ "$SiteName" =~ (xn\-\-) ]]
+              then
+                unicode_domain=$(idn2 -d "$SiteName")
+              else
+                unicode_domain=$SiteName
+              fi
+              echo -e -n " ${LGREEN}"
+              unicode_printf 32 "$unicode_domain"
+              echo -e -n " ${WHITE}"
+              check_certificate_expiration "$SiteName"
             else
-              printf "   %-19s" "$ip"
+              printf "   %-27s" " "
+              if [[ "$SiteName" =~ (xn\-\-) ]]
+              then
+                unicode_domain=$(idn2 -d "$SiteName")
+              else
+                unicode_domain=$SiteName
+              fi
+              echo -e -n " ${RED}"
+              unicode_printf 32 "$unicode_domain"
+              echo -e -n " ${WHITE}"
+              printf "              "
             fi
-            check_certificate "$SiteName"
-            if [[ "$SiteName" =~ (xn\-\-) ]]
-            then
-              unicode_domain=$(idn2 -d "$SiteName")
+            if [ -f "${PathToSiteName}"/administrator/manifests/files/joomla.xml ]; then
+              JoomlaVersion=$(cat "${PathToSiteName}"/administrator/manifests/files/joomla.xml | grep "<version>.*</version>" | sed -rn 's/.*>([0-9.]+)<.*/\1/p')
+              printf " Joomla %8s" "${JoomlaVersion}"
             else
-              unicode_domain=$SiteName
+              printf "        %8s" "-"
             fi
-            echo -e -n " ${LGREEN}"
-            unicode_printf 32 "$unicode_domain"
-            echo -e -n " ${WHITE}"
-            check_certificate_expiration "$SiteName"
+            PHP_VERSION=$(get_php_version "$SiteName")
+            printf ", ${PHP_VERSION}"
+            FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
+            printf " ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
+            echo
           else
+            printf "   %-19s" " "
+            echo -e -n "папка ${RED}${SiteName}${WHITE} не сайт"
             printf "   %-27s" " "
-            if [[ "$SiteName" =~ (xn\-\-) ]]
-            then
-              unicode_domain=$(idn2 -d "$SiteName")
-            else
-              unicode_domain=$SiteName
-            fi
-            echo -e -n " ${RED}"
-            unicode_printf 32 "$unicode_domain"
-            echo -e -n " ${WHITE}"
-            printf "              "
-          fi
-          if [ -f "${PathToSiteName}"/administrator/manifests/files/joomla.xml ]; then
-            JoomlaVersion=$(cat "${PathToSiteName}"/administrator/manifests/files/joomla.xml | grep "<version>.*</version>" | sed -rn 's/.*>([0-9.]+)<.*/\1/p')
-            printf " Joomla %8s" "${JoomlaVersion}"
-          else
+            printf "    %4s     " " "
             printf "        %8s" "-"
+            FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
+            printf " ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
+            echo
           fi
-          FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-          printf " ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
-          echo
         fi
       done
     fi

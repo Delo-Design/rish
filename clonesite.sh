@@ -184,7 +184,7 @@ CloneSite() {
   #local sites=( $( ssh $choosenserver ls -l $directory | grep 'drwx'| awk '{print $9}'   ) )
   mapfile -t sites < <(ssh $choosenserver 'ls -l /var/www/*/www/ 2>/dev/null' | grep drwx | grep -v 000-default | awk '{print  $9" ("$3")"}' | sort)
 
-  vertical_menu "current" 2 10 30 "${sites[@]}"
+  vertical_menu "current" 2 20 30 "${sites[@]}"
   choice=$?
   if ((choice == 255)); then
     return
@@ -220,7 +220,7 @@ CloneSite() {
   echo "Выберите пользователя на текущем сервере, куда надо копировать сайт"
   mapfile -t siteusers < <(ls -l /var/www 2>/dev/null | grep drwx | grep -v cgi-bin | grep -v html | awk '{print  $9}' | sort)
 
-  vertical_menu "current" 2 10 30 "${siteusers[@]}"
+  vertical_menu "current" 2 20 30 "${siteusers[@]}"
   choice=$?
   if ((choice == 255)); then
     return
