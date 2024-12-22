@@ -165,8 +165,22 @@ CheckIP() {
             echo
           else
             printf "   %-19s" " "
-            echo -e -n "папка ${RED}${SiteName}${WHITE} не сайт"
-            printf "   %-27s" " "
+            input_variable="папка ${RED}${SiteName}${WHITE} не сайт"
+
+            # Убираем управляющие символы для подсчета длины строки
+            plain_text=$(echo -e "$input_variable" | sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g')
+
+            # Вычисляем длину строки без учета управляющих символов
+            plain_length=${#plain_text}
+
+            # Вычисляем количество пробелов для дополнения до 50 символов
+            padding_length=$((50 - plain_length))
+
+            # Формируем строку с пробелами
+            padding=$(printf " %-${padding_length}s" "")
+
+            # Выводим строку с цветом и дополнением пробелами
+            echo -e -n "${input_variable}${padding}"
             printf "    %4s     " " "
             printf "        %8s" "-"
             FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
