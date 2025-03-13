@@ -15,7 +15,7 @@ shell_patterns=0
 		echo "Идет создание архива базы данных"
 		mariadb-dump -u root -p$MYSQLPASS %f > %f.sql
 		sed -i '1{/999999.*sandbox/d}' %f.sql
-		echo -e "База ${GREEN}%f.sql${WHITE} создана"
+		echo -e "Архив базы ${GREEN}%f.sql${WHITE} создан"
 	else
 		echo -e "Базы данных у сайта ${RED}нет${WHITE}"
 	fi
@@ -37,7 +37,7 @@ shell_patterns=0
 		echo "Идет создание архива базы данных"
 		mariadb-dump -u root -p$MYSQLPASS %f > %f.sql
 		sed -i '1{/999999.*sandbox/d}' %f.sql
-		echo -e "База ${GREEN}%f.sql${WHITE} создана"
+		echo -e "Архив базы  ${GREEN}%f.sql${WHITE} создан"
 	else
 		echo -e "Базы данных у сайта ${RED}нет${WHITE}"
 	fi
@@ -81,7 +81,7 @@ shell_patterns=0
 	r=${r%/www*}
 	if [[ ${r} == "html" ]]
 	then
-		if mysqladmin -u root -p$MYSQLPASS create %b
+		if mariadb-admin -u root -p$MYSQLPASS create %b
 		then
 		   echo -e "База mysql с именем ${GREEN}%b${WHITE} создана"
 		else
@@ -261,7 +261,7 @@ shell_patterns=0
   if [[ ! -z "`mariadb  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
   then
       echo "У сайта есть база данных"
-      if mysqladmin -f -u root -p${MYSQLPASS} drop %f
+      if mariadb-admin -f -u root -p${MYSQLPASS} drop %f
       then
          echo -e "База данных ${GREEN}%f${WHITE} удалена"
       else
@@ -301,7 +301,7 @@ k       Удалить базу данных
         vertical_menu "current" 2 0 5 "Нажмите Enter"
         exit 0
       fi
-      if mysqladmin -f -u root -p${MYSQLPASS} drop %f
+      if mariadb-admin -f -u root -p${MYSQLPASS} drop %f
       then
          echo -e "База данных ${GREEN}%f${WHITE} удалена"
       else
@@ -456,7 +456,7 @@ j  Скачать Joomla в папку
       cr=$?
       if (( ${cr}==0 ))
       then
-        if mysqladmin -f -u root -p${MYSQLPASS} drop %f
+        if mariadb-admin -f -u root -p${MYSQLPASS} drop %f
         then
          echo -e "База данных ${GREEN}%f${WHITE} удалена"
         else
