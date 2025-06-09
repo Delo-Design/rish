@@ -89,20 +89,26 @@ fi
 
 # Функция для аутентификации
 authenticate() {
-    # 1. Получаем challenge и realm
+    # Получаем актуальный challenge и realm
     curl -s -D "$HEADER_FILE" -o /dev/null -c "$COOKIE_JAR" "http://$ROUTER_IP/auth"
     TOKEN=$(awk -F': ' '/X-NDM-Challenge:/ {print $2}' "$HEADER_FILE" | tr -d '\r')
     REALM=$(awk -F': ' '/X-NDM-Realm:/ {print $2}' "$HEADER_FILE" | tr -d '\r')
-    if [ -z "$REALM" ]; then
-        REALM="Keenetic"
-        echo "Realm не предоставлен, используем значение по умолчанию: $REALM"
-    fi
+    [ -z "$REALM" ] && REALM="Keenetic"
 
-    # 2. Проверяем, есть ли логин и хэш именно для этого REALM
-    . "$CONFIG_FILE"
+    # Обновляем переменные из конфига (очищаем текущие значения)
+    unset ROUTER_LOGIN MD5_HASH REALM_SAVED
+    [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+
+    # Проверяем, что ВСЕ поля есть и md5 соответствует актуальному realm
     if [ -z "$ROUTER_LOGIN" ] || [ -z "$MD5_HASH" ] || [ -z "$REALM_SAVED" ] || [ "$REALM_SAVED" != "$REALM" ]; then
-        request_credentials
+        echo "Введите логин для роутера (или нажмите Enter для выхода):"
+        read -r -e ROUTER_LOGIN
+        [ -z "$ROUTER_LOGIN" ] && exit 1
+        echo "Введите пароль для роутера:"
+        read -r -e ROUTER_PASSWORD
+        echo
         MD5_HASH=$(echo -n "$ROUTER_LOGIN:$REALM:$ROUTER_PASSWORD" | openssl md5 | awk '{print $2}')
+        # Обновляем только при полной информации
         sed -i '/^MD5_HASH=/d' "$CONFIG_FILE"
         sed -i '/^ROUTER_LOGIN=/d' "$CONFIG_FILE"
         sed -i '/^REALM_SAVED=/d' "$CONFIG_FILE"
@@ -111,10 +117,8 @@ authenticate() {
         echo "REALM_SAVED=\"$REALM\"" >> "$CONFIG_FILE"
     fi
 
-    # 3. Считаем sha256(token+md5)
     PASSWORD_HASH=$(echo -n "$TOKEN$MD5_HASH" | openssl sha256 | awk '{print $2}')
     AUTH_DATA=$(printf '{"login":"%s","password":"%s"}' "$ROUTER_LOGIN" "$PASSWORD_HASH")
-
     response=$(curl -s -o /dev/null -w "%{http_code}" -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
         -X POST "http://$ROUTER_IP/auth" \
         -H "Content-Type: application/json" \
@@ -131,6 +135,9 @@ authenticate() {
         authenticate
     fi
 }
+
+
+
 
 add_domain() {
     local domain="$1"
