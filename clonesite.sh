@@ -5,8 +5,9 @@ AddServer() {
   local regex="^[a-zA-Z0-9]+([-\.][a-zA-Z0-9]+)*(\.[a-zA-Z]{2,})?$|^[a-zA-Z0-9]+$"
   server_name=
   while true; do
+    echo "Мы перешли к процессу добавления нового сервера в список доступных для клонирования серверов."
     # Запрос IP-адреса у пользователя
-    read -e -p "Введите IP-адрес нового сервера или нажмите Enter для выхода: " ip_address
+    read -e -p "Введите IP-адрес сервера с которого предполагается клонирование или нажмите Enter для выхода: " ip_address
 
     # Проверка на пустой ввод - выход из скрипта
     if [[ -z "$ip_address" ]]; then
@@ -371,6 +372,7 @@ CloneSite() {
       echo "php_value[session.save_handler] = files"
       echo "php_value[session.save_path] = /var/www/${localuser}/session"
       echo "php_value[soap.wsdl_cache_dir] = /var/www/${localuser}/wsdlcache"
+      echo "php_value[upload_tmp_dir] = /var/www/${localuser}/tmp"
     } >"/etc/opt/remi/${selected_php}/php-fpm.d/${localuser}.conf"
 
     if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then

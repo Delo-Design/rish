@@ -50,7 +50,7 @@ ERASEUNTILLENDOFLINE='\033[K'
 ServerArch=$( arch )
 OS_VERSION=$( hostnamectl | grep -Eo 'Operating.*' |  sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 
-SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server|Oracle|ClearOS|Scientific Linux'
+SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server|Oracle|ClearOS|Scientific Linux|MSVSphere'
 size=$(stty size)
 lines=${size% *}
 columns=${size#* }
@@ -141,25 +141,28 @@ cursor_to $(( ${rim} +1 )) 1
 repl "─" $(( ${columns} ))
 cursor_to $(( ${rim} +2 )) 1
 Up
-if (type lsb_release > /dev/null 2>&1); then
+
+if command -v lsb_release >/dev/null 2>&1; then
   CURRENT_OS=$(lsb_release -d -s)
-  echo -e "Ваша версия Linux: ${RED}$CURRENT_OS${WHITE}"
+  echo -e "Ваша версия Linux: ${RED}${CURRENT_OS}${WHITE}"
 elif [[ -f /etc/system-release ]]; then
   CURRENT_OS=$(head -1 /etc/system-release)
-  echo -e "Ваша версия Linux: ${GREEN}$CURRENT_OS${WHITE}"
-  echo
+  echo -e "Ваша версия Linux: ${GREEN}${CURRENT_OS}${WHITE}"
 elif [[ -f /etc/issue ]]; then
   CURRENT_OS=$(head -2 /etc/issue)
-  echo -e "Ваша версия Linux: ${RED}$CURRENT_OS${WHITE}"
+  echo -e "Ваша версия Linux: ${RED}${CURRENT_OS}${WHITE}"
 else
   echo -e "${RED}Невозможно определить вашу версию Linux${WHITE}"
   exit 1
 fi
-if ! echo ${CURRENT_OS} | egrep -q "$SUPPORTED_OS"
-then
-   echo -e "Ваш дистрибутив Linux ${RED}не поддерживается${WHITE}"
-   exit 1
+
+if [[ -f /etc/redhat-release ]] || grep -q 'ID_LIKE=.*rhel' /etc/os-release 2>/dev/null; then
+    echo "Система относится к семейству RHEL."
+else
+    echo "Система НЕ относится к семейству RHEL."
+    exit 1
 fi
+
 if echo ${CURRENT_OS} | grep -Eq "Fedora"
 then
   FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )

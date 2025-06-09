@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
+source /root/rish/windows.sh
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 WHITE='\033[0m'
+YELLOW='\033[0;33m'
 version_gt() {
   test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"
 }
@@ -58,77 +60,96 @@ if ! check_step "$STEP"; then
   mark_step_completed "$STEP"
 fi
 
-STEP="Добавление папки tmp всем пользователям"
-if ! check_step "$STEP"; then
-  for dir in /var/www/*; do
-    # Проверяем, что это директория и она не является cgi-bin или html
-    if [ -d "$dir" ] && [[ $(basename "$dir") != "cgi-bin" && $(basename "$dir") != "html" ]]; then
-        # Проверяем, существует ли папка tmp
-        if [ ! -d "$dir/tmp" ]; then
-            # Если папки нет, создаем её и выводим сообщение
-            mkdir "$dir/tmp"
-            echo -e ${GREEN}$(basename "$dir")${WHITE}": папка tmp создана в $dir"
-            chown $(basename "$dir"):$(basename "$dir") "$dir/tmp"
+declare -A missing_tmp_param # ассоциативный массив: php_version_dir => username
+
+for php_version_dir in /etc/opt/remi/*; do
+    [ -d "$php_version_dir" ] || continue
+    for conf_file in "$php_version_dir/php-fpm.d"/*.conf; do
+        [[ $(basename "$conf_file") == "www.conf" ]] && continue
+        username=$(basename "$conf_file" .conf)
+        if ! grep -q "php_value\[upload_tmp_dir\]" "$conf_file"; then
+            missing_tmp_param["$conf_file"]="/var/www/$username/tmp"
+            echo -e "${YELLOW}${username} ($(basename $php_version_dir))${WHITE}: отсутствует параметр php_value[upload_tmp_dir] "
         fi
-    fi
-  done
+    done
+done
+
+if [ ${#missing_tmp_param[@]} -gt 0 ]; then
   echo
-  # Проходим по каждой версии PHP в /etc/opt/remi/
-  for php_version_dir in /etc/opt/remi/*; do
-      # Проверяем, что это директория
-      if [ -d "$php_version_dir" ]; then
-          # Ищем все конфиги php-fpm.d/ для каждого пользователя, кроме www.conf
-          for conf_file in "$php_version_dir/php-fpm.d"/*.conf; do
-              # Пропускаем файл www.conf
-              if [[ $(basename "$conf_file") == "www.conf" ]]; then
-                  continue
-              fi
-
-              # Извлекаем имя пользователя из имени файла
-              username=$(basename "$conf_file" .conf)
-
-              # Проверяем, существует ли параметр php_value[upload_tmp_dir]
-              if ! grep -q "php_value\[upload_tmp_dir\]" "$conf_file"; then
-                  # Проверка последнего символа с помощью od
-                  last_char=$(tail -c 1 "$conf_file" | od -An -t u1)
-                  # ASCII код для перевода строки (\n) — это 10
-                  if [ "$last_char" -ne 10 ]; then
-                      echo "Добавляем перевод строки в конец '$conf_file'"
-                      echo "" >> "$conf_file"
+  echo -e "Обнаружены пользователи без параметра ${YELLOW}php_value[upload_tmp_dir]. ${GREEN}Исправить?${WHITE}"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+      for dir in /var/www/*; do
+        # Проверяем, что это директория и она не является cgi-bin или html
+        if [ -d "$dir" ] && [[ $(basename "$dir") != "cgi-bin" && $(basename "$dir") != "html" ]]; then
+            # Проверяем, существует ли папка tmp
+            if [ ! -d "$dir/tmp" ]; then
+                # Если папки нет, создаем её и выводим сообщение
+                mkdir "$dir/tmp"
+                echo -e ${GREEN}$(basename "$dir")${WHITE}": папка tmp создана в $dir"
+                chown $(basename "$dir"):$(basename "$dir") "$dir/tmp"
+            fi
+        fi
+      done
+      echo
+      # Проходим по каждой версии PHP в /etc/opt/remi/
+      for php_version_dir in /etc/opt/remi/*; do
+          # Проверяем, что это директория
+          if [ -d "$php_version_dir" ]; then
+              # Ищем все конфиги php-fpm.d/ для каждого пользователя, кроме www.conf
+              for conf_file in "$php_version_dir/php-fpm.d"/*.conf; do
+                  # Пропускаем файл www.conf
+                  if [[ $(basename "$conf_file") == "www.conf" ]]; then
+                      continue
                   fi
-                  # Если параметра нет, добавляем его в конец файла
-                  echo "php_value[upload_tmp_dir] = /var/www/$username/tmp" >> "$conf_file"
-                  echo -e "${GREEN}${username} ($(basename $php_version_dir))${WHITE}: Добавлен параметр php_value[upload_tmp_dir] в $conf_file"
-              else
-                  echo -e "${username} ($(basename $php_version_dir)): Параметр php_value[upload_tmp_dir] уже существует в $conf_file"
-              fi
-          done
-      fi
-  done
-  echo
-  mapfile -t versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
 
-  # Перезапуск всех версий
-  for version in "${versions[@]}"; do
-    if /opt/remi/${version}/root/usr/sbin/php-fpm -t; then
-      if systemctl restart "${version}-php-fpm"; then
-        echo -e "Версия ${GREEN}${version}${WHITE} корректно перезапущена."
-        echo
-      else
-        echo
-        echo -e "Ошибка при перезапуске ${RED}${version}-php-fpm${WHITE}. Проверьте журналы для диагностики."
-        echo
-      fi
+                  # Извлекаем имя пользователя из имени файла
+                  username=$(basename "$conf_file" .conf)
 
-    else
+                  # Проверяем, существует ли параметр php_value[upload_tmp_dir]
+                  if ! grep -q "php_value\[upload_tmp_dir\]" "$conf_file"; then
+                      # Проверка последнего символа с помощью od
+                      last_char=$(tail -c 1 "$conf_file" | od -An -t u1)
+                      # ASCII код для перевода строки (\n) — это 10
+                      if [ "$last_char" -ne 10 ]; then
+                          echo "Добавляем перевод строки в конец '$conf_file'"
+                          echo "" >> "$conf_file"
+                      fi
+                      # Если параметра нет, добавляем его в конец файла
+                      echo "php_value[upload_tmp_dir] = /var/www/$username/tmp" >> "$conf_file"
+                      echo -e "${GREEN}${username} ($(basename $php_version_dir))${WHITE}: Добавлен параметр php_value[upload_tmp_dir] в $conf_file"
+                  else
+                      echo -e "${username} ($(basename $php_version_dir)): Параметр php_value[upload_tmp_dir] уже существует в $conf_file"
+                  fi
+              done
+          fi
+      done
       echo
-      echo -e "Версия ${RED}${version}${WHITE} имеет проблемы в конфигурационных файлах."
-      echo -e "Сервис ${RED}не был перезапущен${WHITE} и продолжает работать."
-      echo
-      systemctl status "${version}-php-fpm"
-    fi
-  done
-  mark_step_completed "$STEP"
+      mapfile -t versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
+
+      # Перезапуск всех версий
+      for version in "${versions[@]}"; do
+        if /opt/remi/${version}/root/usr/sbin/php-fpm -t; then
+          if systemctl restart "${version}-php-fpm"; then
+            echo -e "Версия ${GREEN}${version}${WHITE} корректно перезапущена."
+            echo
+          else
+            echo
+            echo -e "Ошибка при перезапуске ${RED}${version}-php-fpm${WHITE}. Проверьте журналы для диагностики."
+            echo
+          fi
+
+        else
+          echo
+          echo -e "Версия ${RED}${version}${WHITE} имеет проблемы в конфигурационных файлах."
+          echo -e "Сервис ${RED}не был перезапущен${WHITE} и продолжает работать."
+          echo
+          systemctl status "${version}-php-fpm"
+        fi
+      done
+  else
+        echo -e "${YELLOW}Добавление параметра отменено пользователем.${WHITE}"
+        echo
+  fi
 fi
 
 # Удаление файла autoindex для httpd
