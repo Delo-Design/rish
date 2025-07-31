@@ -60,6 +60,14 @@ if ! check_step "$STEP"; then
   mark_step_completed "$STEP"
 fi
 
+STEP="Обновление hotlist"
+if ! check_step "$STEP"; then
+  source /root/rish/ri.sh
+  create_hotlist
+  mark_step_completed "$STEP"
+fi
+
+
 declare -A missing_tmp_param # ассоциативный массив: php_version_dir => username
 
 for php_version_dir in /etc/opt/remi/*; do
