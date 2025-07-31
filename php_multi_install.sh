@@ -2,20 +2,79 @@
 
 function php_multi_install() {
   local options
+  local available_versions
+  declare -a versions_arr
+  local max_verlen=0
+  local pkg
+  local ver
+  local item
+  local line
+  local phpver
+  local shortver
+  local ver_str
+  local installed_versions
+
   while true; do
-    mapfile -t available_versions < <(dnf repository-packages remi-safe list | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
-    mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
+    available_versions=()
+    versions_arr=()
+    installed_versions=()
+    #mapfile -t available_versions < <(dnf repository-packages remi-safe list | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
+
+    # 1. Получаем список версий и статус
+    while read pkg ver; do
+        phpver=$(echo "$pkg" | grep -oE 'php[0-9]{2}')
+        shortver=$(echo "$ver" | cut -d'-' -f1)
+        if [[ "$shortver" == *~* ]]; then
+          status="[${shortver#*~}]"
+        else
+          status="[stable]"
+        fi
+        ver_str="$phpver ($shortver)"
+        versions_arr+=("$ver_str|$status")
+        (( ${#ver_str} > max_verlen )) && max_verlen=${#ver_str}
+    done < <(
+      dnf repository-packages remi-safe list | awk '/^php[0-9]{2}-php-fpm\./ {print $1, $2}' | sort -ru
+    )
+
+    # 2. Собираем красивый массив для меню
+    available_versions=()
+    for item in "${versions_arr[@]}"; do
+        ver_str="${item%%|*}"
+        status="${item##*|}"
+        printf -v line "%-${max_verlen}s %s" "$ver_str" "$status"
+        available_versions+=("$line")
+    done
+
+    local available
+    local max_installed_width=0
+
+    while read item; do
+      installed_versions+=("$item")
+      (( ${#item} > max_installed_width )) && max_installed_width=${#item}
+    done < <(
+      rpm -qa | grep '^php[0-9][0-9]-php-fpm' | sort -r | while read pkg; do
+        phpver=$(echo "$pkg" | grep -oE '^php[0-9]{2}')
+        version=$(rpm -q --qf '%{VERSION}\n' "$pkg" | head -n1)
+        echo "$phpver ($version)"
+      done
+    )
+    max_installed_width=$((max_installed_width + 2))
+
     options=()
     for available in "${available_versions[@]}"; do
-      local skip=
+      phpver="${available%% *}"  # до первого пробела — всегда phpXX
+      skip=
       for installed in "${installed_versions[@]}"; do
-        if [[ $available == $installed ]]; then
+        installed_phpver="${installed%% *}" # тоже только phpXX
+        if [[ $phpver == $installed_phpver ]]; then
           skip=1
           break
         fi
       done
       [[ ! $skip ]] && options+=("$available")
     done
+
+
 
     if [ ${#options[@]} -eq 0 ]; then
       echo "Все доступные версии PHP уже установлены."
@@ -28,6 +87,18 @@ function php_multi_install() {
     echo -e "Выбирайте только реально необходимые, не ставьте все подряд."
     echo
     echo -e "Выберите нужную версию ${GREEN}PHP${WHITE} из доступных."
+    local max_width=0
+    local len
+    local item
+    for item in "${available_versions[@]}"; do
+      len=${#item}
+      (( len > max_width )) && max_width=$len
+    done
+
+    local left_block_width=$((max_width + 7))
+    local right_block_x=$((left_block_width + 13))
+    local arrow_x=$((left_block_width + 1))
+
     local current_y=$(get_cursor_row)
     echo
     local size=$(stty size)
@@ -40,11 +111,11 @@ function php_multi_install() {
       ((current_y = ${current_y} - ${skip_lines}))
     fi
     if (( ${#installed_versions[@]} > 0 )); then
-      cursor_to $(($current_y+2)) 23
+      cursor_to $(($current_y+2)) $arrow_x
       echo -en "───────────>"
-      cursor_to $(($current_y)) 35
+      cursor_to $(($current_y)) $right_block_x
       echo -en "Установлено:"
-      refresh_window ${current_y}+1 35 ${#installed_versions[@]} 10 0 "${installed_versions[@]}"
+      refresh_window ${current_y}+1 $right_block_x ${#installed_versions[@]} ${max_installed_width} 0 "${installed_versions[@]}"
     fi
 
 
@@ -59,7 +130,9 @@ function php_multi_install() {
     if (( ret == 255 )) || (( ret == ${#options[@]}-1 )); then
       return 0
     fi
-    local selected_version=${options[${ret}]}
+    local selected_line=${options[${ret}]}
+    local selected_version
+    selected_version=$(echo "$selected_line" | grep -oP '^php[0-9]{2}')
 
     echo "Установка выбранной версии PHP ($selected_version) и дополнительных расширений..."
     sudo dnf install -y "$selected_version" \
@@ -133,6 +206,9 @@ function php_multi_install() {
     echo
 
   done
+  source create_hotlist.sh
+  create_hotlist
+
 }
 
 

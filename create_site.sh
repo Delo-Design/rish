@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 source /root/rish/windows.sh
+source /root/rish/change_php_version.sh
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 WHITE='\033[0m'
+YELLOW='\033[0;33m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
 
@@ -31,69 +34,71 @@ function check_site() {
   fi
 
   # Проверяем, существует ли папка и корректно ли ее имя
-  if [[ -d "$full_path" && "$site_name" =~ $regex ]]; then
-    # Проверяем, а не создан ли уже такой сайт?
-    if [[ ! -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
-      # Проверяем нет ли верхнего регистра в названии папки
-      if [[ "$site_name" =~ [[:upper:]] ]]; then
-          # Приводим имя к нижнему регистру
-          lower_name="${site_name,,}"
-          echo ${lower_name}
-          # Проверяем, не существует ли уже каталог с именем в нижнем регистре
-          if [ -d "$directory_path/$lower_name" ]; then
-              echo -e "Переименование ${GREEN}${site_name}${WHITE} --> ${GREEN}${lower_name}${WHITE} невозможно."
-              echo -e "Каталог с именем ${GREEN}${lower_name}${WHITE} уже существует."
-              echo -e ""
-              site_name=""
-          else
-              # Переименовываем каталог
-              mv "$full_path" "$directory_path/$lower_name"
-              echo -e "Каталог переименован. ${GREEN}${site_name}${WHITE} --> ${GREEN}${lower_name}${WHITE}."
-              site_name=$lower_name
-          fi
-      fi
-      if [[ -n "$site_name" ]]; then
-        # Проверяем, а не punycode ли?
-        if [[ "$site_name" =~ (xn\-\-) ]]
-        then
-          echo -e -n "Имя домена ${GREEN}$site_name${WHITE} "
-          echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE}) корректное"
-          echo
-          echo -e -n "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE} "
-          echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
-          echo
-        else
-          echo -e "Имя домена ${GREEN}$site_name${WHITE} корректное."
-          echo -e "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE}."
+  if [[ "$site_name" =~ $regex ]]; then
+    if [[ -d "$full_path" ]]; then
+      # Проверяем, а не создан ли уже такой сайт?
+      if [[ ! -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
+        # Проверяем нет ли верхнего регистра в названии папки
+        if [[ "$site_name" =~ [[:upper:]] ]]; then
+            # Приводим имя к нижнему регистру
+            lower_name="${site_name,,}"
+            echo ${lower_name}
+            # Проверяем, не существует ли уже каталог с именем в нижнем регистре
+            if [ -d "$directory_path/$lower_name" ]; then
+                echo -e "Переименование ${GREEN}${site_name}${WHITE} --> ${GREEN}${lower_name}${WHITE} невозможно."
+                echo -e "Каталог с именем ${GREEN}${lower_name}${WHITE} уже существует."
+                echo -e ""
+                site_name=""
+            else
+                # Переименовываем каталог
+                mv "$full_path" "$directory_path/$lower_name"
+                echo -e "Каталог переименован. ${GREEN}${site_name}${WHITE} --> ${GREEN}${lower_name}${WHITE}."
+                site_name=$lower_name
+            fi
         fi
-        vertical_menu "current" 2 0 5 "Да" "Нет" "Задать свое имя сайта"
-        choice=$?
-        echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
-        case "$choice" in
-        0)
-          return 0 # Выход из функции, если все в порядке
-          ;;
-        1)
-          return 1
-          ;;
-        255)
-          return 2
-          ;;
-        *)
-          site_name=""
-          ;;
-        esac
+        if [[ -n "$site_name" ]]; then
+          # Проверяем, а не punycode ли?
+          if [[ "$site_name" =~ (xn\-\-) ]]
+          then
+            echo -e -n "Имя домена ${GREEN}$site_name${WHITE} "
+            echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE}) корректное"
+            echo
+            echo -e -n "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE} "
+            echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
+            echo
+          else
+            echo -e "Имя домена ${GREEN}$site_name${WHITE} корректное."
+            echo -e "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE}."
+          fi
+          vertical_menu "current" 2 0 5 "Да" "Нет" "Задать свое имя сайта"
+          choice=$?
+          echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
+          case "$choice" in
+          0)
+            return 0 # Выход из функции, если все в порядке
+            ;;
+          1)
+            return 1
+            ;;
+          255)
+            return 2
+            ;;
+          *)
+            site_name=""
+            ;;
+          esac
+        fi
+      else
+          echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
       fi
-    else
-        echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
+      site_name=""
     fi
-    site_name=""
   else
     # Если имя некорректное - пускай сам вводит что ему нужно
     site_name=""
   fi
-  echo -e  "${WHITE}Введите свое имя сайта (Enter для выхода):${GREEN}"
-  read -e -p "" site_name
+  echo -e "${WHITE}Введите свое имя сайта (Пустая строка для выхода):${GREEN}"
+  read -e -i "$site_name" site_name
   site_name="${site_name,,}"
   while true; do
     if [[ -z "$site_name" ]]; then
@@ -135,9 +140,10 @@ function check_site() {
   echo
 }
 function create_site() {
-  clear
+  echo
   local path="$2"
   local php_mode
+  local username
   username=$(echo "$path" | cut -d'/' -f4)
   echo -e "Создание сайта (vhost) для пользователя ${GREEN}${username}${WHITE}"
   if check_site "$1" "$2"; then
@@ -170,7 +176,13 @@ function create_site() {
       DocumentRoot="/"${DocumentRoot}
       mkdir -p "$path/$site_name/$DocumentRoot"
     fi
+
     chown -R ${username}:${username} "$path/$site_name"
+    find "$path/$site_name" -type d -print0 | xargs -0 chmod 755
+
+    if ! find "$path/$site_name" -type f -exec false {} +; then
+        find "$path/$site_name" -type f -print0 | xargs -0 chmod 644
+    fi
 
     echo -e "Установлен пользователь ${GREEN}${username}${WHITE}"
     echo
@@ -212,36 +224,8 @@ function create_site() {
       else
         php_mode="dynamic"
       fi
-      if [ ! -d "/var/www/${username}/tmp" ]; then
-        echo "Папка /var/www/${username}/tmp не существует, создаём..."
-        mkdir -p "/var/www/${username}/tmp"
-      fi
-      {
-        echo "[${username}]"
-        echo "listen = /var/opt/remi/${selected_php}/run/php-fpm/${username}.sock"
-        echo "user = ${username}"
-        echo "group = ${username}"
-        echo "listen.owner = ${username}"
-        echo "listen.group = ${username}"
-        echo ""
-        echo "listen.allowed_clients = 127.0.0.1"
-        echo "pm = ${php_mode}"
-        echo "pm.max_children = 20"
-        echo "pm.start_servers = 3"
-        echo "pm.min_spare_servers = 3"
-        echo "pm.max_spare_servers = 5"
-        echo "pm.process_idle_timeout = 10s"
-        echo ";slowlog = /var/www/${username}/slow.log"
-        echo ";request_slowlog_timeout = 15s"
-        echo "php_value[session.save_handler] = files"
-        echo "php_value[session.save_path] = /var/www/${username}/session"
-        echo "php_value[soap.wsdl_cache_dir] = /var/www/${username}/wsdlcache"
-        echo "php_value[upload_tmp_dir] = /var/www/${username}/tmp"
-      } >"/etc/opt/remi/${selected_php}/php-fpm.d/${username}.conf"
 
-      if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then
-        mv "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf.old"
-      fi
+      create_php_fpm_pool "$selected_php" "$username" "$php_mode"
 
       echo -e "Перезапускаем ${GREEN}${selected_php}-php-fpm${WHITE} для активации версии ${GREEN}${selected_php}${WHITE}?"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
@@ -289,9 +273,9 @@ function create_site() {
     echo "Сайт (vhost) не был создан"
   fi
 
-  vertical_menu "current" 2 0 5 "Нажмите Enter"
 }
 # Если идет прямой вызов - выполняем функцию. Если идет подключение через source - то ничего не делаем
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     create_site "$1" "$2"
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
 fi

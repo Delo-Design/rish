@@ -3,12 +3,62 @@ source /root/rish/windows.sh
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 WHITE='\033[0m'
+YELLOW='\033[0;33m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
+
+function create_php_fpm_pool() {
+  local selected_php="$1"
+  local username="$2"
+  local php_mode="$3"
+
+  local fpm_conf="/etc/opt/remi/${selected_php}/php-fpm.d/${username}.conf"
+
+  if [[ ! -f "$fpm_conf" ]]; then
+    echo -e "Создаем пул PHP-FPM для ${GREEN}${username} ${WHITE}(${YELLOW}${selected_php}${WHITE}, ${YELLOW}${php_mode}${WHITE})..."
+
+    if [ ! -d "/var/www/${username}/tmp" ]; then
+      echo -e "Папка ${YELLOW}/var/www/${username}/tmp${WHITE} не существует, создаём..."
+      mkdir -p "/var/www/${username}/tmp"
+    fi
+
+    {
+      echo "[${username}]"
+      echo "listen = /var/opt/remi/${selected_php}/run/php-fpm/${username}.sock"
+      echo "user = ${username}"
+      echo "group = ${username}"
+      echo "listen.owner = ${username}"
+      echo "listen.group = ${username}"
+      echo "listen.allowed_clients = 127.0.0.1"
+      echo "pm = ${php_mode}"
+      echo "pm.max_children = 20"
+      echo "pm.start_servers = 3"
+      echo "pm.min_spare_servers = 3"
+      echo "pm.max_spare_servers = 5"
+      echo "pm.process_idle_timeout = 10s"
+      echo ";slowlog = /var/www/${username}/slow.log"
+      echo ";request_slowlog_timeout = 15s"
+      echo "php_value[session.save_handler] = files"
+      echo "php_value[session.save_path] = /var/www/${username}/session"
+      echo "php_value[soap.wsdl_cache_dir] = /var/www/${username}/wsdlcache"
+      echo "php_value[upload_tmp_dir] = /var/www/${username}/tmp"
+    } > "$fpm_conf"
+
+    if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then
+      mv "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" \
+         "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf.old"
+    fi
+
+    echo "Пул PHP-FPM создан."
+  fi
+}
+
 function change_php_version() {
-  clear
+  echo
   local path="$2"
-  site_name="$1" # Имя сайта
+  local site_name="$1" # Имя сайта
+  local username
+  local php_version
   if [[ -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
 
     php_version=$(grep -oP 'SetHandler "proxy:unix:/var/opt/remi/\Kphp[0-9]+' "/etc/httpd/conf.d/$site_name.conf")
@@ -31,38 +81,16 @@ function change_php_version() {
       echo
       echo -e "Выберите режим работы PHP для пользователя ${GREEN}${username}${WHITE}:"
       vertical_menu "current" 2 0 5 "ondemand - оптимально расходует память" "dynamic - более оперативно реагирует на запросы"
-      echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
       ret=$?
+      echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
+      local php_mode
       if ((ret == 0)); then
         php_mode="ondemand"
       else
         php_mode="dynamic"
       fi
-      {
-        echo "[${username}]"
-        echo "listen = /var/opt/remi/${selected_php}/run/php-fpm/${username}.sock"
-        echo "user = ${username}"
-        echo "group = ${username}"
-        echo "listen.owner = ${username}"
-        echo "listen.group = ${username}"
-        echo ""
-        echo "listen.allowed_clients = 127.0.0.1"
-        echo "pm = ${php_mode}"
-        echo "pm.max_children = 20"
-        echo "pm.start_servers = 3"
-        echo "pm.min_spare_servers = 3"
-        echo "pm.max_spare_servers = 5"
-        echo "pm.process_idle_timeout = 10s"
-        echo ";slowlog = /var/www/${username}/slow.log"
-        echo ";request_slowlog_timeout = 15s"
-        echo "php_value[session.save_handler] = files"
-        echo "php_value[session.save_path] = /var/www/${username}/session"
-        echo "php_value[soap.wsdl_cache_dir] = /var/www/${username}/wsdlcache"
-      } >"/etc/opt/remi/${selected_php}/php-fpm.d/${username}.conf"
 
-      if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then
-        mv "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf.old"
-      fi
+      create_php_fpm_pool "$selected_php" "$username" "$php_mode"
 
       echo -e "Перезапускаем ${GREEN}${selected_php}-php-fpm${WHITE} для активации версии ${GREEN}${selected_php}${WHITE}?"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
@@ -106,7 +134,15 @@ function change_php_version() {
     if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then
       mv "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf.old"
     fi
-    echo -e "Перезапускаем apache для активации сайта ${LRED}${site_name}${WHITE}?"
+    echo -e -n "Перезапускаем apache для активации сайта ${LRED}${site_name}${WHITE}?"
+        # Проверяем, а не punycode ли?
+    if [[ "$site_name" =~ (xn\-\-) ]]
+    then
+        echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
+        echo
+    else
+        echo
+    fi
     if vertical_menu "current" 2 0 5 "Да" "Нет"; then
       if apachectl configtest; then
         systemctl reload httpd
@@ -122,9 +158,10 @@ function change_php_version() {
     echo -e "Вначале создайте сайт (vhost)."
     echo -e "Никаких изменений не произведено."
   fi
-  vertical_menu "current" 2 0 5 "Нажмите Enter"
 }
+
 # Если идет прямой вызов - выполняем функцию. Если идет подключение через source - то ничего не делаем
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     change_php_version "$1" "$2"
-fi
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+ fi

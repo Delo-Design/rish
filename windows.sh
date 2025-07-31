@@ -13,28 +13,28 @@ print_selected_off()   { printf "$ESC[27m"; }
 get_cursor_row()   { IFS=';' read -sdR -p $'\E[6n' ROW COL; echo ${ROW#*[}; }
 get_cursor_column()   { IFS=';' read -sdR -p $'\E[6n' ROW COL;  echo ${COL}; }
 repl() { printf '%.0s'"$1" $(seq 1 "$2"); }
-key_input()        {
-local key=""
-local extra=""
-local escKey=`echo -en "\033"`
-local upKey=`echo -en "\033[A"`
-local downKey=`echo -en "\033[B"`
+key_input() {
+    local key=""
+    local esc=$'\e'
+    local up=$'\e[A'
+    local down=$'\e[B'
 
-read -s -n1 key 2> /dev/null >&2
-while read -s -n1 -t .0001 extra 2> /dev/null >&2 ; do
-	key="$key$extra"
-done
+    IFS= read -rsn1 key 2>/dev/null
+    if [[ $key == $esc ]]; then
+        # Ждем остаток escape-последовательности (до 2 символов)
+        IFS= read -rsn2 -t 0.001 rest 2>/dev/null
+        key+="$rest"
+    fi
 
-if [[ $key = $upKey ]]; then
-	echo "up"
-elif [[ $key = $downKey ]]; then
-	echo "down"
-elif [[ $key = $escKey ]]; then
-	echo "esc"
-elif [[ $key = "" ]]; then
-	echo "enter"
-fi
+    case "$key" in
+        $up) echo "up" ;;
+        $down) echo "down" ;;
+        $esc) echo "esc" ;;
+        "") echo "enter" ;;
+        *) echo "other:$key" ;;
+    esac
 }
+
 
 
 function refresh_window {
@@ -229,22 +229,4 @@ function vertical_menu {
   return ${selected}
 }
 
-
-function fn_bui_setup_get_env()
-{
-    # save the home dir
-    local _script_name=${BASH_SOURCE[0]}
-    local _script_dir=${_script_name%/*}
-
-    if [[ "$_script_name" == "$_script_dir" ]]
-    then
-        # _script name has no path
-        _script_dir="."
-    fi
-
-    # convert to absolute path
-    _script_dir=$(cd $_script_dir; pwd -P)
-
-    export BUI_HOME=$_script_dir
-}
 

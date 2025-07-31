@@ -2,6 +2,8 @@
 function create_hotlist() {
   cat >~/.config/mc/hotlist <<EOF
 ENTRY "/etc" URL "/etc"
+ENTRY "/root" URL "/root"
+ENTRY "Ключи SFTP тут – /home" URL "/home"
 ENTRY "Путь к пользователям /var/www" URL "/var/www"
 ENTRY "Путь к конфигам сайтов apache /etc/httpd/conf.d" URL "/etc/httpd/conf.d"
 GROUP "Пути к настройкам php"

@@ -1,5 +1,7 @@
 #!/bin/bash
 LGREEN='\033[1;32m'
+source /root/rish/change_php_version.sh
+
 AddServer() {
   clear
   local regex="^[a-zA-Z0-9]+([-\.][a-zA-Z0-9]+)*(\.[a-zA-Z]{2,})?$|^[a-zA-Z0-9]+$"
@@ -14,14 +16,14 @@ AddServer() {
       echo -e -n ${WHITE}${CURSORUP}${ERASEUNTILLENDOFLINE}
       return
     fi
-
-    # Проверка IP-адреса на доступность с помощью пинга
-    if ping -c 1 -W 2 "$ip_address" &>/dev/null; then
-      echo -e "IP-адрес ${GREEN}$ip_address${WHITE} доступен."
+    echo
+    if timeout 2 bash -c "echo > /dev/tcp/$ip_address/22" 2>/dev/null; then
+      echo -e "IP-адрес ${GREEN}$ip_address${WHITE} доступен по SSH (порт 22)."
       break
     else
-      echo -e "IP-адрес ${RED}$ip_address${WHITE} недоступен. Попробуйте ввести другой адрес."
+      echo -e "IP-адрес ${RED}$ip_address${WHITE} недоступен по SSH (порт 22). Попробуйте ввести другой адрес."
     fi
+
   done
   echo "Теперь нужно выбрать имя сервера."
   echo "Имя сервера имеет смысл только для вас и содержит латинские символы и цифры."
@@ -50,8 +52,8 @@ AddServer() {
       read -e -p " " server_name
     fi
   done
-  comment=${server_name}
-  echo -e -n "${WHITE}Укажите комментарий для ключа:${GREEN}"
+  local comment="$(hostname)"
+  echo -e -n "${WHITE}Укажите комментарий для ключа (имя вашего сервера):${GREEN}"
   read -e -p " " -i "$comment" comment
   echo -e ${WHITE}
   ssh-keygen -t ed25519 -C "$comment" -f ~/.ssh/${server_name}-key -N ''
@@ -352,32 +354,8 @@ CloneSite() {
     else
       php_mode="dynamic"
     fi
-    {
-      echo "[${localuser}]"
-      echo "listen = /var/opt/remi/${selected_php}/run/php-fpm/${localuser}.sock"
-      echo "user = ${localuser}"
-      echo "group = ${localuser}"
-      echo "listen.owner = ${localuser}"
-      echo "listen.group = ${localuser}"
-      echo ""
-      echo "listen.allowed_clients = 127.0.0.1"
-      echo "pm = ${php_mode}"
-      echo "pm.max_children = 20"
-      echo "pm.start_servers = 3"
-      echo "pm.min_spare_servers = 3"
-      echo "pm.max_spare_servers = 5"
-      echo "pm.process_idle_timeout = 10s"
-      echo ";slowlog = /var/www/${localuser}/slow.log"
-      echo ";request_slowlog_timeout = 15s"
-      echo "php_value[session.save_handler] = files"
-      echo "php_value[session.save_path] = /var/www/${localuser}/session"
-      echo "php_value[soap.wsdl_cache_dir] = /var/www/${localuser}/wsdlcache"
-      echo "php_value[upload_tmp_dir] = /var/www/${localuser}/tmp"
-    } >"/etc/opt/remi/${selected_php}/php-fpm.d/${localuser}.conf"
 
-    if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then
-      mv "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf.old"
-    fi
+    create_php_fpm_pool "$selected_php" "$localuser" "$php_mode"
 
     echo -e "Перезапускаем ${GREEN}${selected_php}-php-fpm${WHITE} для активации версии ${GREEN}${selected_php}${WHITE}?"
 
