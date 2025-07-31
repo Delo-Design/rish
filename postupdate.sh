@@ -122,7 +122,7 @@ if [ ${#missing_tmp_param[@]} -gt 0 ]; then
                           echo "Добавляем перевод строки в конец '$conf_file'"
                           echo "" >> "$conf_file"
                       fi
-                      # Если параметра нет, добавляем его в конец файла
+                      # Если параметра нет, добавляем его в конец файла.
                       echo "php_value[upload_tmp_dir] = /var/www/$username/tmp" >> "$conf_file"
                       echo -e "${GREEN}${username} ($(basename $php_version_dir))${WHITE}: Добавлен параметр php_value[upload_tmp_dir] в $conf_file"
                   else
