@@ -62,7 +62,7 @@ fi
 
 STEP="Обновление hotlist"
 if ! check_step "$STEP"; then
-  source /root/rish/ri.sh
+  source /root/rish/create_hotlist.sh
   create_hotlist
   mark_step_completed "$STEP"
 fi
