@@ -29,7 +29,7 @@ AddServer() {
   echo "Имя сервера имеет смысл только для вас и содержит латинские символы и цифры."
   echo "Имя можно выбрать по своему усмотрению."
   echo
-  echo -e -n "${WHITE}Введите имя сервера (Enter для выхода):${GREEN}"
+  echo -e "${WHITE}Введите имя сервера (Enter для выхода):${GREEN}"
   read -e -p " " server_name
   while true; do
     if [[ -z "$server_name" ]]; then

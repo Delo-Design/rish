@@ -4,14 +4,37 @@
 
 # little helpers for terminal print control and key input
 ESC=$( printf "\033")
-cursor_blink_on()  { printf "$ESC[?25h"; }
-cursor_blink_off() { printf "$ESC[?25l"; }
-cursor_to()        { printf "$ESC[$1;${2:-1}H"; }
-print_option()     { printf "$1 "; }
-print_selected_on()   { printf "$ESC[7m"; }
-print_selected_off()   { printf "$ESC[27m"; }
-get_cursor_row()   { IFS=';' read -sdR -p $'\E[6n' ROW COL; echo ${ROW#*[}; }
-get_cursor_column()   { IFS=';' read -sdR -p $'\E[6n' ROW COL;  echo ${COL}; }
+cursor_blink_on()     { printf "%s" "${ESC}[?25h"; }
+cursor_blink_off()    { printf "%s" "${ESC}[?25l"; }
+
+cursor_to() {
+  local row="$1"
+  local col="${2:-1}"
+  printf "%s" "${ESC}[${row};${col}H"
+}
+
+print_option()        { printf "%s " "$1"; }
+print_selected_on()   { printf "%s" "${ESC}[7m"; }
+print_selected_off()  { printf "%s" "${ESC}[27m"; }
+
+clear_input_buffer() {
+  # Удаляем мусор из stdin
+  local dummy
+  while read -t 0.01 -n 1 dummy 2>/dev/null; do :; done
+}
+
+get_cursor_row() {
+    local row col
+    IFS=';' read -sdR -p $'\E[6n' row col
+    row=${row#*[}
+    [[ "$row" =~ ^[0-9]+$ ]] && echo "$row" || echo 1
+}
+
+get_cursor_column() {
+    local row col
+    IFS=';' read -sdR -p $'\E[6n' row col
+    [[ "$col" =~ ^[0-9]+$ ]] && echo "$col" || echo 1
+}
 repl() { printf '%.0s'"$1" $(seq 1 "$2"); }
 key_input() {
     local key=""
@@ -123,6 +146,7 @@ function vertical_menu {
   left_x=${ms[1]}
   top_y=${ms[0]}
   MaxWindowWidth=${ms[3]}
+  clear_input_buffer
   current_y=$(get_cursor_row)
 
   if ((${ms[2]} == 0)); then

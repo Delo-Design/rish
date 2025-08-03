@@ -1162,6 +1162,12 @@ EOF
     mark_step_completed "$STEP"
   fi
 
+  STEP="Обновление hotlist"
+  if ! check_step "$STEP"; then
+    # для совместимости с postupdate
+    mark_step_completed "$STEP"
+  fi
+
   STEP="Устанавливаем признак выполненной настройки сервера"
   if ! check_step "$STEP"; then
     echo -e "Конфигурирование сервера ${GREEN}завершено${WHITE}."

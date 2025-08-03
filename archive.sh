@@ -365,8 +365,13 @@ function restore_site() {
   local site_path="$(dirname "$file")"
   local skip_create=0
   local f
-
   local conf_file=""
+  if [[ "$file" != *.tar.gz ]]; then
+    echo -e "Файл ${RED}$(basename "$file")${WHITE} не является архивом tar.gz."
+    echo -e "Восстановление ${YELLOW}отменено${WHITE}."
+    return 1
+  fi
+
   for f in /etc/httpd/conf.d/*.conf; do
     grep -q -E "^\s*ServerName\s+${site_guess}\s*$" "$f" && conf_file="$f" && break
   done
@@ -428,11 +433,13 @@ function restore_site() {
   fi
 
   site_name=$site_guess
+  local ret
   if [[ "$skip_create" -eq 0 ]]; then
     source /root/rish/create_site.sh
     create_site "$site_guess" "$site_path"
-    if [[ -z "$site_name" ]]; then
-      echo -e "Сайт ${YELLOW}не был создан${WHITE}. Восстановление прервано."
+    ret=$?
+    if (( ret == 1 )); then
+      echo -e "Сайт ${YELLOW}$site_name${WHITE} не был создан. Восстановление прервано."
       return 1
     fi
   fi
@@ -626,6 +633,10 @@ function extract() {
     options+=("restore_folder::Восстановить папку из архива $db_guess")
     options+=("restore_site::Восстановить сайт из архива $db_guess")
   elif [[ "$ext" == "sql.gz" || "$ext" == "sql" ]]; then
+    local tar_archive="${file%.sql*}.tar.gz"
+    if [[ -f "$tar_archive" ]]; then
+      options+=("restore_site_from_sql::Восстановить сайт + базу из архива ${db_guess}")
+    fi
     options+=("restore_db_auto::Восстановить базу данных ${db_guess}")
     options+=("restore_db_custom::Восстановить базу данных (указать своё имя)")
     [[ "$ext" == "sql" ]] && options+=("archive_file::Создать архив файла $filename")
@@ -646,7 +657,7 @@ function extract() {
   vertical_menu "current" 1 0 60 "${menu_items[@]}"
   local choice=$?
 
-  if [[ $choice -eq 255 || "${options[$choice]}" == *"::Выйти" ]]; then
+  if [[ $choice -eq 255 || "${options[$choice]%%::*}" == "exit" ]]; then
     echo -e "Операция ${YELLOW}отменена${WHITE} пользователем."
     return
   fi
@@ -677,6 +688,10 @@ function extract() {
       else
         echo -e "Ошибка при распаковке файла${RED}${filename}${WHITE}"
       fi
+      ;;
+    restore_site_from_sql)
+      local tar_archive="${file%.sql*}.tar.gz"
+      restore_site "$tar_archive" "$db_guess"
       ;;
   esac
 }

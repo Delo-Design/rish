@@ -10,135 +10,110 @@ CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
 
 function check_site() {
-  site_name="$1" # Имя сайта
+  local folder_name="$1"
   local directory_path="$2"
-  local full_path="$directory_path/$site_name"
-  local choice
-  local regex="^([a-zA-Z0-9]+([-\.][a-zA-Z0-9]+)*(\.[a-zA-Z]{2,})?|xn--[a-zA-Z0-9\-]+([-\.][a-zA-Z0-9\-]+)*(\.xn--[a-zA-Z0-9\-]+|[a-zA-Z]{2,})?|^[a-zA-Z0-9]+)$"
-  local punycode_domain
-  # Есть ли кириллица в имени сайта?
-  if echo "$site_name" | awk 'BEGIN{found=0} /[А-Яа-яЁё]/ {found=1} END{exit !found}'; then
-    echo -e "Имя сайта ${GREEN}${site_name}${WHITE} содержит кириллические символы."
-    punycode_domain=$(idn2 --quiet  "$site_name" 2>/dev/null )
-    if [ -d "$directory_path/$punycode_domain" ]; then
-          echo -e "Переименование ${RED}${site_name}${WHITE} --> ${RED}${punycode_domain}${WHITE} невозможно."
-          echo -e "Каталог с именем ${GREEN}${punycode_domain}${WHITE} уже существует."
-          echo -e ""
-    else
-          # Переименовываем каталог
-          mv "$full_path" "$directory_path/$punycode_domain"
-          echo -e "Каталог переименован. ${GREEN}${site_name}${WHITE} --> ${GREEN}${punycode_domain}${WHITE}."
-          site_name=$punycode_domain
-          full_path="$directory_path/$site_name"
+  local full_path=""
+  local choice=""
+
+  # Обнуляем имя, если . или ..
+  [[ "$folder_name" == "." || "$folder_name" == ".." ]] && folder_name=""
+
+  # Проверка заглавных букв — до входа в цикл
+  if [[ -d "$directory_path/$folder_name" ]]; then
+    if [[ "$folder_name" =~ [[:upper:]] ]]; then
+      local lower_name="${folder_name,,}"
+      if [[ "$lower_name" != "$folder_name" && ! -e "$directory_path/$lower_name" ]]; then
+        mv "$directory_path/$folder_name" "$directory_path/$lower_name"
+        echo -e "${GREEN}${folder_name}${WHITE}  --->  ${GREEN}${lower_name}${WHITE}"
+        folder_name="$lower_name"
+      elif [[ "$lower_name" != "$folder_name" ]]; then
+        echo -e "${YELLOW}Невозможно${WHITE} переименовать папку: ${GREEN}${folder_name}${WHITE}  --->  ${GREEN}${lower_name}${WHITE}"
+        echo -e "${GREEN}${lower_name}${WHITE} уже существует.${WHITE}"
+        echo -e "Переименуйте папку самостоятельно или выберите другое имя – будет создана новая папка."
+        folder_name="$lower_name"
+      fi
     fi
   fi
 
-  # Проверяем, существует ли папка и корректно ли ее имя
-  if [[ "$site_name" =~ $regex ]]; then
-    if [[ -d "$full_path" ]]; then
-      # Проверяем, а не создан ли уже такой сайт?
-      if [[ ! -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
-        # Проверяем нет ли верхнего регистра в названии папки
-        if [[ "$site_name" =~ [[:upper:]] ]]; then
-            # Приводим имя к нижнему регистру
-            lower_name="${site_name,,}"
-            echo ${lower_name}
-            # Проверяем, не существует ли уже каталог с именем в нижнем регистре
-            if [ -d "$directory_path/$lower_name" ]; then
-                echo -e "Переименование ${GREEN}${site_name}${WHITE} --> ${GREEN}${lower_name}${WHITE} невозможно."
-                echo -e "Каталог с именем ${GREEN}${lower_name}${WHITE} уже существует."
-                echo -e ""
-                site_name=""
-            else
-                # Переименовываем каталог
-                mv "$full_path" "$directory_path/$lower_name"
-                echo -e "Каталог переименован. ${GREEN}${site_name}${WHITE} --> ${GREEN}${lower_name}${WHITE}."
-                site_name=$lower_name
-            fi
-        fi
-        if [[ -n "$site_name" ]]; then
-          # Проверяем, а не punycode ли?
-          if [[ "$site_name" =~ (xn\-\-) ]]
-          then
-            echo -e -n "Имя домена ${GREEN}$site_name${WHITE} "
-            echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE}) корректное"
-            echo
-            echo -e -n "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE} "
-            echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
-            echo
-          else
-            echo -e "Имя домена ${GREEN}$site_name${WHITE} корректное."
-            echo -e "Будет создан сайт (vhost) с именем ${GREEN}$site_name${WHITE}."
-          fi
-          vertical_menu "current" 2 0 5 "Да" "Нет" "Задать свое имя сайта"
-          choice=$?
-          echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
-          case "$choice" in
-          0)
-            return 0 # Выход из функции, если все в порядке
-            ;;
-          1)
-            return 1
-            ;;
-          255)
-            return 2
-            ;;
-          *)
-            site_name=""
-            ;;
-          esac
-        fi
-      else
-          echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
-      fi
-      site_name=""
-    fi
-  else
-    # Если имя некорректное - пускай сам вводит что ему нужно
-    site_name=""
-  fi
-  echo -e "${WHITE}Введите свое имя сайта (Пустая строка для выхода):${GREEN}"
-  read -e -i "$site_name" site_name
-  site_name="${site_name,,}"
   while true; do
+    echo
+    echo -e "${WHITE}Введите имя сайта (пустая строка для выхода):${GREEN}"
+    read -e -i "$folder_name" site_name
+    echo -en "${WHITE}"
+    site_name="${site_name,,}"
+
     if [[ -z "$site_name" ]]; then
-      echo -e "${WHITE}"
+      echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
       return 1
     fi
-    # Проверяем, а не кириллицу ли ввели?
-    if echo "$site_name" | awk 'BEGIN{found=0} /[А-Яа-яЁё]/ {found=1} END{exit !found}'; then
-      echo -e "${WHITE}Имя сайта ${GREEN}${site_name}${WHITE} содержит кириллические символы."
-      echo -e "Будет преобразование в стандарт punycode."
-      site_name=$(idn2 --quiet  "$site_name" 2>/dev/null )
-    fi
-    # Проверяем корректность начального имени сайта
-    if [[ "$site_name" =~ $regex ]]; then
-      echo -e -n "${WHITE}Имя сайта ${GREEN}$site_name${WHITE} введено корректно."
-      # Проверяем, а не punycode ли?
-      if [[ "$site_name" =~ (xn\-\-) ]]
-      then
-          echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
-          echo
-      else
-          echo
-      fi
 
-      if [[ -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
-        echo -e "Конфигурационный файл для сайта ${RED}$site_name${WHITE} уже существует."
-        echo -e "Введите другое имя (Enter для выхода):${GREEN}"
-        read -e -p "" site_name
-        continue # Пропускаем текущую итерацию цикла
+    # Преобразование кириллицы
+    if echo "$site_name" | grep -qP '[А-Яа-яЁё]'; then
+      local punycode_input
+      punycode_input=$(idn2 --quiet "$site_name" 2>/dev/null)
+      if [[ -n "$punycode_input" && "$punycode_input" != "$site_name" ]]; then
+        echo -e "${GREEN}${site_name}${WHITE}  --->  ${GREEN}${punycode_input}${WHITE}"
+        site_name="$punycode_input"
       fi
-      break
+    fi
+
+    full_path="$directory_path/$site_name"
+
+    # Проверка имени — минимум два уровня, ASCII, punycode тоже ок
+    if ! echo "$site_name" | grep -Eq '^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'; then
+      echo -e "${RED}Имя сайта некорректное.${WHITE}"
+      folder_name="$site_name"
+      continue
+    fi
+
+    # Переименование папки в punycode
+    if [[ -d "$directory_path/$folder_name" ]]; then
+      if echo "$folder_name" | grep -qP '[А-Яа-яЁё]'; then
+        local punycode_name
+        punycode_name=$(idn2 --quiet "$folder_name" 2>/dev/null)
+        if [[ "$punycode_name" != "$folder_name" && ! -e "$directory_path/$punycode_name" ]]; then
+          mv "$directory_path/$folder_name" "$directory_path/$punycode_name"
+          echo -e "Папка была переименована: ${GREEN}${folder_name}${WHITE}  --->  ${GREEN}${punycode_name}${WHITE}"
+          folder_name="$punycode_name"
+        elif [[ "$punycode_name" != "$folder_name" ]]; then
+          echo -e "${YELLOW}Невозможно${WHITE} переименовать папку: ${GREEN}${folder_name}${WHITE}  --->  ${GREEN}${punycode_name}${WHITE}"
+          echo -e "Папка ${GREEN}${punycode_name}${WHITE} уже существует."
+          folder_name="$punycode_name"
+          continue
+        fi
+      fi
+    fi
+
+    # Проверка: сайт уже существует?
+    if [[ -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
+      echo -e "Сайт ${RED}$site_name${WHITE} уже существует."
+      vertical_menu "current" 2 0 50 "Использовать $site_name" "Ввести другое имя" "Отменить создание"
+      choice=$?
+      echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
+      case "$choice" in
+        0) return 2 ;;
+        1) folder_name="$site_name"; continue ;;
+        2 | 255) return 1 ;;
+      esac
+    fi
+
+    # Подтверждение создания
+    if [[ "$site_name" =~ ^xn-- ]]; then
+      echo -e "Имя сайта: ${GREEN}${site_name}${WHITE} (${GREEN}$(idn2 -d "$site_name")${WHITE})"
     else
-      echo -e "${WHITE}Имя сайта ${RED}$site_name${WHITE} некорректное. "
-      echo -e "Введите корректное имя (Enter для выхода):${GREEN}"
-      read -e -p "" site_name
+      echo -e "Имя сайта: ${GREEN}${site_name}${WHITE}"
     fi
-  done
 
-  echo
+    vertical_menu "current" 2 0 50 "Да" "Выйти" "Ввести другое имя"
+    choice=$?
+    case "$choice" in
+      0) return 0 ;;
+      1 | 255) return 1 ;;
+      2) folder_name="$site_name"; continue ;;
+    esac
+  done
 }
+
 function create_site() {
   echo
   local path="$2"
@@ -161,7 +136,6 @@ function create_site() {
     local ret=$?
     if ((ret == 255)); then
       echo -e "Сайт (vhost) ${site_name} ${RED}не был создан${WHITE}"
-      vertical_menu "current" 2 0 5 "Нажмите Enter"
       return
     fi
     local selected_php=${installed_versions[${ret}]}
@@ -270,7 +244,9 @@ function create_site() {
     fi
 
   else
-    echo "Сайт (vhost) не был создан"
+    ret=$?
+    echo -e "Сайт (vhost) ${YELLOW}$site_name${WHITE} не был создан"
+    return $ret
   fi
 
 }
