@@ -8,7 +8,7 @@ SSH панель конфигурации и установки web сервер
 
 Официальный сайт RISH https://rish.su
 
-Протестировано на AlmaLinux 8,9 (CentOS 8), Rocky Linux и Fedora
+Протестировано на AlmaLinux 8,9,10 (CentOS 8), Rocky Linux и Fedora
 
 * http/2
 * gzip and brotli компрессия
