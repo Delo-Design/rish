@@ -32,25 +32,24 @@ source $config_file
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
 Install() {
-  if ! rpm -q $@ >/dev/null 2>&1; then
-    echo -e "Ставим ${GREEN}$@${WHITE}"
-    if yum -y install $@; then
-      echo -e "${GREEN}$@${WHITE} установлен"
+  if ! rpm -q "$@" >/dev/null 2>&1; then
+    echo -e "Ставим ${GREEN}${*}${WHITE}"
+    if yum -y install "$@"; then
+      echo -e "${GREEN}${*}${WHITE} установлен"
     else
-      echo -e "Установить ${RED}$@${WHITE} не удалось, очищаем кэш и пытаемся снова"
-      # Очистка кэша yum и повторная попытка установки
+      echo -e "Установить ${RED}${*}${WHITE} не удалось, очищаем кэш и пытаемся снова"
       yum clean all
       yum makecache
-      if yum -y install $@; then
-        echo -e "${GREEN}$@${WHITE} установлен после очистки кэша"
+      if yum -y install "$@"; then
+        echo -e "${GREEN}${*}${WHITE} установлен после очистки кэша"
       else
-        echo -e "Установить ${RED}$@${WHITE} не удалось даже после очистки кэша"
+        echo -e "Установить ${RED}${*}${WHITE} не удалось даже после очистки кэша"
         exit 1
       fi
     fi
     echo
   else
-    echo -e "${GREEN}$@${WHITE} уже установлен"
+    echo -e "${GREEN}${*}${WHITE} уже установлен"
   fi
 }
 

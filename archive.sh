@@ -167,35 +167,60 @@ function archive_site() {
   local folder_path="$1"
   local archive_name="$2"
   shift 2
+  local arg
   local extra_args=("$@")
-
   local parent_path="$(dirname "$folder_path")"
   local folder="$(basename "$folder_path")"
-
   local archive_path="${parent_path}/${archive_name}.tar.gz"
 
+  # Формируем исключения для du
+  local du_exclude=()
+  for arg in "${extra_args[@]}"; do
+    if [[ "$arg" =~ --exclude=.+ ]]; then
+      du_exclude+=("--exclude=${arg#--exclude=}")
+    fi
+  done
+
+  # Вычисление размера папки в мегабайтах с учетом исключений
+  local folder_size_mb
+  folder_size_mb=$(du --apparent-size -sm "${du_exclude[@]}" "$folder_path" | cut -f1)
+
+  # Параметры для checkpoint
+  local checkpoint=50000  # Проверять каждые 10 000 блоков
+  local recordsize=1024   # Размер блока в байтах (для расчета в МБ)
+
   echo -e "Создаем архив ${GREEN}${folder}${WHITE}..."
+  echo -e "Размер папки: ${YELLOW}${folder_size_mb} MB${WHITE}"
+  echo
+
   if [[ ${#extra_args[@]} -gt 0 ]]; then
     echo -e "За исключением папок:"
     for arg in "${extra_args[@]}"; do
       if [[ "$arg" =~ --exclude=.+ ]]; then
-        local clean_path="${arg#--exclude=}"     # удалить --exclude=
-        clean_path="${clean_path%/*}"            # убрать /* в конце
-        clean_path="${clean_path#*/}"            # убрать $folder/ в начале
-        echo -e "  ${YELLOW}${clean_path}${WHITE}"
+        local clean_path="${arg#--exclude=}" # удалить --exclude=
+        clean_path="${clean_path%/*}" # убрать /* в конце
+        clean_path="${clean_path#*/}" # убрать $folder/ в начале
+        echo -e " ${YELLOW}${clean_path}${WHITE}"
       fi
     done
     echo
   fi
-  tar -czhf "$archive_path" -C "$parent_path" "${extra_args[@]}" "$folder"
 
+  # Команда tar с прогрессом, используя двойные кавычки
+  tar -czhf "$archive_path" -C "$parent_path" "${extra_args[@]}" \
+    --record-size=$recordsize --checkpoint=$checkpoint \
+    --checkpoint-action=exec="echo -e \"${CURSORUP}Обработано: \$((TAR_CHECKPOINT / 1000)) MB${ERASEUNTILLENDOFLINE}\r\" >&2" \
+    "$folder"
   if [[ $? -eq 0 ]]; then
+    echo -e "${CURSORUP}${ERASEUNTILLENDOFLINE}"
     echo -e "Архив ${GREEN}${archive_name}${WHITE} успешно создан."
+    # Вывод размера конечного архива
+    local archive_size_mb=$(du -sm "$archive_path" | cut -f1)
+    echo -e "Размер архива: ${YELLOW}${archive_size_mb} MB${WHITE}"
   else
-    echo -e "Ошибка при создании архива ${RED}${archive_name}${WHITE}"
+    echo -e "\nОшибка при создания архива ${RED}${archive_name}${WHITE}"
   fi
 }
-
 
 function archive_db() {
   local dbname="$1"
@@ -570,11 +595,11 @@ function restore_zip_folder() {
       echo -e "Извлечение ${YELLOW}отменено${WHITE} пользователем."
       return
     elif [[ "$choice" -eq 0 ]]; then
-      echo -e -n ${CURSORUP}${ERASEUNTILLENDOFLINE}
+      echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
       echo -e "${WHITE}Очищаем папку ${folder}...${WHITE}"
       rm -rf "${folder:?}/"*
     else
-      echo -e -n ${CURSORUP}${ERASEUNTILLENDOFLINE}
+      echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
       echo -e "${WHITE}Извлечение будет выполнено без очистки папки.${WHITE}"
     fi
   else
@@ -582,7 +607,7 @@ function restore_zip_folder() {
   fi
 
   echo -e "Извлекаем архив ${GREEN}${filename}${WHITE} в папку ${GREEN}${folder}${WHITE}..."
-  unzip -q "$file" -d "$folder"
+  unzip -o -q "$file" -d "$folder"
 
   # Назначаем владельца, если путь соответствует /var/www/<user>/www
   local abs_path
@@ -640,7 +665,7 @@ function extract() {
     options+=("restore_db_auto::Восстановить базу данных ${db_guess}")
     options+=("restore_db_custom::Восстановить базу данных (указать своё имя)")
     [[ "$ext" == "sql" ]] && options+=("archive_file::Создать архив файла $filename")
-    [[ "$ext" == "sql.gz" ]] && options+=("unpack_sql::Извлечь SQL-файл из архива")
+    [[ "$ext" == "sql.gz" ]] && options+=("unpack_sql::Извлечь SQL-файл из архива $filename")
   elif [[ "$ext" == "gz" ]]; then
     options+=("unpack_gz::Распаковать файл ${filename}")
   elif [[ "$ext" == "zip" ]]; then
@@ -654,7 +679,7 @@ function extract() {
     menu_items+=("${item#*::}")
   done
 
-  vertical_menu "current" 1 0 60 "${menu_items[@]}"
+  vertical_menu "current" 1 0 40 "${menu_items[@]}"
   local choice=$?
 
   if [[ $choice -eq 255 || "${options[$choice]%%::*}" == "exit" ]]; then

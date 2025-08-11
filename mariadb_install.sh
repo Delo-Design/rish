@@ -1,7 +1,7 @@
 # shellcheck disable=SC3000-SC4000
 mariadb_install() {
 
-  Install "MariaDB-server MariaDB-client"
+  Install MariaDB-server MariaDB-client
   systemctl start mariadb
   systemctl enable mariadb
 

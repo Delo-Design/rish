@@ -45,6 +45,7 @@ RED='\033[0;31m'
 LRED='\033[1;31m'
 VIOLET='\033[0;35m'
 WHITE='\033[0m'
+YELLOW='\033[0;33m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
 ServerArch=$( arch )
@@ -170,27 +171,26 @@ fi
 
 
 Install() {
-    if ! rpm -q $@ >/dev/null 2>&1; then
+    if ! rpm -q "$@" >/dev/null 2>&1; then
         Up
-        echo -e "Ставим ${GREEN}$@${WHITE}"
+        echo -e "Ставим ${GREEN}${*}${WHITE}"
         Down
-        if yum -y install $@; then
+        if yum -y install "$@"; then
             (( upperY -- ))
             Up
-            echo -e "${GREEN}$@${WHITE} установлен"
+            echo -e "${GREEN}${*}${WHITE} установлен"
         else
             Up
-            echo -e "Установить ${RED}$@${WHITE} не удалось, очищаем кэш и пытаемся снова"
-            # Очистка кэша yum и повторная попытка установки
+            echo -e "Установить ${RED}${*}${WHITE} не удалось, очищаем кэш и пытаемся снова"
             Down
             yum clean all
             yum makecache
-            if yum -y install $@; then
+            if yum -y install "$@"; then
                 Up
-                echo -e "${GREEN}$@${WHITE} установлен после очистки кэша"
+                echo -e "${GREEN}${*}${WHITE} установлен после очистки кэша"
             else
                 Up
-                echo -e "Установить ${RED}$@${WHITE} не удалось даже после очистки кэша"
+                echo -e "Установить ${RED}${*}${WHITE} не удалось даже после очистки кэша"
                 RemoveRim
                 exit 1
             fi
@@ -198,7 +198,7 @@ Install() {
         echo
     else
         Up
-        echo -e "${GREEN}$@${WHITE} уже установлен"
+        echo -e "${GREEN}${*}${WHITE} уже установлен"
     fi
     Down
 }
@@ -221,7 +221,7 @@ OpenFirewall() {
         fi
     else
         echo -e "${GREEN}Firewall${WHITE} не установлен"
-        Install "firewalld"
+        Install firewalld
         Down
         systemctl enable firewalld
         systemctl start firewalld
@@ -572,7 +572,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     ret=$?
     if ((ret > 1)); then
       RemoveRim
-      echo -e "${RED}Установка сервера прервана${WHITE}"
+      echo -e "${YELLOW}Установка сервера прервана${WHITE}"
       exit
     fi
     if ((ret == 1)); then
@@ -583,7 +583,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       Down
     else
       Up
-      echo -e "Установка ${RED}боевого${WHITE} сервера"
+      echo -e "Установка ${YELLOW}боевого${WHITE} сервера"
       add_var_if_not_exists "LocalServer" "LocalServer=false"
       Down
     fi
@@ -636,7 +636,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   STEP="Установка httpd mod_ssl"
   if ! check_step "$STEP"; then
-    Install "httpd mod_ssl"
+    Install httpd mod_ssl
     Up
     httpd -v
     echo
@@ -677,14 +677,19 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP="Закрытие портов cockpit"
   if ! check_step "$STEP"; then
     if ! ${LocalServer}; then
-      Down
-      echo -e "Закрываем порт доступа ${GREEN}cockpit${WHITE}?"
-      echo "Если не знаете что это такое - закрывайте"
-      if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-        firewall-cmd --zone="${ZoneName}" --remove-service=cockpit --permanent
-        firewall-cmd --reload
+      # Проверяем наличие службы cockpit
+      if firewall-cmd --get-services | grep -qw cockpit; then
+        Down
+        echo -e "Закрываем порт доступа ${GREEN}cockpit${WHITE}?"
+        echo "Если не знаете что это такое — закрывайте"
+        if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+          firewall-cmd --zone="${ZoneName}" --remove-service=cockpit --permanent
+          firewall-cmd --reload
+        fi
+        Up
+      else
+        echo -e "${YELLOW}Служба cockpit${WHITE} не найдена, шаг пропущен"
       fi
-      Up
     fi
     mark_step_completed "$STEP"
   fi
@@ -721,7 +726,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   STEP="Установка htop"
   if ! check_step "$STEP"; then
-    Install "htop"
+    Install htop
     mark_step_completed "$STEP"
   fi
 
@@ -807,6 +812,22 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   if ! check_step "$STEP"; then
     Install dnf-utils
     mark_step_completed "$STEP"
+  fi
+
+  STEP="Установка openssl"
+  if ! check_step "$STEP"; then
+    Up
+    echo -e "Устанавливаем ${GREEN}OpenSSL${WHITE}:"
+    if ! rpm -q openssl >/dev/null 2>&1; then
+      Down
+      Install openssl
+      Up
+      echo -e "${GREEN}OpenSSL${WHITE} установлен."
+      mark_step_completed "$STEP"
+    else
+      echo -e "${GREEN}openssl${WHITE} уже установлен, пропускаем установку."
+      mark_step_completed "$STEP"
+    fi
   fi
 
   STEP="Создание самоподписанного сертификата SSL на 10 лет"
@@ -928,7 +949,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
     echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
 
-    if ! bash /root/rish/mariadb_repo_setup.sh --mariadb-server-version=${Maria_Version}
+    if ! bash /root/rish/mariadb_repo_setup.sh --mariadb-server-version="${Maria_Version}" --skip-maxscale
     then
       {
         echo "[mariadb]"
@@ -960,16 +981,17 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     Up
     echo
     Down
-    echo -e "Ставим ${GREEN}certbot${WHITE} для получения SSL сертификатов?"
+    echo -e "Установить ${GREEN}certbot${WHITE} для получения SSL-сертификатов?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-      Install "certbot python3-certbot-apache"
+      Install certbot python3-certbot-apache
       echo "───────────────────────────────────────"
-      echo -e "${GREEN}Настроим certbot.${WHITE} Введите свой ${GREEN}Email${WHITE} для обратной связи."
-      echo -e "На этот Email будут приходить сообщения о проблемах с сертификатами."
-      echo -e "Обязательно укажите корректный email."
-      echo -e "${GREEN}В конце сертификат для 000-default получать не нужно - просто нажмите 'c'${WHITE}"
+      echo -e "Регистрация ${GREEN}аккаунта Let's Encrypt${WHITE}..."
+      echo -e "Email не требуется, регистрация будет выполнена без него."
       echo "───────────────────────────────────────"
-      certbot --apache
+      certbot register \
+        --agree-tos \
+        --register-unsafely-without-email \
+        --non-interactive
     fi
     mark_step_completed "$STEP"
   fi
@@ -1124,7 +1146,7 @@ EOF
       echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE} ${ERASEUNTILLENDOFLINE} в файлах конфигурации."
       sshd -T | grep passwordauthentication
     else
-      echo -e "${CURSORUP}Авторизация по паролю ${RED}разрешена${WHITE}."
+      echo -e "${CURSORUP}${ERASEUNTILLENDOFLINE}Авторизация по паролю ${RED}разрешена${WHITE}."
       echo -e
     fi
     mark_step_completed "$STEP"
