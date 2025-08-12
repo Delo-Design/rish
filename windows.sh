@@ -126,6 +126,8 @@ function vertical_menu {
   local skip_lines=0
   local height
   local shift_y=0
+  local el
+  local arg
   size=$(stty size)
   lines=${size% *}
   columns=${size#* }

@@ -387,13 +387,13 @@ DeleteDatabase() {
     fi
 }
 DeleteUser() {
-  # если папка не пуста, то отказываться удалять пользователя
+  # Если папка не пуста, то отказываться удалять пользователя
   if [[ -n $( ls -A /var/www/${1}/www ) ]]
   then
     echo "У пользователя есть неудаленные сайты. Вначале удалите их."
     echo -e -n ${RED}
     cd /var/www/${1}/www
-    # выводим директории
+    # Выводим директории
     ls -d */ | cut -f1 -d'/'
     # и файлы
     echo -e -n ${LRED}
@@ -401,7 +401,7 @@ DeleteUser() {
     echo -e ${WHITE}
     return 1
   fi
-  # проверим на предмет неудаленных баз данных
+  # Проверим на предмет неудаленных баз данных
   SiteuserMysqlPass=`cat /home/${1}/.pass.txt | grep Database | awk '{ print $2}'`
   bases=( `mariadb -u${1} -p${SiteuserMysqlPass}  --batch -e "SHOW DATABASES" | tail -n +3` )
   if (( ${#bases[@]} > 0 ))
@@ -822,7 +822,6 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       Down
       Install openssl
       Up
-      echo -e "${GREEN}OpenSSL${WHITE} установлен."
       mark_step_completed "$STEP"
     else
       echo -e "${GREEN}openssl${WHITE} уже установлен, пропускаем установку."

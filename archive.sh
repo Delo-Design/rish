@@ -183,7 +183,7 @@ function archive_site() {
 
   # Вычисление размера папки в мегабайтах с учетом исключений
   local folder_size_mb
-  folder_size_mb=$(du --apparent-size -sm "${du_exclude[@]}" "$folder_path" | cut -f1)
+  folder_size_mb=$(du --apparent-size --dereference -sm "${du_exclude[@]}" "$folder_path" | cut -f1)
 
   # Параметры для checkpoint
   local checkpoint=50000  # Проверять каждые 10 000 блоков
@@ -218,7 +218,7 @@ function archive_site() {
     local archive_size_mb=$(du -sm "$archive_path" | cut -f1)
     echo -e "Размер архива: ${YELLOW}${archive_size_mb} MB${WHITE}"
   else
-    echo -e "\nОшибка при создания архива ${RED}${archive_name}${WHITE}"
+    echo -e "\nОшибка при создании архива ${RED}${archive_name}${WHITE}"
   fi
 }
 
