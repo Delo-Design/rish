@@ -559,12 +559,11 @@ O  Обновление RISH
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
 	WHITE='\033[0m'
+  YELLOW='\033[0;33m'
   source /root/rish/windows.sh
   cd /root
   clear
-  rm -f rish2.tar.gz > /dev/null
-  config_file="/root/rish/rish_config.sh"
-  source $config_file
+  source "/root/rish/rish_config.sh"
   version_gt() {
     test "$(printf '%%s\n' "$@" | sort -V | head -n 1)" != "$1"
   }
@@ -629,17 +628,26 @@ O  Обновление RISH
   fi
   }
   echo "Проверяем обновление..."
-  if wget --timeout=15 --tries=1 https://rish.su/rish2.tar.gz > /dev/null 2>&1
-  then
+  if [[ -f /root/rish2.tar.gz ]]; then
+    echo
+    echo -e "Найден архив ${YELLOW}rish2.tar.gz${WHITE} в папке /root"
+    echo "Проверка в интернете не выполняется."
+    echo "Если хотите обновиться через интернет – удалите файл вручную."
+    echo
     Update
   else
-    if wget https://api.github.com/repos/Delo-Design/rish/releases/latest -O - | awk -F \" -v RS="," '/browser_download_url/ {print $(NF-1)}' | xargs wget > /dev/null 2>&1
+    if wget --timeout=15 --tries=1 https://rish.su/rish2.tar.gz > /dev/null 2>&1
     then
-     Update
+      Update
     else
-     echo "Не удалось скачать архив"
-     vertical_menu "current" 2 0 5 "Нажмите Enter"
-     exit 1
+      if wget https://api.github.com/repos/Delo-Design/rish/releases/latest -O - | awk -F \" -v RS="," '/browser_download_url/ {print $(NF-1)}' | xargs wget > /dev/null 2>&1
+      then
+       Update
+      else
+       echo "Не удалось скачать архив"
+       vertical_menu "current" 2 0 5 "Нажмите Enter"
+       exit 1
+      fi
     fi
   fi
   rm -f rish2.tar.gz > /dev/null

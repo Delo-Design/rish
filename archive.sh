@@ -44,6 +44,16 @@ function archive() {
     return
   fi
 
+  # --- Размер папки до архивации ---
+  if [[ -d "$fullpath" ]]; then
+    # du считает логический размер (apparent-size), разыменовывая симлинки
+    local size_bytes
+    size_bytes=$(du --apparent-size --dereference -sb -- "$fullpath" | cut -f1)
+
+    echo -e "Размер папки ${GREEN}${folder}${WHITE}: ${YELLOW}$(numfmt --to=iec --suffix=B "$size_bytes")${WHITE} "
+    echo
+  fi
+
   local is_site=0
   if compgen -G "/etc/httpd/conf.d/${folder}*.conf" > /dev/null; then
     is_site=1
@@ -346,11 +356,11 @@ function restore_folder() {
         echo -e "Извлечение ${YELLOW}отменено${WHITE} пользователем."
         return 1
       elif [[ "$choice" -eq 0 ]]; then
-        echo -e -n ${CURSORUP}${ERASEUNTILLENDOFLINE}
+        echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
         echo -e "${WHITE}Очищаем папку ${folder_name}...${WHITE}"
         rm -rf "${folder_name:?}/"*
       else
-        echo -e -n ${CURSORUP}${ERASEUNTILLENDOFLINE}
+        echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
         echo -e "${WHITE}Извлечение будет выполнено без очистки папки.${WHITE}"
       fi
     fi
@@ -416,11 +426,11 @@ function restore_site() {
     local archive_user=""
     [[ "$file" =~ ^/var/www/([^/]+)/www/ ]] && archive_user="${BASH_REMATCH[1]}"
 
-    echo -e "Сайт ${YELLOW}${site_guess}${WHITE} уже существует и расположен в ${YELLOW}${current_path}${WHITE}"
+    echo -e "Сайт ${YELLOW}${site_guess}${WHITE} уже существует и расположен в папке пользователя ${YELLOW}${archive_user}${WHITE}"
 
     local options=()
     if [[ "$current_user" == "$archive_user" ]]; then
-      options+=("same_path::Восстановить в текущую папку (${archive_user})")
+      options+=("same_path::Восстановить в текущую папку ${site_guess}(${archive_user})")
     else
       echo
       echo -e "Если вы хотите восстановить из архива действующий сайт - переместите архив в папку пользователя ${GREEN}$current_user${WHITE}."

@@ -125,7 +125,7 @@ function change_php_version() {
         sed -i -r "s|/var/opt/remi/php[0-9][0-9]/run/php-fpm/|/var/opt/remi/${selected_php}/run/php-fpm/|g" "/etc/httpd/conf.d/${site_name}-le-ssl.conf"
     fi
     if cmp -s "/etc/httpd/conf.d/${site_name}.conf" "/etc/httpd/conf.d/${site_name}.conf.old"; then
-      echo -e "Замен в файле ${RED}не произведено${WHITE}."
+      echo -e " Замен в файле ${RED}/etc/httpd/conf.d/${site_name}.conf${WHITE} не произведено."
       rm "/etc/httpd/conf.d/${site_name}.conf.old"
     else
       echo -e "Версия PHP в файле /etc/httpd/conf.d/${site_name}.conf изменена на ${GREEN}${selected_php}${WHITE}."

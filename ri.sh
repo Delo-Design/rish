@@ -71,7 +71,7 @@ then
   _script_dir="."
 fi
 
-# convert to absolute path
+# convert to an absolute path
 _script_dir=$(cd ${_script_dir}; pwd -P)
 
 export RISH_HOME=${_script_dir}
@@ -250,6 +250,26 @@ process_ssh_config_file() {
   fi
 }
 # shellcheck disable=SC2120
+check_user_dirs_exist() {
+  local count=0
+  local dir
+  for dir in /var/www/*/; do
+    [[ -d "$dir" ]] || continue
+    local name
+    name=$(basename "$dir")
+    case "$name" in
+    cgi-bin|html)
+      continue
+      ;;
+    *)
+      ((count++))
+      ;;
+    esac
+  done
+
+  (( count > 0 ))
+}
+
 CreateUser() {
   local NAME
   local default_username="$1"  # Получаем первый параметр, переданный в функцию
@@ -257,21 +277,30 @@ CreateUser() {
 
   while true; do
     echo -e "При создании пользователя используйте только латинские буквы."
-    echo -e -n "${WHITE}Введите имя пользователя (для выхода наберите EXIT):${GREEN}"
+    echo -e -n "${WHITE}Введите имя пользователя (пустая строка для выхода):${GREEN}"
     if [[ -z "$default_username" ]]; then
-      read -e -p " " NAME  # Не задаем значение по умолчанию, если параметр пустой
+      read -r -e -p " " NAME  # Не задаем значение по умолчанию, если параметр пустой
     else
-      read -e -p " " -i "$default_username" NAME  # Используем переданный параметр как значение по умолчанию
+      read -r -e -p " " -i "$default_username" NAME  # Используем переданный параметр как значение по умолчанию
     fi
-    if [[ -z "${NAME}" ]]
-    then
+
+    if [[ -z "$NAME" || "$NAME" == "EXIT" || "$NAME" == "exit" ]]; then
+      echo -e "${WHITE}"
+      if ! check_user_dirs_exist; then
+        echo -e "${RED}Нельзя выйти${WHITE}, пока не создан ни один пользователь."
+        echo -e "Создайте хотя бы одного пользователя."
+        continue
+      fi
+      echo -e "${WHITE}"
+      return 0
+    fi
+
+    if [[ "$NAME" == "html" || "$NAME" == "HTML" ]]; then
+      echo -e "${WHITE}Имя ${RED}html${WHITE} запрещено. Выберите другое."
       continue
     fi
-    if  [[ ${NAME} == "EXIT" ]] || [[ ${NAME} == "exit" ]]
-    then
-      break
-    fi
-    NAME=$( echo ${NAME} | tr -cd "[:alnum:]")
+
+    NAME=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
     echo -e "${WHITE}Будет создан пользователь с именем: ${VIOLET}${NAME}${WHITE}"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
@@ -291,7 +320,7 @@ CreateUser() {
   else
     echo -e "${WHITE}Создаем пользователя ${GREEN}${NAME}${WHITE}"
   fi
-  echo -e ${WHITE}
+  echo -e "${WHITE}"
   echo "При создании новых сайтов Joomla требуется указать учетную запись для администратора."
   echo "Вы можете указать имя этой учетной записи, чтобы в дальнейшем не тратить время на ее изменение."
   echo -e "Если вы не укажете имя сейчас - оно будет создано автоматически. "
@@ -321,38 +350,27 @@ CreateUser() {
   echo -e "Учетная запись по умолчанию: ${GREEN}${DEFAULTSITEACCOUNT}${WHITE}"
   echo "defaultsiteaccount ${DEFAULTSITEACCOUNT} ${pass3}" >> /home/${NAME}/.pass.txt
 
-  chmod go-rwx /home/${NAME}/.pass.txt
-  chown ${NAME}:${NAME} /home/${NAME}/.pass.txt
+  chmod 600 "/home/${NAME}/.pass.txt"
+  chown "${NAME}:${NAME}" "/home/${NAME}/.pass.txt"
 
   echo -e "Пароли записаны в файл ${GREEN}/home/${NAME}/.pass.txt${WHITE}"
-  usermod -a -G sftp ${NAME}
-  usermod -aG ${NAME} apache
+  usermod -a -G sftp "${NAME}"
+  usermod -aG "${NAME}" apache
 
-  mkdir /var/www/${NAME}
-  mkdir /var/www/${NAME}/logs
-  mkdir /var/www/${NAME}/www
-  chown ${NAME}:${NAME} /var/www/${NAME}/www
-  chown ${NAME}:${NAME} /var/www/${NAME}/logs
+  install -d -m 750 -o root -g "${NAME}" "/var/www/${NAME}"
+  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/www"
+  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/logs"
+  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/session"
+  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/wsdlcache"
+  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/slowlog"
+  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/tmp"
 
-  # устанавливаем владельцем siteuser
-  # создаем папку /home/siteuser/.ssh
-  mkdir /home/${NAME}/.ssh
-  chown ${NAME}:${NAME} /home/${NAME}/.ssh
+  install -d -m 700 -o "${NAME}" -g "${NAME}" "/home/${NAME}/.ssh"
 
   # создаем файл /home/siteuser/.ssh/authorized_keys для ключей доступа для юзера
-  echo "" > /home/${NAME}/.ssh/authorized_keys
-  chown ${NAME}:${NAME} /home/${NAME}/.ssh/authorized_keys
-
-  # Создаем папки и устанавливаем их владельцем siteuser
-  mkdir /var/www/${NAME}/session
-  mkdir /var/www/${NAME}/wsdlcache
-  mkdir /var/www/${NAME}/slowlog
-  mkdir /var/www/${NAME}/tmp
-
-  chown ${NAME}:${NAME} /var/www/${NAME}/session
-  chown ${NAME}:${NAME} /var/www/${NAME}/wsdlcache
-  chown ${NAME}:${NAME} /var/www/${NAME}/slowlog
-  chown ${NAME}:${NAME} /var/www/${NAME}/tmp
+  : > "/home/${NAME}/.ssh/authorized_keys"
+  chown "${NAME}":"${NAME}" "/home/${NAME}/.ssh/authorized_keys"
+  chmod 600 "/home/${NAME}/.ssh/authorized_keys"
 
   # Удаляем конфигурацию php по умолчанию (это файлы типа php74-php.conf)
   find /etc/httpd/conf.d -type f -name 'php[0-9][0-9]-php.conf' -exec rm -f {} +
@@ -391,14 +409,14 @@ DeleteUser() {
   if [[ -n $( ls -A /var/www/${1}/www ) ]]
   then
     echo "У пользователя есть неудаленные сайты. Вначале удалите их."
-    echo -e -n ${RED}
+    echo -e -n "${RED}"
     cd /var/www/${1}/www
     # Выводим директории
     ls -d */ | cut -f1 -d'/'
     # и файлы
-    echo -e -n ${LRED}
+    echo -e -n "${LRED}"
     ls -Sp | grep -v '/'
-    echo -e ${WHITE}
+    echo -e "${WHITE}"
     return 1
   fi
   # Проверим на предмет неудаленных баз данных
@@ -407,11 +425,11 @@ DeleteUser() {
   if (( ${#bases[@]} > 0 ))
   then
     echo "У пользователя есть неудаленные базы данных:"
-    echo -e ${RED}
+    echo -e "${LRED}"
     for i in "${bases[@]}"; do
-      echo ${i}
+      echo "${i}"
     done
-    echo -e ${WHITE}
+    echo -e "${WHITE}"
     echo "Вначале удалите их"
     return 1
   fi
@@ -419,10 +437,10 @@ DeleteUser() {
 
   if vertical_menu "current" 2 0 5 "Нет" "Да"
   then
-    echo -e ${CURSORUP}"Пользователь ${GREEN}$1${WHITE} не удален."
+    echo -e "${CURSORUP}Пользователь ${GREEN}$1${WHITE} не удален."
     return 1
   fi
-  rm -rf /var/www/${1}
+  rm -rf "/var/www/${1}"
 
   # Удаляем пользователя изо всех php пулов
   mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
@@ -667,6 +685,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   fi
 
   Up
+
+  STEP="Установка прав 751 для /var/www"
+  if ! check_step "$STEP"; then
+    chown root:root /var/www
+    chmod 751 /var/www
+    mark_step_completed "$STEP"
+  fi
 
   STEP="Открытие портов 80 и 443 для web"
   if ! check_step "$STEP"; then
@@ -1115,13 +1140,6 @@ EOF
     echo "Имя пользователя набирается латинскими буквами без спецсимволов, тире и точек."
 
     CreateUser "siteuser"
-    mark_step_completed "$STEP"
-  fi
-
-  STEP="Добавление папки tmp всем пользователям"
-  if ! check_step "$STEP"; then
-    #Это пустой шаг, чтобы добавить выполненный пункт в лог файл
-    #чтобы при обновлении скрипт обновления не пытался опять создавать папки tmp каждому пользователю
     mark_step_completed "$STEP"
   fi
 

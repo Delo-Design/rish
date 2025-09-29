@@ -166,3 +166,126 @@ if [ -f /etc/httpd/conf.d/autoindex.conf ]; then
     echo "Рекомендуем перезапустить сервер Apache после завершения обновления RISH."
     rm -f /etc/httpd/conf.d/autoindex.conf
 fi
+
+ERROR_FOUND=0
+ERRORS=()
+
+check_dir() {
+  local dir="$1"
+  local expected_perm="$2"
+  local expected_owner="$3"
+
+  local actual_perm=$(stat -c "%a" "$dir")
+  local actual_owner=$(stat -c "%U:%G" "$dir")
+
+  if [[ "$actual_perm" != "$expected_perm" || "$actual_owner" != "$expected_owner" ]]; then
+    if [[ "$dir" == "/var/www" ]]; then
+      ERRORS+=("${YELLOW}$dir${WHITE} имеет права ${YELLOW}$actual_owner $actual_perm${WHITE} ")
+    else
+      dir_name=$(basename "$dir")
+      ERRORS+=("${YELLOW}$dir_name${WHITE} имеет права ${YELLOW}$actual_owner $actual_perm${WHITE} ")
+    fi
+    ERROR_FOUND=1
+    return 1
+  fi
+  return 0
+}
+
+# Проверяем основную папку /var/www
+check_dir "/var/www" "751" "root:root"
+
+# Проверяем все подпапки первого уровня (кроме исключенных)
+for subdir in /var/www/*/; do
+  if [[ -d "$subdir" ]]; then
+    dir_name=$(basename "$subdir")
+
+    # Пропускаем исключенные папки
+    case "$dir_name" in
+    "cgi-bin"|"html")
+      continue
+      ;;
+    *)
+    # Проверяем подпапку: ожидаем root:<имя_папки> 750
+      check_dir "$subdir" "750" "root:$dir_name"
+      ;;
+    esac
+  fi
+done
+
+# Если найдены ошибки - выводим сообщение
+if [[ $ERROR_FOUND -eq 1 ]]; then
+  echo "Усиление изоляции сайтов по пользователям"
+  echo ""
+  echo "Сейчас каталоги пользователей в ${YELLOW}/var/www${WHITE} изолированы недостаточно."
+  echo ""
+
+  for error in "${ERRORS[@]}"; do
+    echo -e "$error"
+  done
+  echo
+  echo "Мы усилим изоляцию сайтов на уровне UNIX-пользователей."
+  echo
+  echo "${YELLOW}Что будет сделано?${WHITE}"
+  echo "------------------"
+  echo "  Будут исправлены права и владельцы корневых папок пользователей. "
+  echo "  Это не затронет никакие файлы в сайтах и не скажется на их работе."
+  echo
+  echo "  ${YELLOW}На что повлияет?${WHITE}"
+  echo "----------------"
+  echo "  Если сайты одного пользователя читали данные из папок сайта другого пользователя, это будет заблокировано."
+  echo "  Такие сайты должны находиться в папке одного пользователя или обмениваться данными через API."
+  echo
+  echo "${YELLOW}Вы согласны на исправление прав папок?${WHITE}"
+
+  if vertical_menu "current" 2 0 5 "Да" "Нет"
+  then
+    echo
+    cur_owner=$(stat -c "%U:%G" /var/www)
+    cur_perm=$(stat -c "%a" /var/www)
+
+    if [[ "$cur_owner" != "root:root" ]]; then
+      echo -e "Меняем владельца папки ${YELLOW}/var/www${WHITE} на ${YELLOW}root:root${WHITE} "
+      chown root:root /var/www
+    fi
+
+    if [[ "$cur_perm" != "751" ]]; then
+      echo -e "Меняем права папки ${YELLOW}/var/www${WHITE} на ${YELLOW}751${WHITE} "
+      chmod 751 /var/www
+    fi
+
+    want_perm="750"
+
+    for subdir in /var/www/*/; do
+      dir_name=$(basename "$subdir")
+
+      # Пропускаем системные каталоги
+      case "$dir_name" in
+      cgi-bin|html)
+        continue
+        ;;
+      esac
+
+      want_owner="root:${dir_name}"
+      cur_owner=$(stat -c "%U:%G" "$subdir")
+      cur_perm=$(stat -c "%a" "$subdir")
+
+      if [[ "$cur_owner" != "$want_owner" ]]; then
+        echo -e "Меняем владельца ${YELLOW}${want_owner}${WHITE} для ${YELLOW}$subdir${WHITE}"
+        if ! chown "$want_owner" "$subdir" 2>/dev/null; then
+          echo -e "Не удалось установить группу ${YELLOW}'${dir_name}'${WHITE} (возможно, группы нет). Пропускаю chown."
+        fi
+      fi
+
+      if [[ "$cur_perm" != "$want_perm" ]]; then
+        echo -e "Меняем права ${YELLOW}${want_perm}${WHITE} для ${YELLOW}$subdir${WHITE}"
+        chmod "$want_perm" "$subdir"
+      fi
+    done
+
+    echo -e "Готово. Права и владельцы ${GREEN}приведены в порядок${WHITE}."
+  else
+    echo -e "Права папок ${YELLOW}не были исправлены${WHITE}."
+    echo -e "При следующем обновлении ${YELLOW}RISH${WHITE} вам будет повторно предложено исправить права папок."
+  fi
+
+fi
