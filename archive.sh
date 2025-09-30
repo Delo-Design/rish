@@ -48,9 +48,9 @@ function archive() {
   if [[ -d "$fullpath" ]]; then
     # du считает логический размер (apparent-size), разыменовывая симлинки
     local size_bytes
-    size_bytes=$(du --apparent-size --dereference -sb -- "$fullpath" | cut -f1)
+    size_bytes=$(du --apparent-size --dereference -sm -- "$fullpath" | cut -f1)
 
-    echo -e "Размер папки ${GREEN}${folder}${WHITE}: ${YELLOW}$(numfmt --to=iec --suffix=B "$size_bytes")${WHITE} "
+    echo -e "Размер папки ${GREEN}$folder${WHITE}: ${YELLOW}${size_bytes} MB${WHITE}"
     echo
   fi
 
