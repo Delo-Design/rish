@@ -503,7 +503,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         echo
         echo -e "Идет обновление сервера..."${ERASEUNTILLENDOFLINE}
         Down
-        yum update -y
+        dnf update -y
       fi
       Up
     fi
@@ -951,7 +951,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     cd /etc/yum.repos.d/
 
     echo
-    echo -e "${GREEN}MariaDB${WHITE} на данный момент имеет два релиза с долгосрочной поддержкой:"
+    echo -e "${GREEN}MariaDB${WHITE} на данный момент имеет 3 релиза с долгосрочной поддержкой:"
     echo "10.6  со сроком поддержки до 6 июля 2026"
     echo "10.11 со сроком поддержки до 16 февраля 2028"
     echo -e "${GREEN}11.4${WHITE}  со сроком поддержки до 29 мая 2029"

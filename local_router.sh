@@ -83,10 +83,6 @@ HEADER_FILE="$WORK_DIR/headers.txt"
 RESPONSE_FILE="$WORK_DIR/response.txt"
 DELETE_RESPONSE_FILE="$WORK_DIR/delete_response.txt"
 
-if [ ! -d "$WORK_DIR" ]; then
-    mkdir -p "$WORK_DIR"
-fi
-
 # Функция для аутентификации
 authenticate() {
     # Получаем актуальный challenge и realm
@@ -115,6 +111,11 @@ authenticate() {
         echo "ROUTER_LOGIN=\"$ROUTER_LOGIN\"" >> "$CONFIG_FILE"
         echo "MD5_HASH=\"$MD5_HASH\"" >> "$CONFIG_FILE"
         echo "REALM_SAVED=\"$REALM\"" >> "$CONFIG_FILE"
+      curl -s -D "$HEADER_FILE" -o /dev/null -c "$COOKIE_JAR" "http://$ROUTER_IP/auth"
+      TOKEN=$(awk -F': ' '/X-NDM-Challenge:/ {print $2}' "$HEADER_FILE" | tr -d '\r')
+      REALM=$(awk -F': ' '/X-NDM-Realm:/ {print $2}' "$HEADER_FILE" | tr -d '\r')
+      [ -z "$REALM" ] && REALM="Keenetic"
+
     fi
 
     PASSWORD_HASH=$(echo -n "$TOKEN$MD5_HASH" | openssl sha256 | awk '{print $2}')
@@ -136,6 +137,29 @@ authenticate() {
     fi
 }
 
+# --- Save Keenetic configuration (NDMS3) ---
+save_config() {
+  local url="http://$ROUTER_IP/rci/system/configuration/save"
+  local code
+
+  code=$(curl --connect-timeout 10 -m 10 -s -o /dev/null -w "%{http_code}" \
+    -b "$COOKIE_JAR" -X POST "$url" \
+    -H "Content-Type: application/json" -d "{}")
+
+  if [ "$code" -eq 401 ]; then
+    echo "Сессия истекла, повторная авторизация перед сохранением..."
+    authenticate
+    code=$(curl --connect-timeout 10 -m 10 -s -o /dev/null -w "%{http_code}" \
+      -b "$COOKIE_JAR" -X POST "$url" \
+      -H "Content-Type: application/json" -d "{}")
+  fi
+
+  if [ "$code" -eq 200 ]; then
+    echo -e "Конфигурация успешно ${GREEN}сохранена${WHITE}."
+  else
+    echo -e "Конфигурацию ${RED}не удалось${WHITE} сохранить (${YELLOW}код${WHITE} $code)."
+  fi
+}
 
 
 
@@ -160,6 +184,7 @@ add_domain() {
 
     if [ "$RESPONSE_CODE" -eq 200 ]; then
         echo -e "Домен ${GREEN}$domain${WHITE} успешно добавлен с IP ${GREEN}$ip_address${WHITE}."
+        save_config
     else
         echo -e "Ошибка при добавлении домена. Код ответа: ${RED}$RESPONSE_CODE${WHITE}"
         cat "$RESPONSE_FILE"
@@ -181,6 +206,7 @@ delete_domain() {
 
     if [ "$RESPONSE_CODE" -eq 200 ]; then
         echo -e "Запись ${GREEN}$selected_domain${WHITE} успешно удалена."
+        save_config
     else
         echo "Ошибка при удалении записи. Код ответа: ${RED}$RESPONSE_CODE${WHITE}"
         cat "$DELETE_RESPONSE_FILE"

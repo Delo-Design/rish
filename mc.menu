@@ -554,7 +554,7 @@ R  Управление Сервером
 	./ri.sh
 	cd ${r}
 
-O  Обновление RISH
+O  Oбнoвлeниe RISH {VER}
 	GREEN='\033[0;32m'
 	RED='\033[0;31m'
 	LRED='\033[1;31m'
@@ -657,3 +657,4 @@ Z  Статистика сайтов сервера
     source /root/rish/checkip.sh
     source /root/rish/windows.sh
     CheckIP
+

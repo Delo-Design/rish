@@ -289,3 +289,6 @@ if [[ $ERROR_FOUND -eq 1 ]]; then
   fi
 
 fi
+
+v=$(tr -d '\r' < /root/rish/version | awk '{$1=$1;print}')
+sed -i "s/{VER}/$v/g" /etc/mc/mc.menu

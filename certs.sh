@@ -151,7 +151,7 @@ certs() {
 
     cp "${site_name}.conf" "$ttssl"
     # Порт 80 -> 443
-    sed -i 's#<VirtualHost *:80>#<VirtualHost *:443>#g' "$ttssl"
+    sed -E -i 's#(<VirtualHost[[:space:]]+)([^>]*):80>#\1\2:443>#g' "$ttssl"
     # SSL-директивы перед </VirtualHost>
     sed -i "/<\/VirtualHost>/i ServerSignature Off\nSSLCertificateFile /etc/pki/tls/certs/${site_name}.crt\nSSLCertificateKeyFile /etc/pki/tls/private/${site_name}.key" "$ttssl"
 
