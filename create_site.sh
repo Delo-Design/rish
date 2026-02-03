@@ -135,7 +135,7 @@ function create_site() {
     vertical_menu "current" 1 0 10 "${installed_versions[@]}"
     local ret=$?
     if ((ret == 255)); then
-      echo -e "Сайт (vhost) ${site_name} ${RED}не был создан${WHITE}"
+      echo -e "Сайт (vhost) ${YELLOW}${site_name} ${RED}не был создан${WHITE}"
       return
     fi
     local selected_php=${installed_versions[${ret}]}
@@ -245,7 +245,7 @@ function create_site() {
 
   else
     ret=$?
-    echo -e "Сайт (vhost) ${YELLOW}$site_name${WHITE} не был создан"
+    echo -e "Создание сайта (vhost) для имени ${YELLOW}$site_name${WHITE} пропущено."
     return $ret
   fi
 

@@ -156,7 +156,7 @@ backupall() {
             echo -e -n " База ${GREEN}$DB${WHITE} создана. "
             echo -e "Идет создание архива сайта"
             echo
-            tar -czf - "${EXCLUDE_OPTS[@]}" $SITE $DB.sql \
+            tar -czhf - "${EXCLUDE_OPTS[@]}" $SITE $DB.sql \
                 --record-size=$recordsize --checkpoint=$checkpoint \
                 --checkpoint-action=exec='echo -e "\033[1A"$TAR_CHECKPOINT"mB">&2' \
                 | split -b $splitarchive --numeric-suffix - \

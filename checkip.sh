@@ -192,10 +192,33 @@ CheckIP() {
     fi
   done
   echo "───────────────────────────────────────────"
-  local FREE_SPACE
-  FREE_SPACE=$(df -Pm / | awk 'NR==2 {print $4}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-  local ALL_SITES_SIZE_MB
-  ALL_SITES_SIZE_MB=$(du -sm "/var/www" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-  echo -e "На сервере свободно: ${GREEN}${FREE_SPACE}${WHITE} Mb. Сайты занимают ${GREEN}${ALL_SITES_SIZE_MB}${WHITE} Mb."
+  # Функция красивого форматирования чисел через пробел
+  format_number() {
+    LC_NUMERIC=en_US.UTF-8 printf "%'d" "$1" | sed 's/,/ /g'
+  }
+
+  # --- 1. Данные диска ---
+  read TOTAL USED AVAIL <<< $(df --output=size,used,avail -m /var/www | tail -1)
+
+  # --- 2. Размер сайтов ---
+  SITES_MB=$(du -sm /var/www | awk '{print $1}')
+
+  # --- 3. Процент свободного места ---
+  PERCENT_FREE=$(( AVAIL * 100 / TOTAL ))
+
+  # --- 4. Цвет ---
+  if   (( PERCENT_FREE >= 30 )); then
+    COLOR_FREE="$GREEN"
+  elif (( PERCENT_FREE >= 15 )); then
+    COLOR_FREE="$YELLOW"
+  else
+    COLOR_FREE="$RED"
+  fi
+
+  # --- 5. Красивый вывод с пробелами между тысячами ---
+  printf "Общий объём диска:    ${LWHITE}%10s${WHITE} MB\n" "$(format_number "$TOTAL")"
+  printf "Размер всех сайтов:   ${LWHITE}%10s${WHITE} MB\n" "$(format_number "$SITES_MB")"
+  printf "Свободно на диске:    ${COLOR_FREE}%10s${WHITE} MB (%2d%%)\n" \
+    "$(format_number "$AVAIL")" "$PERCENT_FREE"
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 }

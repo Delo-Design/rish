@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __title__    = "ydcmd"
-__version__  = "2.12.1"
+__version__  = "2.12.2"
 __author__   = "Anton Batenev"
 __license__  = "BSD"
 
@@ -254,7 +254,6 @@ class ydHTTPSConnection(ydHTTPSConnectionBase):
         и установки предпочитаемого набора шифров / алгоритма шифрования
         """
         sock = socket.create_connection((self.host, self.port), self.timeout)
-
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
         if getattr(self, "_tunnel_host", None):
@@ -262,27 +261,29 @@ class ydHTTPSConnection(ydHTTPSConnectionBase):
             self._tunnel()
 
         kwargs = {}
-
         if ydSSLContext is not None:
             kwargs.update(
-                sock=sock,
-                server_hostname= self.host
+                sock            = sock,
+                server_hostname = self.host
             )
+
             context = ydSSLContext(YD_PROTOCOL_TLS)
             if self._options.cafile is not None:
                 context.load_verify_locations(self._options.cafile)
-                context.verify_mode = ssl.CERT_REQUIRED
+                context.verify_mode    = ssl.CERT_REQUIRED
                 context.check_hostname = True
-            if self.cert_file is not None:
-                context.load_cert_chain(self.cert_file, self.key_file)
+
             context.options |= ssl.OP_NO_SSLv2
             context.options |= ssl.OP_NO_SSLv3
             if YD_OP_NO_COMPRESSION:
                 context.options |= YD_OP_NO_COMPRESSION
+
+            if self._options.ciphers != None:
+                context.set_ciphers(self._options.ciphers)
+
             self.sock = context.wrap_socket(**kwargs)
         else:
             kwargs.update(ssl_version = YD_PROTOCOL_TLS)
-
             if self._options.cafile != None:
                 kwargs.update (
                     cert_reqs = ssl.CERT_REQUIRED,
@@ -292,7 +293,7 @@ class ydHTTPSConnection(ydHTTPSConnectionBase):
             if self._options.ciphers != None and YD_WRAP_SOCKET_CIPHERS:
                 kwargs.update(ciphers = self._options.ciphers)
 
-            self.sock = ssl.wrap_socket(sock, keyfile = self.key_file, certfile = self.cert_file, **kwargs)
+            self.sock = ssl.wrap_socket(sock, **kwargs)
 
         if self._options.debug:
             ciphers = self.sock.cipher()
@@ -345,7 +346,10 @@ class ydHTTPSConnection(ydHTTPSConnectionBase):
             if self._options.progress:
                 written += len(datablock)
                 if bar:
-                    bar.update(written)
+                    try:
+                        bar.update(written)
+                    except:
+                        pass
                 else:
                     delta = int(time.time()) - start
                     if delta > 0:
@@ -884,10 +888,6 @@ def yd_query_retry(options, method, url, args, headers = None, target = None, da
         if target != None:
             yd_debug("File: {0}".format(target.name)) if not isinstance(target, string_types) else yd_debug("File: {0}".format(target))
 
-    # страховка
-    if re.match('^https:\/\/[a-z0-9\.\-]+\.yandex\.(net|ru|com|ua|by|kz|az|ee|fr|kg|lt|lv|md|tj|tm|com\.tr|co\.il|com\.am)(:443){,1}\/', url, re.IGNORECASE) == None:
-        raise RuntimeError("Malformed URL {0}".format(url))
-
     if method not in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
         raise ValueError("Unknown method: {0}".format(method))
 
@@ -1284,7 +1284,14 @@ def yd_publish(options, path):
 
     yd_query(options, method, url, args)
 
-    return yd_stat(options, path)
+    # wait async publish public url (see #57)
+    while True:
+        result = yd_stat(options, path)
+        if hasattr(result, "public_url"):
+            break
+        time.sleep(1)
+
+    return result
 
 
 def yd_unpublish(options, path):
@@ -2635,7 +2642,7 @@ if __name__ == "__main__":
 
     args   = []
     config = yd_load_config(cfgfile)
-    regexp = re.compile("^--(\S+?)(=(.*)){,1}$")
+    regexp = re.compile(r"^--(\S+?)(=(.*)){,1}$")
     for i in range(1, argc):
         arg = sys.argv[i]
         opt = regexp.split(arg)

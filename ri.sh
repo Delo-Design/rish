@@ -124,7 +124,7 @@ Down() {
   then
     upperY=$( get_cursor_row )
     echo -e ${ESC}"[$(( ${rim}+2));${lines}r"
-    # ограничить скрол нижней частью экрана
+    # Ограничить скрол нижней частью экрана
     cursor_to ${downY} 1
     whereCursorIs="down"
   fi
@@ -205,33 +205,67 @@ Install() {
 
 
 OpenFirewall() {
-    if command -v firewall-cmd >/dev/null 2>&1  && systemctl status firewalld  >/dev/null
-    then
-        if firewall-cmd --list-all  | grep http > /dev/null && firewall-cmd --list-all  | grep https > /dev/null
-        then
-            echo -e "${GREEN}Firewall${WHITE} уже открыт"
-        else
-            echo -e "Открываем ${GREEN}firewall${WHITE}"
-            Down
-            ZoneName=$(firewall-cmd --get-default-zone)
-            firewall-cmd --zone=${ZoneName} --permanent --add-service=http
-            firewall-cmd --zone=${ZoneName} --permanent --add-service=https
-            firewall-cmd --reload
-            Up
-        fi
-    else
-        echo -e "${GREEN}Firewall${WHITE} не установлен"
-        Install firewalld
-        Down
-        systemctl enable firewalld
-        systemctl start firewalld
-        ZoneName=$(firewall-cmd --get-default-zone)
-        firewall-cmd --zone=${ZoneName} --permanent --add-service=http
-        firewall-cmd --zone=${ZoneName} --permanent --add-service=https
-        firewall-cmd --reload
-        Up
+  # Проверка наличия и состояния firewalld
+  if ! command -v firewall-cmd >/dev/null 2>&1 || ! systemctl is-active --quiet firewalld; then
+    echo -e "${GREEN}Firewall${WHITE} не установлен или не запущен"
+    Install firewalld
+    Down
+    systemctl enable --now firewalld
+    Up
+  fi
+
+  Down
+  local ZoneName changed
+  ZoneName="$(firewall-cmd --get-default-zone)"
+  changed=0
+
+  # 1) Если сервис ispmanager существует — выключаем его в этой зоне
+  if firewall-cmd --get-services | grep -qw ispmanager; then
+    # Удалить из permanent при наличии
+    if firewall-cmd --permanent --zone="$ZoneName" --query-service=ispmanager >/dev/null 2>&1; then
+      echo -e "Закрываю сервис ${GREEN}ispmanager${WHITE} (permanent) в зоне ${ZoneName}"
+      firewall-cmd --permanent --zone="$ZoneName" --remove-service=ispmanager
+      changed=1
     fi
+    # Попробовать убрать из runtime (если там был)
+    if ! firewall-cmd --zone="$ZoneName" --remove-service=ispmanager >/dev/null 2>&1; then
+      echo -e "${YELLOW}Предупреждение:${WHITE} сервис ispmanager уже не был активен (runtime)"
+    fi
+  fi
+
+  # 2) Гарантировать, что http/https открыты (permanent)
+  if ! firewall-cmd --permanent --zone="$ZoneName" --query-service=http  >/dev/null 2>&1; then
+    firewall-cmd --permanent --zone="$ZoneName" --add-service=http
+    changed=1
+  fi
+  if ! firewall-cmd --permanent --zone="$ZoneName" --query-service=https >/dev/null 2>&1; then
+    firewall-cmd --permanent --zone="$ZoneName" --add-service=https
+    changed=1
+  fi
+
+  # 3) Применить изменения при необходимости
+  if [ "$changed" -eq 1 ]; then
+    echo -e "Применяю изменения ${GREEN}firewalld${WHITE}"
+    firewall-cmd --reload
+  fi
+
+  Up
+
+  # 4) Итоговый статус
+  if firewall-cmd --zone="$ZoneName" --query-service=http >/dev/null 2>&1 \
+    && firewall-cmd --zone="$ZoneName" --query-service=https >/dev/null 2>&1; then
+    echo -e "${GREEN}Firewall${WHITE}: http/https открыты в зоне ${ZoneName}."
+  else
+    echo -e "${RED}Внимание:${WHITE} не удалось гарантировать открытие http/https в зоне ${ZoneName}."
+  fi
+  # Сообщение о состоянии ispmanager (для наглядности)
+  if firewall-cmd --zone="$ZoneName" --query-service=ispmanager >/dev/null 2>&1; then
+    echo -e "${YELLOW}Замечание:${WHITE} сервис ${YELLOW}ispmanager${WHITE} всё ещё активен в runtime/зоне ${ZoneName}."
+  else
+    echo -e "Сервис ${GREEN}ispmanager${WHITE} в зоне ${ZoneName} отключён."
+  fi
 }
+
 process_ssh_config_file() {
   local config_file=$1
 
@@ -1100,6 +1134,8 @@ EOF
       fi
       cp mc.menu /etc/mc/mc.menu
     fi
+    v=$(tr -d '\r' < /root/rish/version | awk '{$1=$1;print}')
+    sed -i "s/{VER}/$v/g" /etc/mc/mc.menu
     mark_step_completed "$STEP"
   fi
 
@@ -1203,7 +1239,7 @@ EOF
 
   STEP="Обновление hotlist"
   if ! check_step "$STEP"; then
-    # для совместимости с postupdate
+    # Для совместимости с postupdate
     mark_step_completed "$STEP"
   fi
 

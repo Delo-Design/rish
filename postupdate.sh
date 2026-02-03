@@ -69,8 +69,13 @@ fi
 
 declare -A missing_tmp_param # ассоциативный массив: php_version_dir => username
 
+shopt -s nullglob   # если *.conf не найден — массив пустой, цикл не выполнится
 for php_version_dir in /etc/opt/remi/*; do
     [ -d "$php_version_dir" ] || continue
+
+    php_fpm_dir="$php_version_dir/php-fpm.d"
+    [[ -d "$php_fpm_dir" ]] || continue
+
     for conf_file in "$php_version_dir/php-fpm.d"/*.conf; do
         [[ $(basename "$conf_file") == "www.conf" ]] && continue
         username=$(basename "$conf_file" .conf)
@@ -80,6 +85,7 @@ for php_version_dir in /etc/opt/remi/*; do
         fi
     done
 done
+shopt -u nullglob
 
 if [ ${#missing_tmp_param[@]} -gt 0 ]; then
   echo
@@ -290,5 +296,24 @@ if [[ $ERROR_FOUND -eq 1 ]]; then
 
 fi
 
+# Установка версии скрипта в меню
 v=$(tr -d '\r' < /root/rish/version | awk '{$1=$1;print}')
 sed -i "s/{VER}/$v/g" /etc/mc/mc.menu
+
+# Пост-апдейт проверка: в default-зоне закрыть сервис ispmanager, если он включён.
+
+if firewall-cmd --get-services | grep -qw ispmanager; then
+  ZoneName="$(firewall-cmd --get-default-zone 2>/dev/null)"
+
+  # 1) Permanent
+  if firewall-cmd --permanent --zone="$ZoneName" --query-service=ispmanager >/dev/null 2>&1; then
+    echo -e "Закрываю сервис ${GREEN}ispmanager${WHITE} (permanent) в зоне ${ZoneName}"
+    firewall-cmd --permanent --zone="$ZoneName" --remove-service=ispmanager
+    firewall-cmd --reload >/dev/null 2>&1
+  fi
+
+  if firewall-cmd --zone="$ZoneName" --query-service=ispmanager >/dev/null 2>&1; then
+    echo -e "Закрываю сервис ${GREEN}ispmanager${WHITE} (runtime) в зоне ${ZoneName}"
+    firewall-cmd --zone="$ZoneName" --remove-service=ispmanager >/dev/null 2>&1
+  fi
+fi
