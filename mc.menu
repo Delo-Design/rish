@@ -171,7 +171,7 @@ k       Удалить базу данных
   fi
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 
-4  управление CRON
+4  Управление CRON
   bash /root/rish/cron_users.sh
 
 + d /var/www/ & t d
