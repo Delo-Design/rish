@@ -140,7 +140,8 @@ CheckIP() {
               echo -e -n " ${WHITE}│ "
               check_certificate_expiration "$SiteName"
             else
-              printf "   %-27s" " "
+              # Держим ту же сетку колонок, что и у "живой" строки: IP(19) + proto(8)
+              printf "   %-19s%-8s" " " " "
               if [[ "$SiteName" =~ (xn\-\-) ]]
               then
                 unicode_domain=$(idn2 -d "$SiteName")
@@ -149,8 +150,8 @@ CheckIP() {
               fi
               echo -e -n " ${RED}"
               unicode_printf 32 "$unicode_domain"
-              echo -e -n " ${WHITE}"
-              printf "              "
+              echo -e -n " ${WHITE}│ "
+              printf "%13s" "-"
             fi
             if [ -f "${PathToSiteName}"/administrator/manifests/files/joomla.xml ]; then
               JoomlaVersion=$(cat "${PathToSiteName}"/administrator/manifests/files/joomla.xml | grep "<version>.*</version>" | sed -rn 's/.*>([0-9.]+)<.*/\1/p')
