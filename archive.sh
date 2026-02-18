@@ -331,6 +331,95 @@ function fix_site_configuration() {
 
 }
 
+function clean_directory_contents() {
+  local target_dir="$1"
+  find "$target_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
+function inspect_tar_archive_layout() {
+  local archive_path="$1"
+  local entry top item seen
+  local -a root_dirs=()
+  local -a root_files=()
+  local -a root_items=()
+  local -a sql_candidates=()
+
+  ARCHIVE_SINGLE_ROOT_DIR=""
+  ARCHIVE_SQL_ENTRY=""
+  ARCHIVE_LAYOUT="mixed"
+
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+
+    if [[ "$entry" == */* ]]; then
+      top="${entry%%/*}"
+      seen=0
+      for item in "${root_dirs[@]}"; do
+        if [[ "$item" == "$top" ]]; then
+          seen=1
+          break
+        fi
+      done
+      [[ "$seen" -eq 0 ]] && root_dirs+=("$top")
+    else
+      root_files+=("$entry")
+    fi
+  done < <(tar -tzf "$archive_path")
+
+  root_items=("${root_dirs[@]}")
+  for item in "${root_files[@]}"; do
+    seen=0
+    for top in "${root_items[@]}"; do
+      if [[ "$top" == "$item" ]]; then
+        seen=1
+        break
+      fi
+    done
+    [[ "$seen" -eq 0 ]] && root_items+=("$item")
+  done
+
+  if [[ "${#root_dirs[@]}" -eq 1 ]]; then
+    ARCHIVE_SINGLE_ROOT_DIR="${root_dirs[0]}"
+  fi
+
+  local non_sql_root_files=0
+  for item in "${root_files[@]}"; do
+    if [[ "$item" == *.sql || "$item" == *.sql.gz ]]; then
+      sql_candidates+=("$item")
+    else
+      non_sql_root_files=1
+    fi
+  done
+
+  if [[ "${#sql_candidates[@]}" -gt 0 ]]; then
+    if [[ -n "$ARCHIVE_SINGLE_ROOT_DIR" ]]; then
+      local preferred_sql_gz="${ARCHIVE_SINGLE_ROOT_DIR}.sql.gz"
+      local preferred_sql="${ARCHIVE_SINGLE_ROOT_DIR}.sql"
+      for item in "${sql_candidates[@]}"; do
+        if [[ "$item" == "$preferred_sql_gz" ]]; then
+          ARCHIVE_SQL_ENTRY="$item"
+          break
+        fi
+      done
+      if [[ -z "$ARCHIVE_SQL_ENTRY" ]]; then
+        for item in "${sql_candidates[@]}"; do
+          if [[ "$item" == "$preferred_sql" ]]; then
+            ARCHIVE_SQL_ENTRY="$item"
+            break
+          fi
+        done
+      fi
+    fi
+    [[ -z "$ARCHIVE_SQL_ENTRY" ]] && ARCHIVE_SQL_ENTRY="${sql_candidates[0]}"
+  fi
+
+  if [[ "${#root_dirs[@]}" -eq 1 && "${#root_files[@]}" -eq 0 ]]; then
+    ARCHIVE_LAYOUT="single_dir"
+  elif [[ "${#root_dirs[@]}" -eq 1 && "${#sql_candidates[@]}" -ge 1 && "$non_sql_root_files" -eq 0 ]]; then
+    ARCHIVE_LAYOUT="site_plus_sql"
+  fi
+}
+
 
 function restore_folder() {
   local archive_path="$1"
@@ -358,7 +447,7 @@ function restore_folder() {
       elif [[ "$choice" -eq 0 ]]; then
         echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
         echo -e "${WHITE}Очищаем папку ${folder_name}...${WHITE}"
-        rm -rf "${folder_name:?}/"*
+        clean_directory_contents "${folder_name:?}"
       else
         echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
         echo -e "${WHITE}Извлечение будет выполнено без очистки папки.${WHITE}"
@@ -368,15 +457,13 @@ function restore_folder() {
     mkdir -p "$folder_name"
   fi
 
-  # Подсчёт количества корневых элементов
-  local root_items
-  root_items=$(tar -tzf "$archive_path" | cut -d/ -f1 | sort -u)
-  local root_count
-  root_count=$(echo "$root_items" | wc -l)
+  inspect_tar_archive_layout "$archive_path"
 
   echo -e "Извлекаем архив в папку ${GREEN}${folder_name}${WHITE}..."
 
-  if [[ "$root_count" -eq 1 ]]; then
+  if [[ "$ARCHIVE_LAYOUT" == "site_plus_sql" && -n "$ARCHIVE_SINGLE_ROOT_DIR" ]]; then
+    tar -xzf "$archive_path" --strip-components=1 -C "$folder_name" "$ARCHIVE_SINGLE_ROOT_DIR"
+  elif [[ "$ARCHIVE_LAYOUT" == "single_dir" ]]; then
     tar -xzf "$archive_path" --strip-components=1 -C "$folder_name"
   else
     tar -xzf "$archive_path" -C "$folder_name"
@@ -485,16 +572,37 @@ function restore_site() {
 
   local base="${file%.tar.gz}"
   local sql_file=""
+  local temp_sql_dir=""
   [[ -f "${base}.sql.gz" ]] && sql_file="${base}.sql.gz"
   [[ -f "${base}.sql" ]] && sql_file="${base}.sql"
+
+  if [[ -z "$sql_file" ]]; then
+    inspect_tar_archive_layout "$file"
+    if [[ -n "$ARCHIVE_SQL_ENTRY" ]]; then
+      temp_sql_dir="$(mktemp -d "${site_path}/.restore_sql.XXXXXX")"
+      if [[ -z "$temp_sql_dir" ]]; then
+        echo -e "Не удалось подготовить временную папку для извлечения SQL."
+      elif tar -xzf "$file" -C "$temp_sql_dir" "$ARCHIVE_SQL_ENTRY"; then
+        sql_file="${temp_sql_dir}/${ARCHIVE_SQL_ENTRY}"
+        echo -e "Найден SQL-файл внутри архива: ${GREEN}${ARCHIVE_SQL_ENTRY}${WHITE}"
+      else
+        echo -e "Не удалось извлечь SQL-файл ${RED}${ARCHIVE_SQL_ENTRY}${WHITE} из архива."
+        rm -rf "$temp_sql_dir"
+        temp_sql_dir=""
+      fi
+    fi
+  fi
 
   if [[ -n "$sql_file" ]]; then
     echo -e "Найден файл базы данных: ${GREEN}$(basename "$sql_file")${WHITE}. Восстанавливаем..."
     if ! restore_db_auto "$sql_file" "$site_name"; then
+      [[ -n "$temp_sql_dir" ]] && rm -rf "$temp_sql_dir"
       echo -e "Восстановление базы данных прервано."
       return 1
     fi
   fi
+
+  [[ -n "$temp_sql_dir" ]] && rm -rf "$temp_sql_dir"
 
   fix_site_configuration "$site_path" "$site_name"
 }
@@ -607,7 +715,7 @@ function restore_zip_folder() {
     elif [[ "$choice" -eq 0 ]]; then
       echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
       echo -e "${WHITE}Очищаем папку ${folder}...${WHITE}"
-      rm -rf "${folder:?}/"*
+      clean_directory_contents "${folder:?}"
     else
       echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
       echo -e "${WHITE}Извлечение будет выполнено без очистки папки.${WHITE}"
@@ -751,4 +859,3 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 fi
-

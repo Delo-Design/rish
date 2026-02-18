@@ -38,7 +38,7 @@ function check_certificate_expiration() {
     local DOMAIN=$1
     local PORT=443
     local CERT
-    CERT=$(echo | openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -enddate)
+    CERT=$(echo | openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null)
 
     if [ -n "$CERT" ]; then
         local END_DATE
@@ -51,9 +51,9 @@ function check_certificate_expiration() {
         CURRENT_DATE_TS=$(date +%s)
 
         local DAYS_LEFT=$(((END_DATE_TS - CURRENT_DATE_TS) / 86400))
-        printf "SSL %4s дней," "${DAYS_LEFT}"
+        printf "SSL %4s дней" "${DAYS_LEFT}"
     else
-        echo -e -n " -"
+        printf "%13s" "-"
     fi
 }
 unicode_printf() {
@@ -137,7 +137,7 @@ CheckIP() {
               fi
               echo -e -n " ${LGREEN}"
               unicode_printf 32 "$unicode_domain"
-              echo -e -n " ${WHITE}"
+              echo -e -n " ${WHITE}│ "
               check_certificate_expiration "$SiteName"
             else
               printf "   %-27s" " "
@@ -154,14 +154,14 @@ CheckIP() {
             fi
             if [ -f "${PathToSiteName}"/administrator/manifests/files/joomla.xml ]; then
               JoomlaVersion=$(cat "${PathToSiteName}"/administrator/manifests/files/joomla.xml | grep "<version>.*</version>" | sed -rn 's/.*>([0-9.]+)<.*/\1/p')
-              printf " Joomla %8s" "${JoomlaVersion}"
+              printf " │ Joomla %8s" "${JoomlaVersion}"
             else
-              printf "        %8s" "-"
+              printf " │ %15s" "-"
             fi
             PHP_VERSION=$(get_php_version "$SiteName")
-            printf ", ${PHP_VERSION}"
+            printf " │ %s" "${PHP_VERSION}"
             FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
-            printf " ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
+            printf " │ ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
             echo
           else
             printf "   %-19s" " "
@@ -173,16 +173,17 @@ CheckIP() {
             # Вычисляем длину строки без учета управляющих символов
             plain_length=${#plain_text}
 
-            # Вычисляем количество пробелов для дополнения до 50 символов
-            padding_length=$((50 - plain_length))
+            # Выравниваем левую часть до той же позиции, где у обычных строк начинается колонка SSL.
+            left_width=41
+            if (( plain_length < left_width )); then
+              padding_length=$((left_width - plain_length))
+              padding=$(printf "%${padding_length}s" "")
+            else
+              padding=""
+            fi
 
-            # Формируем строку с пробелами
-            padding=$(printf " %-${padding_length}s" "")
-
-            # Выводим строку с цветом и дополнением пробелами
             echo -e -n "${input_variable}${padding}"
-            printf "    %4s     " " "
-            printf "        %8s" "-"
+            printf " │ %13s │ %15s │ %6s │" "-" "-" "-"
             FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
             printf " ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
             echo

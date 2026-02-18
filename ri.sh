@@ -873,6 +873,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
+  STEP="Установка jq и rclone"
+  if ! check_step "$STEP"; then
+    Install jq
+    Install rclone
+    mark_step_completed "$STEP"
+  fi
+
   STEP="Установка openssl"
   if ! check_step "$STEP"; then
     Up
@@ -1383,4 +1390,3 @@ else
     esac
   done
 fi
-

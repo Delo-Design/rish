@@ -611,7 +611,7 @@ O  Oбнoвлeниe RISH {VER}
       fi
       chmod u+x ri.sh
       chmod u+x clonesite.sh
-      chmod u+x backup.sh
+      chmod u+x backup2.sh
       echo
       bash postupdate.sh
      else
@@ -660,4 +660,7 @@ Z  Статистика сайтов сервера
     source /root/rish/checkip.sh
     source /root/rish/windows.sh
     CheckIP
+
+B  Бекапы
+    bash /root/rish/backup2.sh
 

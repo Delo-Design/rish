@@ -59,6 +59,13 @@ if ! check_step "$STEP"; then
   mark_step_completed "$STEP"
 fi
 
+STEP="Установка jq и rclone"
+if ! check_step "$STEP"; then
+  Install jq
+  Install rclone
+  mark_step_completed "$STEP"
+fi
+
 STEP="Обновление hotlist"
 if ! check_step "$STEP"; then
   source /root/rish/create_hotlist.sh

@@ -7,6 +7,19 @@ ESC=$( printf "\033")
 cursor_blink_on()     { printf "%s" "${ESC}[?25h"; }
 cursor_blink_off()    { printf "%s" "${ESC}[?25l"; }
 
+# Метаданные последнего отрисованного меню (обновляются в vertical_menu)
+VERTICAL_MENU_LAST_WIDTH=0
+VERTICAL_MENU_LAST_OUTER_WIDTH=0
+VERTICAL_MENU_LAST_HEIGHT=0
+VERTICAL_MENU_LAST_X=0
+VERTICAL_MENU_LAST_Y=0
+VERTICAL_MENU_LAST_RIGHT_X=0
+
+vertical_menu_next_x() {
+  local gap="${1:-1}"
+  echo $((VERTICAL_MENU_LAST_RIGHT_X + gap + 1))
+}
+
 cursor_to() {
   local row="$1"
   local col="${2:-1}"
@@ -20,7 +33,13 @@ print_selected_off()  { printf "%s" "${ESC}[27m"; }
 clear_input_buffer() {
   # Удаляем мусор из stdin
   local dummy
-  while read -t 0.01 -n 1 dummy 2>/dev/null; do :; done
+  while IFS= read -rsn1 -t 0.01 dummy 2>/dev/null; do :; done
+}
+
+drain_input_tail() {
+  # Слить хвост неизвестной escape-последовательности, чтобы он не "протек" в UI.
+  local dummy
+  while IFS= read -rsn1 -t 0.001 dummy 2>/dev/null; do :; done
 }
 
 get_cursor_row() {
@@ -38,24 +57,40 @@ get_cursor_column() {
 repl() { printf '%.0s'"$1" $(seq 1 "$2"); }
 key_input() {
     local key=""
+    local c1=""
+    local c2=""
     local esc=$'\e'
-    local up=$'\e[A'
-    local down=$'\e[B'
 
-    IFS= read -rsn1 key 2>/dev/null
-    if [[ $key == $esc ]]; then
-        # Ждем остаток escape-последовательности (до 2 символов)
-        IFS= read -rsn2 -t 0.001 rest 2>/dev/null
-        key+="$rest"
+    IFS= read -rsn1 key 2>/dev/null || true
+
+    if [[ "$key" == "$esc" ]]; then
+        # Одиночный ESC: продолжения нет.
+        if ! IFS= read -rsn1 -t 0.008 c1 2>/dev/null; then
+            echo "esc"
+            return
+        fi
+
+        # Поддерживаем только стрелки вверх/вниз.
+        if [[ "$c1" == "[" || "$c1" == "O" ]]; then
+            if IFS= read -rsn1 -t 0.008 c2 2>/dev/null; then
+                case "$c2" in
+                    A) echo "up"; return ;;
+                    B) echo "down"; return ;;
+                esac
+            fi
+        fi
+
+        # Неизвестный ESC-ввод: сливаем хвост, чтобы избежать артефактов.
+        drain_input_tail
+        echo "other:${esc}${c1}${c2}"
+        return
     fi
 
-    case "$key" in
-        $up) echo "up" ;;
-        $down) echo "down" ;;
-        $esc) echo "esc" ;;
-        "") echo "enter" ;;
-        *) echo "other:$key" ;;
-    esac
+    if [[ -z "$key" ]]; then
+        echo "enter"
+    else
+        echo "other:$key"
+    fi
 }
 
 
@@ -107,6 +142,8 @@ function vertical_menu {
   # если x = center - то центрирование по горизонтали
   # если y = 	center - то центрирование по вертикали
   # 		 =	current - выводим меню в текущей строке
+  # 		 =	current_noclear - выводим меню в текущей строке без очистки после выбора,
+  #                курсор ставится под меню
   # если height = 0 - не устанавливать высоты (она будет посчитана автоматически)
   #			  = число - установить высоту окна равную числу. Пункты меню будут скролироваться
   #	width = число. Если строка будет больше этого числа - то ширина будет расширена до него
@@ -123,7 +160,9 @@ function vertical_menu {
   local lines
   local columns
   local current_y
+  local is_current_mode=0
   local skip_lines=0
+  local stty_state=""
   local height
   local shift_y=0
   local el
@@ -177,7 +216,8 @@ function vertical_menu {
     ((top_y = (${lines} - ${height} - 2) / 2))
   fi
 
-  if [[ ${ms[0]} == "current" ]]; then
+  if [[ ${ms[0]} == "current" || ${ms[0]} == "current_noclear" ]]; then
+    is_current_mode=1
     # если меню не поместится - надо сдвинуть экран
     ((skip_lines = 0))
     if (((${current_y} + ${height}+1) > ${lines})); then
@@ -187,11 +227,23 @@ function vertical_menu {
     ((top_y = ${current_y} - ${skip_lines}))
     ((current_y = top_y))
   fi
+
+  stty_state="$(stty -g 2>/dev/null || true)"
+  if [[ -n "$stty_state" ]]; then
+    stty -echo
+  fi
+  # Ensure terminal state is restored on Ctrl+C while waiting for keys.
+  trap 'cursor_blink_on; if [[ -n "$stty_state" ]]; then stty "$stty_state"; fi; printf "\n"; exit 130' INT
+  cursor_blink_off
   refresh_window ${top_y} ${left_x} ${height} ${MaxWindowWidth} ${shift_y} "${menu_items[@]}"
 
-  # ensure cursor and input echoing back on upon a ctrl+c during read -s
-  trap "cursor_blink_on; stty echo; printf '\n'; exit" 2
-  cursor_blink_off
+  # Сохраняем геометрию окна для последующего позиционирования
+  VERTICAL_MENU_LAST_WIDTH=${MaxWindowWidth}
+  VERTICAL_MENU_LAST_OUTER_WIDTH=$((MaxWindowWidth + 5))
+  VERTICAL_MENU_LAST_HEIGHT=$((height + 2))
+  VERTICAL_MENU_LAST_X=${left_x}
+  VERTICAL_MENU_LAST_Y=${top_y}
+  VERTICAL_MENU_LAST_RIGHT_X=$((left_x + VERTICAL_MENU_LAST_OUTER_WIDTH - 1))
 
   local selected=${default_selected_index}
   local previous_selected=${default_selected_index}
@@ -226,6 +278,7 @@ function vertical_menu {
         if ((${shift_y} > 0)); then
           ((shift_y--))
           refresh_window ${top_y} ${left_x} ${height} ${MaxWindowWidth} ${shift_y} "${menu_items[@]}"
+          cursor_blink_off
         fi
         selected=0
       fi
@@ -237,6 +290,7 @@ function vertical_menu {
         if (((${shift_y} + ${selected}) < ${#menu_items[@]})); then
           ((shift_y++))
           refresh_window ${top_y} ${left_x} ${height} ${MaxWindowWidth} ${shift_y} "${menu_items[@]}"
+          cursor_blink_off
         fi
         selected=${previous_selected}
       fi
@@ -246,13 +300,23 @@ function vertical_menu {
 
   printf "\n"
   cursor_blink_on
-  cursor_to ${current_y} 1
-  if [[ ${ms[0]} == "current" ]]; then
-    # очистить выведенное меню
-    echo -en ${ESC}"[0J"
+  if [[ -n "$stty_state" ]]; then
+    stty "$stty_state"
   fi
-  ((selected += ${shift_y}))
+  trap - INT
+  if ((is_current_mode == 1)); then
+    if [[ ${ms[0]} == "current" ]]; then
+      cursor_to ${current_y} 1
+    # очистить выведенное меню
+      echo -en ${ESC}"[0J"
+    else
+      cursor_to $((${top_y} + ${height} + 2)) 1
+    fi
+  else
+    cursor_to ${current_y} 1
+  fi
+  if ((selected != 255)); then
+    ((selected += ${shift_y}))
+  fi
   return ${selected}
 }
-
-
