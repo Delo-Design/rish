@@ -146,9 +146,8 @@ WHITE='\033[0m'
 
 backupall() {
 
-    if ! [[ -d $DIR_BACKUP ]]; then
-        mkdir "$DIR_BACKUP"
-    fi
+    mkdir -p "$DIR_BACKUP"
+    rm -rf "$DIR_BACKUP"/*
 
     declare -A CLEANUP_TARGETS
     mapfile -t VALID_REMOTES < <(rclone listremotes 2>/dev/null | sed 's/:$//')
@@ -251,7 +250,8 @@ backupall() {
             rm -rf "$DIR_BACKUP"/*
         else
             printf '\033[1A\r\033[K'
-            echo -e "${LRED}Ошибка передачи в подключение '${REMOTE}'. Временные файлы сохранены в ${DIR_BACKUP}.${WHITE}"
+            rm -rf "$DIR_BACKUP"/*
+            echo -e "${LRED}Ошибка передачи в подключение '${REMOTE}'. Временные файлы очищены из ${DIR_BACKUP}.${WHITE}"
         fi
     done < "$backupall2"
 
