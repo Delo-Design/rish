@@ -640,7 +640,7 @@ progress_line_stderr() {
     local col="$2"
     local text="$3"
     printf '%s' "${ESC}[${row};${col}H" >&2
-    printf '%s' "$text" >&2
+    printf '%b' "$text" >&2
     printf '%s' "${ESC}[K" >&2
 }
 
@@ -650,23 +650,19 @@ ensure_remote_index() {
     local status_col="${3:-1}"
     local rel_path user_name rest_path date_dir file_name archive_base site_name
     local ts_part date_part time_part label pair_key
-    local processed_files=0 total_files=0
-    local -a file_entries sorted_sites labels_for_site
+    local processed_files=0 progress_step=50
+    local -a sorted_sites labels_for_site
     local -A seen_users seen_user_dates seen_sites site_user seen_site_labels snapshot_meta
 
     if [ "${CACHE_READY[$remote_name]:-0}" = "1" ]; then
         return 0
     fi
 
-    mapfile -t file_entries < <(
-        rclone lsf -R --files-only --include "*.tar.gz-part-00" --fast-list "${remote_name}:${server}/" 2>/dev/null
-    )
-    total_files="${#file_entries[@]}"
     if [ -n "$status_row" ]; then
-        progress_line_stderr "$status_row" "$status_col" "Сканирование ${remote_name}: файлов 0/${total_files}, пользователей 0, дат 0, найдено сайтов 0"
+        progress_line_stderr "$status_row" "$status_col" "Сканирование ${YELLOW}${remote_name}${WHITE}: получение списка файлов..."
     fi
 
-    for rel_path in "${file_entries[@]}"; do
+    while IFS= read -r rel_path; do
         [ -z "$rel_path" ] && continue
         processed_files=$((processed_files + 1))
 
@@ -683,8 +679,8 @@ ensure_remote_index() {
 
         seen_users["$user_name"]=1
         seen_user_dates["$user_name|$date_dir"]=1
-        if [ -n "$status_row" ] && (( processed_files == 1 || processed_files % 200 == 0 || processed_files == total_files )); then
-            progress_line_stderr "$status_row" "$status_col" "Сканирование ${remote_name}: файлов ${processed_files}/${total_files}, пользователей ${#seen_users[@]}, дат ${#seen_user_dates[@]}, найдено сайтов ${#seen_sites[@]}"
+        if [ -n "$status_row" ] && (( processed_files == 1 || processed_files % progress_step == 0 )); then
+            progress_line_stderr "$status_row" "$status_col" "Сканирование ${YELLOW}${remote_name}${WHITE}: обработано файлов ${YELLOW}${processed_files}${WHITE}, пользователей ${YELLOW}${#seen_users[@]}${WHITE}, дат ${YELLOW}${#seen_user_dates[@]}${WHITE}, найдено сайтов ${YELLOW}${#seen_sites[@]}${WHITE}"
         fi
 
         archive_base="${file_name%.tar.gz-part-00}"
@@ -723,9 +719,11 @@ ensure_remote_index() {
                 snapshot_meta["$pair_key"]="${user_name};${date_dir};${site_name};${ts_part}"
             fi
         fi
-    done
+    done < <(
+        rclone lsf -R --max-depth 3 --files-only --include "*.tar.gz-part-00" --fast-list "${remote_name}:${server}/" 2>/dev/null
+    )
     if [ -n "$status_row" ]; then
-        progress_line_stderr "$status_row" "$status_col" "Сканирование ${remote_name} завершено: файлов ${processed_files}/${total_files}, пользователей ${#seen_users[@]}, дат ${#seen_user_dates[@]}, найдено сайтов ${#seen_sites[@]}"
+        progress_line_stderr "$status_row" "$status_col" "Сканирование ${YELLOW}${remote_name}${WHITE} завершено: обработано файлов ${YELLOW}${processed_files}${WHITE}, пользователей ${YELLOW}${#seen_users[@]}${WHITE}, дат ${YELLOW}${#seen_user_dates[@]}${WHITE}, найдено сайтов ${YELLOW}${#seen_sites[@]}${WHITE}"
     fi
 
     CACHE_SITES["$remote_name"]=""
@@ -894,6 +892,11 @@ restore_backup_menu() {
         remote_choice=$?
         remote_menu_y="$VERTICAL_MENU_LAST_Y"
         remote_menu_h="$VERTICAL_MENU_LAST_HEIGHT"
+        menu_start_row="$remote_menu_y"
+        status_header_row=$((menu_start_row - 2))
+        if [ "$status_header_row" -lt 1 ]; then
+            status_header_row=1
+        fi
 
         if [ "$remote_choice" -eq 255 ] || [ "$remote_choice" -eq "$remote_exit_index" ]; then
             clear_last_vertical_menu
@@ -963,6 +966,13 @@ restore_backup_menu() {
             site_menu_x="$VERTICAL_MENU_LAST_X"
             site_menu_h="$VERTICAL_MENU_LAST_HEIGHT"
             site_menu_w="$VERTICAL_MENU_LAST_OUTER_WIDTH"
+            right_y="$site_menu_y"
+            remote_menu_y="$site_menu_y"
+            menu_start_row="$remote_menu_y"
+            status_header_row=$((menu_start_row - 2))
+            if [ "$status_header_row" -lt 1 ]; then
+                status_header_row=1
+            fi
             site_menu_drawn=1
             if [ "$remote_choice" -eq 255 ] || [ "$remote_choice" -eq "${#sites[@]}" ]; then
                 clear_last_vertical_menu
@@ -979,8 +989,6 @@ restore_backup_menu() {
                 continue
             fi
 
-            cursor_to "$status_row" 1
-            printf '\033[K'
             mapfile -t snapshot_entries < <(collect_snapshots_for_site "$selected_remote" "$selected_site" "$site_owner")
             snapshots=()
             snapshot_map=()
@@ -1010,6 +1018,14 @@ restore_backup_menu() {
             remote_choice=$?
             snapshot_menu_y="$VERTICAL_MENU_LAST_Y"
             snapshot_menu_h="$VERTICAL_MENU_LAST_HEIGHT"
+            site_menu_y="$snapshot_menu_y"
+            right_y="$snapshot_menu_y"
+            remote_menu_y="$snapshot_menu_y"
+            menu_start_row="$remote_menu_y"
+            status_header_row=$((menu_start_row - 2))
+            if [ "$status_header_row" -lt 1 ]; then
+                status_header_row=1
+            fi
             status_row=$((snapshot_menu_y + snapshot_menu_h + 1))
             clear_last_vertical_menu
 
@@ -1095,11 +1111,11 @@ do
     fi
 
     if [ "$local_has_list" -eq 0 ]; then
-        vertical_menu "current" 1 0 5 "default=0" "Создать файл-список всех архивируемых объектов" "Создать/Обновить подключение Яндекс-диска" "Создать/Выбрать подключение по умолчанию" "Выйти"
+        vertical_menu "current" 1 0 5 "default=0" "Создать файл-список всех архивируемых объектов" "Создать/Обновить подключение яндекс-диска" "Создать/Выбрать подключение по умолчанию" "Выйти"
     elif [ "$local_remote_ready" -eq 1 ]; then
-        vertical_menu "current" 2 0 5 "default=7" "Архивация всех сайтов сервера" "Скачать копию из бекапа на сервер" "Обновить файл-список всех архивируемых объектов" "Создать файл-список всех архивируемых объектов" "Создать/Обновить подключение Яндекс-диска" "Создать/Выбрать подключение по умолчанию" "О подключении по умолчанию ${rclone_remote}" "Выйти"
+        vertical_menu "current" 2 0 5 "default=7" "Архивация всех сайтов сервера" "Скачать копию из бекапа на сервер" "Обновить файл-список всех архивируемых объектов" "Создать файл-список всех архивируемых объектов" "Создать/Обновить подключение яндекс-диска" "Создать/Выбрать подключение по умолчанию" "О подключении по умолчанию ${rclone_remote}" "Выйти"
     else
-        vertical_menu "current" 2 0 5 "default=4" "Обновить файл-список всех архивируемых объектов" "Создать файл-список всех архивируемых объектов" "Создать/Обновить подключение Яндекс-диска" "Создать/Выбрать подключение по умолчанию" "Выйти"
+        vertical_menu "current" 2 0 5 "default=4" "Обновить файл-список всех архивируемых объектов" "Создать файл-список всех архивируемых объектов" "Создать/Обновить подключение яндекс-диска" "Создать/Выбрать подключение по умолчанию" "Выйти"
     fi
     choice=$?
     case "${choice}" in

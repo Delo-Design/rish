@@ -162,6 +162,9 @@ function vertical_menu {
   local current_y
   local is_current_mode=0
   local skip_lines=0
+  local required_bottom
+  local scroll_lines=0
+  local max_visible_height
   local stty_state=""
   local height
   local shift_y=0
@@ -201,6 +204,14 @@ function vertical_menu {
     fi
   fi
 
+  max_visible_height=$((lines - 2))
+  if ((max_visible_height < 1)); then
+    max_visible_height=1
+  fi
+  if ((height > max_visible_height)); then
+    height=$max_visible_height
+  fi
+
   #find the width of the window
   for el in "${menu_items[@]}"; do
     if ((${MaxWindowWidth} < ${#el})); then
@@ -218,14 +229,21 @@ function vertical_menu {
 
   if [[ ${ms[0]} == "current" || ${ms[0]} == "current_noclear" ]]; then
     is_current_mode=1
-    # если меню не поместится - надо сдвинуть экран
-    ((skip_lines = 0))
-    if (((${current_y} + ${height}+1) > ${lines})); then
-      ((skip_lines = ${current_y} + ${height} - ${lines} + 2))
-      echo -en ${ESC}"[${skip_lines}S"
+    top_y=${current_y}
+  fi
+
+  # Для любого режима обеспечиваем место под меню за счет скролла терминала.
+  required_bottom=$((top_y + height + 1))
+  if ((required_bottom > lines)); then
+    scroll_lines=$((required_bottom - lines))
+    if ((scroll_lines > 0)); then
+      echo -en ${ESC}"[${scroll_lines}S"
+      top_y=$((top_y - scroll_lines))
+      if ((is_current_mode == 1)); then
+        current_y=$top_y
+        skip_lines=$((skip_lines + scroll_lines))
+      fi
     fi
-    ((top_y = ${current_y} - ${skip_lines}))
-    ((current_y = top_y))
   fi
 
   stty_state="$(stty -g 2>/dev/null || true)"
@@ -298,7 +316,9 @@ function vertical_menu {
     esac
   done
 
-  printf "\n"
+  if ((is_current_mode == 1)); then
+    printf "\n"
+  fi
   cursor_blink_on
   if [[ -n "$stty_state" ]]; then
     stty "$stty_state"
