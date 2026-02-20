@@ -551,7 +551,7 @@ s       Установка/обновление phpmyadmin
   echo "Установка завершена"
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 
-R  Управление Сервером
+R  Управление сервером
 	r=$( pwd )
   cd /root/rish
 	./ri.sh
@@ -661,6 +661,6 @@ Z  Статистика сайтов сервера
     source /root/rish/windows.sh
     CheckIP
 
-B  Бекапы
+B  Бэкaпы (peзepвноe кoпиpoвaниe)
     bash /root/rish/backup2.sh
 

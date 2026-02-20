@@ -339,6 +339,7 @@ function clean_directory_contents() {
 function inspect_tar_archive_layout() {
   local archive_path="$1"
   local entry top item seen
+  local tar_list_file
   local -a root_dirs=()
   local -a root_files=()
   local -a root_items=()
@@ -347,6 +348,17 @@ function inspect_tar_archive_layout() {
   ARCHIVE_SINGLE_ROOT_DIR=""
   ARCHIVE_SQL_ENTRY=""
   ARCHIVE_LAYOUT="mixed"
+
+  tar_list_file="$(mktemp)" || {
+    echo -e "${RED}Не удалось${WHITE} подготовить временный файл для проверки архива."
+    return 1
+  }
+
+  if ! tar -tzf "$archive_path" > "$tar_list_file"; then
+    echo -e "${RED}Ошибка${WHITE}: архив ${YELLOW}$(basename "$archive_path")${WHITE} поврежден или имеет неверный формат."
+    rm -f "$tar_list_file"
+    return 1
+  fi
 
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
@@ -364,7 +376,9 @@ function inspect_tar_archive_layout() {
     else
       root_files+=("$entry")
     fi
-  done < <(tar -tzf "$archive_path")
+  done < "$tar_list_file"
+
+  rm -f "$tar_list_file"
 
   root_items=("${root_dirs[@]}")
   for item in "${root_files[@]}"; do
@@ -457,16 +471,28 @@ function restore_folder() {
     mkdir -p "$folder_name"
   fi
 
-  inspect_tar_archive_layout "$archive_path"
+  if ! inspect_tar_archive_layout "$archive_path"; then
+    echo -e "Восстановление ${YELLOW}прервано${WHITE}: не удалось прочитать архив."
+    return 1
+  fi
 
   echo -e "Извлекаем архив в папку ${GREEN}${folder_name}${WHITE}..."
 
   if [[ "$ARCHIVE_LAYOUT" == "site_plus_sql" && -n "$ARCHIVE_SINGLE_ROOT_DIR" ]]; then
-    tar -xzf "$archive_path" --strip-components=1 -C "$folder_name" "$ARCHIVE_SINGLE_ROOT_DIR"
+    if ! tar -xzf "$archive_path" --strip-components=1 -C "$folder_name" "$ARCHIVE_SINGLE_ROOT_DIR"; then
+      echo -e "Произошла ${RED}ошибка${WHITE} при извлечении архива ${RED}$(basename "$archive_path")${WHITE}."
+      return 1
+    fi
   elif [[ "$ARCHIVE_LAYOUT" == "single_dir" ]]; then
-    tar -xzf "$archive_path" --strip-components=1 -C "$folder_name"
+    if ! tar -xzf "$archive_path" --strip-components=1 -C "$folder_name"; then
+      echo -e "Произошла ${RED}ошибка${WHITE} при извлечении архива ${RED}$(basename "$archive_path")${WHITE}."
+      return 1
+    fi
   else
-    tar -xzf "$archive_path" -C "$folder_name"
+    if ! tar -xzf "$archive_path" -C "$folder_name"; then
+      echo -e "Произошла ${RED}ошибка${WHITE} при извлечении архива ${RED}$(basename "$archive_path")${WHITE}."
+      return 1
+    fi
   fi
 
   local abs_path
@@ -675,23 +701,33 @@ function restore_db_core() {
   fi
 
   local SANDBOX_OPTION=""
+  local -a mariadb_import_cmd=(mariadb)
   if mariadb --help | grep -q -- "--sandbox"; then
     SANDBOX_OPTION="--sandbox"
   fi
+  [[ -n "$SANDBOX_OPTION" ]] && mariadb_import_cmd+=("$SANDBOX_OPTION")
+  mariadb_import_cmd+=("$custom_db")
 
   echo -e "Импортируем базу из файла ${GREEN}$(basename "$file")${WHITE}..."
 
   if [[ "$file" == *.gz ]]; then
-    gunzip -c "$file" | mariadb $SANDBOX_OPTION "$custom_db"
+    if ! gzip -t "$file"; then
+      echo -e "Файл ${RED}$(basename "$file")${WHITE} поврежден или не является корректным gzip-архивом."
+      return 1
+    fi
+
+    if ! (set -o pipefail; gunzip -c "$file" | "${mariadb_import_cmd[@]}"); then
+      echo -e "Произошла ${RED}ошибка${WHITE} при импорте базы ${RED}$custom_db${WHITE}."
+      return 1
+    fi
   else
-    mariadb $SANDBOX_OPTION "$custom_db" < "$file"
+    if ! "${mariadb_import_cmd[@]}" < "$file"; then
+      echo -e "Произошла ${RED}ошибка${WHITE} при импорте базы ${RED}$custom_db${WHITE}."
+      return 1
+    fi
   fi
 
-  if [[ $? -eq 0 ]]; then
-    echo -e "База данных ${GREEN}${custom_db}${WHITE} успешно импортирована."
-  else
-    echo -e "Произошла ${RED}ошибка${WHITE} при импорте базы ${RED}$custom_db${WHITE}."
-  fi
+  echo -e "База данных ${GREEN}${custom_db}${WHITE} успешно импортирована."
 }
 
 
