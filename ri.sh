@@ -650,7 +650,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     Install mc
     Install cronie
     Install idn2
-    if ! echo ${CURRENT_OS} | egrep -q "Fedora"; then
+    if ! echo ${CURRENT_OS} | grep -qE "Fedora"; then
       Install epel-release
     fi
     Install wget
@@ -793,7 +793,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   if ! check_step "$STEP"; then
     echo -e "Ставим репозиторий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
     Down
-    if echo ${CURRENT_OS} | egrep -q "Fedora"; then
+    if echo ${CURRENT_OS} | grep -qE "Fedora"; then
       FedoraVersion=$(cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@')
       dnf install -y https://rpms.remirepo.net/fedora/remi-release-${FedoraVersion}.rpm
       dnf config-manager --set-enabled remi

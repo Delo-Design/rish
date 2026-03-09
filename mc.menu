@@ -601,6 +601,7 @@ O  Oбнoвлeниe RISH {VER}
      #обновляем версию RISH
      if tar -tzf rish2.tar.gz > /dev/null 2>&1
      then
+      echo "${folder_version}" > /root/rish/version_previous
       tar --no-same-owner -xvf rish2.tar.gz
       rm rish2.tar.gz
       cd /root/rish

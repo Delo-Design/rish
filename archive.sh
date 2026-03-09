@@ -216,20 +216,60 @@ function archive_site() {
     echo
   fi
 
+  local tar_rc
+  local tar_err_file
+  local tar_reason=""
+
+  tar_err_file="$(mktemp)" || {
+    echo -e "${RED}Не удалось${WHITE} подготовить временный файл для анализа ошибок tar."
+    return 2
+  }
+
   # Команда tar с прогрессом, используя двойные кавычки
   tar -czhf "$archive_path" -C "$parent_path" "${extra_args[@]}" \
     --record-size=$recordsize --checkpoint=$checkpoint \
     --checkpoint-action=exec="echo -e \"${CURSORUP}Обработано: \$((TAR_CHECKPOINT / 1000)) MB${ERASEUNTILLENDOFLINE}\r\" >&2" \
-    "$folder"
-  if [[ $? -eq 0 ]]; then
-    echo -e "${CURSORUP}${ERASEUNTILLENDOFLINE}"
-    echo -e "Архив ${GREEN}${archive_name}${WHITE} успешно создан."
-    # Вывод размера конечного архива
-    local archive_size_mb=$(du -sm "$archive_path" | cut -f1)
-    echo -e "Размер архива: ${YELLOW}${archive_size_mb} MB${WHITE}"
-  else
-    echo -e "\nОшибка при создании архива ${RED}${archive_name}${WHITE}"
+    "$folder" \
+    2> >(tee "$tar_err_file" >&2)
+  tar_rc=$?
+  echo -e "${CURSORUP}${ERASEUNTILLENDOFLINE}"
+
+  if [[ -s "$tar_err_file" ]]; then
+    tar_reason="$(grep '^tar:' "$tar_err_file" | sed 's/\r$//' | awk 'NR==1{out=$0;next}{out=out "; " $0} END{print out}')"
+    if [[ -z "$tar_reason" ]]; then
+      tar_reason="$(grep -v 'Обработано:' "$tar_err_file" | sed '/^[[:space:]]*$/d' | tail -n 1)"
+    fi
   fi
+  rm -f "$tar_err_file"
+
+  case "$tar_rc" in
+    0)
+      echo -e "Архив ${GREEN}${archive_name}${WHITE} успешно создан."
+      # Вывод размера конечного архива
+      local archive_size_mb=$(du -sm "$archive_path" | cut -f1)
+      echo -e "Размер архива: ${YELLOW}${archive_size_mb} MB${WHITE}"
+      ;;
+    1)
+      echo -e "\n${YELLOW}Предупреждение${WHITE} при создании архива ${YELLOW}${archive_name}${WHITE} (код tar: 1)."
+      if [[ -n "$tar_reason" ]]; then
+        echo -e "Причина: ${YELLOW}${tar_reason}${WHITE}"
+      fi
+      ;;
+    2)
+      echo -e "\n${RED}Ошибка${WHITE} при создании архива ${RED}${archive_name}${WHITE} (код tar: 2)."
+      if [[ -n "$tar_reason" ]]; then
+        echo -e "Причина: ${RED}${tar_reason}${WHITE}"
+      fi
+      ;;
+    *)
+      echo -e "\n${RED}Ошибка${WHITE} при создании архива ${RED}${archive_name}${WHITE} (код tar: ${tar_rc})."
+      if [[ -n "$tar_reason" ]]; then
+        echo -e "Причина: ${RED}${tar_reason}${WHITE}"
+      fi
+      ;;
+  esac
+
+  return "$tar_rc"
 }
 
 function archive_db() {

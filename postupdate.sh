@@ -66,13 +66,71 @@ if ! check_step "$STEP"; then
   mark_step_completed "$STEP"
 fi
 
+STEP="Настройка hard_delete для Yandex remote"
+if ! check_step "$STEP"; then
+  echo -e "Проверяем настройки удаления для подключений ${GREEN}rclone${WHITE}..."
+  rclone_config_dump="$(rclone config dump 2>/dev/null || true)"
+  yandex_total=0
+  yandex_updated=0
+  yandex_skipped=0
+  yandex_failed=0
+
+  if [ -z "$rclone_config_dump" ]; then
+    yandex_failed=1
+    echo -e "${YELLOW}Не удалось прочитать конфигурацию rclone (config dump).${WHITE}"
+  else
+    mapfile -t yandex_remotes < <(
+      printf '%s' "$rclone_config_dump" \
+        | jq -r 'to_entries[] | select((.value.type // "") == "yandex") | .key'
+    )
+
+    if [ "${#yandex_remotes[@]}" -eq 0 ]; then
+      echo -e "${YELLOW}Yandex-подключения в rclone не найдены.${WHITE}"
+    else
+      for remote_name in "${yandex_remotes[@]}"; do
+        yandex_total=$((yandex_total + 1))
+        hard_delete_value="$(
+          printf '%s' "$rclone_config_dump" \
+            | jq -r --arg remote "$remote_name" '.[$remote].hard_delete // ""'
+        )"
+        hard_delete_value="$(printf '%s' "$hard_delete_value" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+
+        case "$hard_delete_value" in
+          true|1|yes|on)
+            yandex_skipped=$((yandex_skipped + 1))
+            echo -e "${GREEN}${remote_name}${WHITE}: hard_delete уже включен"
+            continue
+            ;;
+        esac
+
+        if rclone config update "$remote_name" hard_delete true --non-interactive >/dev/null 2>&1; then
+          yandex_updated=$((yandex_updated + 1))
+          echo -e "Для ${GREEN}${remote_name}${WHITE}: включили параметр ${GREEN}hard_delete=true${WHITE}"
+        else
+          yandex_failed=$((yandex_failed + 1))
+          echo -e "Для ${YELLOW}${remote_name}${WHITE}: не удалось применить hard_delete=true"
+        fi
+      done
+    fi
+
+    if [ "$yandex_total" -gt 0 ]; then
+      echo -e "Yandex remote: всего ${GREEN}${yandex_total}${WHITE}, уже включено ${GREEN}${yandex_skipped}${WHITE}, обновлено ${GREEN}${yandex_updated}${WHITE}, ошибок ${YELLOW}${yandex_failed}${WHITE}"
+    fi
+  fi
+
+  if [ "$yandex_failed" -eq 0 ]; then
+    mark_step_completed "$STEP"
+  else
+    echo -e "${YELLOW}Шаг не помечен выполненным, повторим на следующем запуске postupdate.${WHITE}"
+  fi
+fi
+
 STEP="Обновление hotlist"
 if ! check_step "$STEP"; then
   source /root/rish/create_hotlist.sh
   create_hotlist
   mark_step_completed "$STEP"
 fi
-
 
 declare -A missing_tmp_param # ассоциативный массив: php_version_dir => username
 
@@ -301,6 +359,20 @@ if [[ $ERROR_FOUND -eq 1 ]]; then
     echo -e "При следующем обновлении ${YELLOW}RISH${WHITE} вам будет повторно предложено исправить права папок."
   fi
 
+fi
+
+# Предупреждение о переходе на новую систему бэкапов
+cron_jobs="$(crontab -l 2>/dev/null || true)"
+if printf '%s\n' "$cron_jobs" | grep -Eq '^[[:space:]]*[^#].*/root/rish/backup\.sh([[:space:]]|$)'; then
+  echo
+  echo -e "${YELLOW}Вы еще не перешли на новую систему бэкапов.${WHITE}"
+  echo
+  echo "В cron по-прежнему вызов старой системы бэкапов backup.sh."
+  echo "Старая система основана на утилите ydcmd, которая уже "
+  echo "не поддерживается автором и в любой момент может перестать работать."
+  echo
+  echo "Переключитесь на новую систему бэкапов - в cron замените  backup.sh на backup2.sh."
+  echo
 fi
 
 # Установка версии скрипта в меню

@@ -85,7 +85,6 @@ vars=(
     ["checkpoint"]="#через сколько записей вызывать checkpoint\ncheckpoint=10"
     ["server"]="#Директория бекапа сервера в месте архивирования (куда складывать копии).\n#Если на одном диске будут бекапы разных серверов - надо изменить название для каждого\nserver=\"backup_server\""
     ["rclone_remote"]="#имя rclone remote по умолчанию\nrclone_remote=ydisk"
-    ["rclone_auth_script"]="#скрипт авторизации rclone (Yandex Disk)\nrclone_auth_script=/root/rish/ydisk_oauth_device_login.sh"
 )
 
 # Функция для добавления переменной и комментария, если они отсутствуют
@@ -149,7 +148,7 @@ backupall() {
     mkdir -p "$DIR_BACKUP"
     rm -rf "$DIR_BACKUP"/*
 
-    declare -A CLEANUP_TARGETS
+    declare -A CLEANUP_TARGETS CLEANUP_REMOTES
     mapfile -t VALID_REMOTES < <(rclone listremotes 2>/dev/null | sed 's/:$//')
 
     remote_exists() {
@@ -197,6 +196,7 @@ backupall() {
 
         ARCHIVE_NAME="${TARGET}_${DATE_TS}"
         CLEANUP_TARGETS["$REMOTE|$USER"]=1
+        CLEANUP_REMOTES["$REMOTE"]=1
 
         EXCLUDE_OPTS=()
         if [ -n "$EXCLUDE_LIST" ]; then
@@ -273,6 +273,17 @@ backupall() {
                 rclone purge "${REMOTE}:${server}/${USER}/${OLD_DIR}"
             fi
         done
+    done
+
+    for REMOTE in "${!CLEANUP_REMOTES[@]}"; do
+        if [ -z "$REMOTE" ]; then
+            continue
+        fi
+        if rclone cleanup "${REMOTE}:" >/dev/null 2>&1; then
+            echo -e "${GREEN}${REMOTE}${WHITE}: cleanup выполнен."
+        else
+            echo -e "${YELLOW}${REMOTE}${WHITE}: cleanup недоступен или завершился с ошибкой."
+        fi
     done
 }
 
@@ -506,11 +517,7 @@ fi
 configcnf() {
    echo "Конфигурируем rclone (Yandex Disk)"
    echo
-   if [ ! -f "$rclone_auth_script" ]; then
-       echo "Ошибка: не найден скрипт авторизации: $rclone_auth_script"
-       exit 1
-   fi
-   bash "$rclone_auth_script" "$rclone_remote"
+   bash /root/rish/ydisk_oauth_device_login.sh "$rclone_remote"
 }
 
 remote_info() {

@@ -247,6 +247,7 @@ rclone config create "$REMOTE_NAME" yandex \
   client_id "$YANDEX_CLIENT_ID" \
   client_secret "$YANDEX_CLIENT_SECRET" \
   token "$RCLONE_TOKEN_JSON" \
+  hard_delete true \
   --non-interactive >/dev/null
 
 echo "Проверяю доступность подключения..."
