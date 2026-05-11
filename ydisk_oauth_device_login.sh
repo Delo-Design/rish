@@ -171,7 +171,7 @@ if [[ -z "$DEVICE_CODE" || -z "$USER_CODE" ]]; then
 fi
 
 echo
-echo "Откройте в любом браузере URL:"
+echo "Откройте в любом браузере, где у вас есть авторизация Yandex Disk этот URL:"
 echo "  $VERIFY_URL"
 echo "И введите код:"
 echo "  $USER_CODE"

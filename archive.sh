@@ -373,7 +373,14 @@ function fix_site_configuration() {
 
 function clean_directory_contents() {
   local target_dir="$1"
-  find "$target_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  local cleanup_dir="$target_dir"
+
+  if [[ -L "$target_dir" ]]; then
+    cleanup_dir="$(realpath "$target_dir")" || return 1
+  fi
+
+  [[ -d "$cleanup_dir" ]] || return 1
+  find "$cleanup_dir" -mindepth 1 -delete
 }
 
 function inspect_tar_archive_layout() {
@@ -511,28 +518,38 @@ function restore_folder() {
     mkdir -p "$folder_name"
   fi
 
+  echo -e "Проверяем архив ${GREEN}$(basename "$archive_path")${WHITE} и подготавливаем распаковку в папку ${GREEN}${folder_name}${WHITE}..."
+
   if ! inspect_tar_archive_layout "$archive_path"; then
     echo -e "Восстановление ${YELLOW}прервано${WHITE}: не удалось прочитать архив."
     return 1
   fi
 
-  echo -e "Извлекаем архив в папку ${GREEN}${folder_name}${WHITE}..."
+  echo -e "Начинаем распаковку архива в папку ${GREEN}${folder_name}${WHITE}..."
+
+  local checkpoint=50000
+  local recordsize=1024
+  local tar_rc
+  local extract_args=()
 
   if [[ "$ARCHIVE_LAYOUT" == "site_plus_sql" && -n "$ARCHIVE_SINGLE_ROOT_DIR" ]]; then
-    if ! tar -xzf "$archive_path" --strip-components=1 -C "$folder_name" "$ARCHIVE_SINGLE_ROOT_DIR"; then
-      echo -e "Произошла ${RED}ошибка${WHITE} при извлечении архива ${RED}$(basename "$archive_path")${WHITE}."
-      return 1
-    fi
+    extract_args=(--strip-components=1 -C "$folder_name" "$ARCHIVE_SINGLE_ROOT_DIR")
   elif [[ "$ARCHIVE_LAYOUT" == "single_dir" ]]; then
-    if ! tar -xzf "$archive_path" --strip-components=1 -C "$folder_name"; then
-      echo -e "Произошла ${RED}ошибка${WHITE} при извлечении архива ${RED}$(basename "$archive_path")${WHITE}."
-      return 1
-    fi
+    extract_args=(--strip-components=1 -C "$folder_name")
   else
-    if ! tar -xzf "$archive_path" -C "$folder_name"; then
-      echo -e "Произошла ${RED}ошибка${WHITE} при извлечении архива ${RED}$(basename "$archive_path")${WHITE}."
-      return 1
-    fi
+    extract_args=(-C "$folder_name")
+  fi
+
+  tar -xzf "$archive_path" \
+    --record-size=$recordsize --checkpoint=$checkpoint \
+    --checkpoint-action=exec="echo -e \"${CURSORUP}Обработано: \$((TAR_CHECKPOINT / 1000)) MB${ERASEUNTILLENDOFLINE}\r\" >&2" \
+    "${extract_args[@]}"
+  tar_rc=$?
+  echo -e "${CURSORUP}${ERASEUNTILLENDOFLINE}"
+
+  if [[ "$tar_rc" -ne 0 ]]; then
+    echo -e "Произошла ${RED}ошибка${WHITE} при извлечении архива ${RED}$(basename "$archive_path")${WHITE}."
+    return 1
   fi
 
   local abs_path
