@@ -133,6 +133,10 @@ if [ -z "${backupall2:-}" ]; then
     backupall2="/root/rish/backup_list_all"
 fi
 
+if [[ "$1" == "auto" ]] && [ -n "${2:-}" ]; then
+    backupall2="$2"
+fi
+
 
 DATE_DIR=$(/bin/date '+%Y.%m.%d')
 DATE_TS=$(/bin/date '+%Y-%m-%d_%H-%M')
@@ -505,6 +509,10 @@ updatelist() {
 
 if [[ "$1" == "auto" ]]
 then
+    if [ ! -r "$backupall2" ]; then
+        echo -e "Автоматическая архивация пропущена: файл списка не найден или недоступен: ${LRED}${backupall2}${WHITE}"
+        exit 1
+    fi
     if ! is_remote_configured; then
         echo -e "Автоматическая архивация пропущена: подключение ${LRED}'${rclone_remote}'${WHITE} не настроено."
         exit 1
