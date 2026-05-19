@@ -675,7 +675,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         if [ "$NEW_TIMER_STATUS" == "active" ] && [ "$NEW_TIMER_ENABLED" == "enabled" ]; then
             echo -e "${GREEN}logrotate.timer${WHITE} успешно включен и запущен."
         else
-            echo "Не удалось включить или запустить ${RED}logrotate.timer${WHITE}. Проверьте настройки вручную."
+            echo -e "Не удалось включить или запустить ${RED}logrotate.timer${WHITE}. Проверьте настройки вручную."
         fi
         Down
     else

@@ -208,7 +208,7 @@ delete_domain() {
         echo -e "Запись ${GREEN}$selected_domain${WHITE} успешно удалена."
         save_config
     else
-        echo "Ошибка при удалении записи. Код ответа: ${RED}$RESPONSE_CODE${WHITE}"
+        echo -e "Ошибка при удалении записи. Код ответа: ${RED}$RESPONSE_CODE${WHITE}"
         cat "$DELETE_RESPONSE_FILE"
     fi
     rm -f "$DELETE_RESPONSE_FILE"
