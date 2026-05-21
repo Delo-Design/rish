@@ -54,8 +54,17 @@ get_cursor_column() {
     IFS=';' read -sdR -p $'\E[6n' row col
     [[ "$col" =~ ^[0-9]+$ ]] && echo "$col" || echo 1
 }
-repl() { printf '%.0s'"$1" $(seq 1 "$2"); }
+repl() {
+    local char="$1"
+    local count="$2"
+    local out
+
+    ((count > 0)) || return
+    printf -v out "%*s" "$count" ""
+    printf "%s" "${out// /$char}"
+}
 key_input() {
+    local result_var="$1"
     local key=""
     local c1=""
     local c2=""
@@ -66,7 +75,7 @@ key_input() {
     if [[ "$key" == "$esc" ]]; then
         # Одиночный ESC: продолжения нет.
         if ! IFS= read -rsn1 -t 0.008 c1 2>/dev/null; then
-            echo "esc"
+            printf -v "$result_var" "%s" "esc"
             return
         fi
 
@@ -74,22 +83,22 @@ key_input() {
         if [[ "$c1" == "[" || "$c1" == "O" ]]; then
             if IFS= read -rsn1 -t 0.008 c2 2>/dev/null; then
                 case "$c2" in
-                    A) echo "up"; return ;;
-                    B) echo "down"; return ;;
+                    A) printf -v "$result_var" "%s" "up"; return ;;
+                    B) printf -v "$result_var" "%s" "down"; return ;;
                 esac
             fi
         fi
 
         # Неизвестный ESC-ввод: сливаем хвост, чтобы избежать артефактов.
         drain_input_tail
-        echo "other:${esc}${c1}${c2}"
+        printf -v "$result_var" "%s" "other:${esc}${c1}${c2}"
         return
     fi
 
     if [[ -z "$key" ]]; then
-        echo "enter"
+        printf -v "$result_var" "%s" "enter"
     else
-        echo "other:$key"
+        printf -v "$result_var" "%s" "other:$key"
     fi
 }
 
@@ -282,7 +291,7 @@ function vertical_menu {
     printf " │"
 
     # user key control
-    ReturnKey=$(key_input)
+    key_input ReturnKey
     case ${ReturnKey} in
     enter) break ;;
     esc)
