@@ -920,47 +920,8 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       echo -e "каталог ${GREEN}000-default${WHITE} уже создан"
     fi
 
-    cd /etc/httpd/conf.d
-    {
-      echo "<VirtualHost *:80>"
-      echo "ServerAdmin webmaster@localhost"
-      echo "ServerName 000-default"
-      echo "ServerAlias www.000-default"
-      echo "DocumentRoot /var/www/html/000-default"
-      echo "<Directory /var/www/html/000-default>"
-      echo "    Options -Indexes +FollowSymLinks"
-      echo "    AllowOverride All"
-      echo "    Order allow,deny"
-      echo "    allow from all"
-      echo "</Directory>"
-      echo "ServerSignature Off"
-      echo "ErrorLog /var/log/httpd/000-default-error-log"
-      echo "LogLevel warn"
-      echo "CustomLog /var/log/httpd/000-default-access-log combined"
-      echo "</VirtualHost>"
-    } >000-default.conf
-
-    {
-      echo "<VirtualHost *:443>"
-      echo "ServerAdmin webmaster@localhost"
-      echo "ServerName 000-default"
-      echo "ServerAlias www.000-default"
-      echo "DocumentRoot /var/www/html/000-default"
-      echo "<Directory /var/www/html/000-default>"
-      echo "    Options -Indexes +FollowSymLinks"
-      echo "    AllowOverride All"
-      echo "    Order allow,deny"
-      echo "    allow from all"
-      echo "    deny from all"
-      echo "</Directory>"
-      echo "ServerSignature Off"
-      echo "ErrorLog /var/log/httpd/000-default-error-log"
-      echo "LogLevel warn"
-      echo "CustomLog /var/log/httpd/000-default-access-log combined"
-      echo "SSLCertificateFile /etc/pki/tls/certs/localhost.crt"
-      echo "SSLCertificateKeyFile /etc/pki/tls/private/localhost.key"
-      echo "</VirtualHost>"
-    } >000-default-ssl.conf
+    install -m 644 "${RISH_HOME}/templates/000-default.conf" /etc/httpd/conf.d/000-default.conf
+    install -m 644 "${RISH_HOME}/templates/000-default-ssl.conf" /etc/httpd/conf.d/000-default-ssl.conf
 
     apachectl restart || {
       echo "Ошибка при перезапуске Apache. Скрипт остановлен."

@@ -14,6 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 TEMPLATE_DIR="${SCRIPT_DIR}/templates"
 NOINDEX_TEMPLATE="${TEMPLATE_DIR}/apache-noindex.html"
 WWW_TEMPLATE="${TEMPLATE_DIR}/php-fpm-www.conf.template"
+DEFAULT_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default.conf"
+DEFAULT_SSL_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default-ssl.conf"
 
 declare -a ISSUE_MESSAGES=()
 declare -a ISSUE_FIXES=()
@@ -84,6 +86,8 @@ reset_state() {
 check_prerequisites() {
   [[ -f "$NOINDEX_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${NOINDEX_TEMPLATE}")
   [[ -f "$WWW_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${WWW_TEMPLATE}")
+  [[ -f "$DEFAULT_VHOST_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${DEFAULT_VHOST_TEMPLATE}")
+  [[ -f "$DEFAULT_SSL_VHOST_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${DEFAULT_SSL_VHOST_TEMPLATE}")
 
   if [[ "$MODE" == "fix" && "$ASSUME_YES" -ne 1 && ! -f "${SCRIPT_DIR}/windows.sh" ]]; then
     ERRORS+=("Не найден ${SCRIPT_DIR}/windows.sh, интерактивное исправление невозможно")
@@ -116,6 +120,21 @@ write_www_conf() {
   fi
 
   mv "$tmp_file" "$conf_file"
+}
+
+write_template_file() {
+  local template_file="$1"
+  local target_file="$2"
+  local tmp_file="${target_file}.rish-tmp.$$"
+
+  install -m 644 "$template_file" "$tmp_file" || return 1
+
+  if [[ -f "$target_file" ]]; then
+    mv -f "$target_file" "${target_file}.old" || return 1
+    log "Сохранен предыдущий ${YELLOW}${target_file}${WHITE} как ${YELLOW}${target_file}.old${WHITE}"
+  fi
+
+  mv "$tmp_file" "$target_file"
 }
 
 collect_referenced_pools() {
@@ -224,9 +243,23 @@ check_noindex() {
 
 check_apache_conf_files() {
   local conf_file
+  local default_vhost="/etc/httpd/conf.d/000-default.conf"
+  local default_ssl_vhost="/etc/httpd/conf.d/000-default-ssl.conf"
 
   if [[ -f /etc/httpd/conf.d/autoindex.conf ]]; then
     add_issue "Найден лишний Apache-конфиг /etc/httpd/conf.d/autoindex.conf" "fix_remove_file" "/etc/httpd/conf.d/autoindex.conf"
+  fi
+
+  if [[ ! -f "$default_vhost" ]]; then
+    add_issue "$(highlight_path_file "$default_vhost") отсутствует" "fix_template_file" "${DEFAULT_VHOST_TEMPLATE}|${default_vhost}"
+  elif ! cmp -s "$DEFAULT_VHOST_TEMPLATE" "$default_vhost"; then
+    add_issue "$(highlight_path_file "$default_vhost") отличается от шаблона RISH" "fix_template_file" "${DEFAULT_VHOST_TEMPLATE}|${default_vhost}"
+  fi
+
+  if [[ ! -f "$default_ssl_vhost" ]]; then
+    add_issue "$(highlight_path_file "$default_ssl_vhost") отсутствует" "fix_template_file" "${DEFAULT_SSL_VHOST_TEMPLATE}|${default_ssl_vhost}"
+  elif ! cmp -s "$DEFAULT_SSL_VHOST_TEMPLATE" "$default_ssl_vhost"; then
+    add_issue "$(highlight_path_file "$default_ssl_vhost") отличается от шаблона RISH" "fix_template_file" "${DEFAULT_SSL_VHOST_TEMPLATE}|${default_ssl_vhost}"
   fi
 
   shopt -s nullglob
@@ -349,7 +382,14 @@ check_php_fpm() {
 }
 
 get_installed_php_versions() {
-  rpm -qa | grep '^php[0-9][0-9]-php-fpm' | grep -oE '^php[0-9]{2}' | sort -r | uniq
+  local fpm_binary
+
+  shopt -s nullglob
+  for fpm_binary in /opt/remi/php[0-9][0-9]/root/usr/sbin/php-fpm; do
+    [[ -x "$fpm_binary" ]] || continue
+    echo "$fpm_binary" | grep -oE 'php[0-9]{2}' | head -n 1
+  done | sort -r | uniq
+  shopt -u nullglob
 }
 
 get_hotlist_php_versions() {
@@ -540,6 +580,11 @@ apply_issues() {
             ;;
           fix_noindex)
             install -D -m 644 "$NOINDEX_TEMPLATE" /usr/share/httpd/noindex/index.html || return 1
+            ;;
+          fix_template_file)
+            path="${fix_arg%%|*}"
+            value="${fix_arg#*|}"
+            write_template_file "$path" "$value" || return 1
             ;;
           fix_remove_file)
             rm -f "$fix_arg" || return 1

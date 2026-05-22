@@ -11,9 +11,17 @@ GROUP "Пути к настройкам php"
 EOF
   local installed
   local installed_versions
+  local fpm_binary
   local users
   local user
-  mapfile -t installed_versions < <(rpm -qa | grep '^php[0-9][0-9]-php-fpm' | grep -oE '^php[0-9]{2}' | sort -r | uniq)
+  mapfile -t installed_versions < <(
+    shopt -s nullglob
+    for fpm_binary in /opt/remi/php[0-9][0-9]/root/usr/sbin/php-fpm; do
+      [[ -x "$fpm_binary" ]] || continue
+      echo "$fpm_binary" | grep -oE 'php[0-9]{2}' | head -n 1
+    done | sort -r | uniq
+    shopt -u nullglob
+  )
   for installed in "${installed_versions[@]}"; do
     echo 'ENTRY "Путь к пулам '${installed}' /etc/opt/remi/'${installed}'/php-fpm.d" URL "/etc/opt/remi/'${installed}'/php-fpm.d"' >>~/.config/mc/hotlist
     echo 'ENTRY "Путь к php.ini '${installed}' /etc/opt/remi/'${installed}'" URL "/etc/opt/remi/'${installed}'"' >>~/.config/mc/hotlist
