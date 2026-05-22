@@ -16,6 +16,7 @@ NOINDEX_TEMPLATE="${TEMPLATE_DIR}/apache-noindex.html"
 WWW_TEMPLATE="${TEMPLATE_DIR}/php-fpm-www.conf.template"
 DEFAULT_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default.conf"
 DEFAULT_SSL_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default-ssl.conf"
+PHP_FPM_RESTART_CONF="local.conf"
 
 declare -a ISSUE_MESSAGES=()
 declare -a ISSUE_FIXES=()
@@ -135,6 +136,19 @@ write_template_file() {
   fi
 
   mv "$tmp_file" "$target_file"
+}
+
+write_php_fpm_restart_conf() {
+  local php_version="$1"
+  local conf_dir="/etc/systemd/system/${php_version}-php-fpm.service.d"
+  local conf_file="${conf_dir}/${PHP_FPM_RESTART_CONF}"
+
+  install -d -m 755 "$conf_dir" || return 1
+  cat > "$conf_file" <<EOF
+[Service]
+Restart=on-failure
+RestartSec=180
+EOF
 }
 
 collect_referenced_pools() {
@@ -265,9 +279,9 @@ check_apache_conf_files() {
   shopt -s nullglob
   for conf_file in /etc/httpd/conf.d/php[0-9][0-9]-php.conf; do
     if grep -qE 'SetHandler "proxy:unix:/var/opt/remi/php[0-9][0-9]/run/php-fpm/www\.sock\|fcgi://localhost"' "$conf_file"; then
-      add_issue "Найден Remi Apache PHP-конфиг с глобальным www.sock: ${conf_file}" "fix_disable_file" "$conf_file"
+      add_issue "Найден Remi Apache PHP-конфиг с глобальным www.sock: $(highlight_path_file "$conf_file")" "fix_disable_file" "$conf_file"
     else
-      add_issue "Найден Remi Apache PHP-конфиг: ${conf_file}" "fix_disable_file" "$conf_file"
+      add_issue "Найден Remi Apache PHP-конфиг: $(highlight_path_file "$conf_file")" "fix_disable_file" "$conf_file"
     fi
   done
   shopt -u nullglob
@@ -392,6 +406,50 @@ get_installed_php_versions() {
   shopt -u nullglob
 }
 
+is_php_fpm_restart_conf_valid() {
+  local conf_file="$1"
+
+  grep -qE '^[[:space:]]*Restart[[:space:]]*=[[:space:]]*on-failure[[:space:]]*$' "$conf_file" || return 1
+  grep -qE '^[[:space:]]*RestartSec[[:space:]]*=[[:space:]]*180[[:space:]]*$' "$conf_file" || return 1
+}
+
+check_php_fpm_restart_policy() {
+  local installed_versions
+  local php_version
+  local conf_dir
+  local conf_file
+  local orphan_dir
+  local found
+
+  installed_versions="$(get_installed_php_versions)"
+
+  while IFS= read -r php_version; do
+    [[ -n "$php_version" ]] || continue
+    conf_dir="/etc/systemd/system/${php_version}-php-fpm.service.d"
+    conf_file="${conf_dir}/${PHP_FPM_RESTART_CONF}"
+
+    if [[ ! -f "$conf_file" ]]; then
+      add_issue "Для ${YELLOW}${php_version}-php-fpm${WHITE} отсутствует systemd-настройка автоперезапуска ${conf_file}" "fix_php_fpm_restart_conf" "$php_version"
+    elif ! is_php_fpm_restart_conf_valid "$conf_file"; then
+      add_issue "В ${conf_file} нет ожидаемых Restart=on-failure и RestartSec=180" "" ""
+    fi
+  done <<< "$installed_versions"
+
+  shopt -s nullglob
+  for orphan_dir in /etc/systemd/system/php[0-9][0-9]-php-fpm.service.d; do
+    [[ -d "$orphan_dir" ]] || continue
+    php_version="$(basename "$orphan_dir" | grep -oE '^php[0-9]{2}')"
+    found=0
+    if grep -qxF "$php_version" <<< "$installed_versions"; then
+      found=1
+    fi
+    if [[ "$found" -eq 0 ]]; then
+      add_issue "Найдена systemd-настройка для удаленного PHP-FPM: ${orphan_dir}" "fix_remove_php_fpm_restart_dir" "$orphan_dir"
+    fi
+  done
+  shopt -u nullglob
+}
+
 get_hotlist_php_versions() {
   local hotlist_file="${HOME}/.config/mc/hotlist"
 
@@ -459,6 +517,7 @@ collect_issues() {
   check_apache_ssl_conf
   check_vhost_handlers
   check_php_fpm
+  check_php_fpm_restart_policy
   check_hotlist_php_versions
   if [[ "$SILENT" -ne 1 ]]; then
     log
@@ -616,6 +675,14 @@ apply_issues() {
           fix_hotlist)
             source "${SCRIPT_DIR}/create_hotlist.sh" || return 1
             create_hotlist || return 1
+            ;;
+          fix_php_fpm_restart_conf)
+            write_php_fpm_restart_conf "$fix_arg" || return 1
+            systemctl daemon-reload || return 1
+            ;;
+          fix_remove_php_fpm_restart_dir)
+            rm -rf "$fix_arg" || return 1
+            systemctl daemon-reload || return 1
             ;;
           *)
             ERRORS+=("Неизвестное исправление: ${fix_action}")

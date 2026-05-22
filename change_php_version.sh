@@ -38,6 +38,8 @@ function create_php_fpm_pool() {
       echo "pm.process_idle_timeout = 10s"
       echo ";slowlog = /var/www/${username}/slow.log"
       echo ";request_slowlog_timeout = 15s"
+      echo ";php_admin_value[error_log] = /var/www/${username}/logs/php-error-log"
+      echo ";php_admin_flag[log_errors] = on"
       echo "php_value[session.save_handler] = files"
       echo "php_value[session.save_path] = /var/www/${username}/session"
       echo "php_value[soap.wsdl_cache_dir] = /var/www/${username}/wsdlcache"

@@ -13,6 +13,8 @@ function php_multi_install() {
   local shortver
   local ver_str
   local installed_versions
+  local www_template
+  local www_conf
 
   while true; do
     available_versions=()
@@ -167,6 +169,15 @@ function php_multi_install() {
     echo -e "max_execution_time = ${GREEN}60${WHITE}"
     echo -e "max_input_vars = ${GREEN}20000${WHITE}"
 
+    www_template="${RISH_HOME}/templates/php-fpm-www.conf.template"
+    www_conf="/etc/opt/remi/${selected_version}/php-fpm.d/www.conf"
+    if [[ -f "$www_template" ]]; then
+      sed "s/{{PHP_VERSION}}/${selected_version}/g" "$www_template" > "$www_conf"
+    else
+      echo -e "Шаблон ${RED}${www_template}${WHITE} не найден."
+      echo -e "Оставляем стандартный ${YELLOW}${www_conf}${WHITE} от Remi."
+    fi
+
     echo
     echo -e "Ставим ${GREEN}imagick${WHITE}?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
@@ -199,6 +210,14 @@ function php_multi_install() {
         fi
       fi
     fi
+
+    install -d -m 755 "/etc/systemd/system/${selected_version}-php-fpm.service.d"
+    cat >"/etc/systemd/system/${selected_version}-php-fpm.service.d/local.conf" <<EOF
+[Service]
+Restart=on-failure
+RestartSec=180
+EOF
+    systemctl daemon-reload
 
     systemctl enable ${selected_version}-php-fpm
     echo
