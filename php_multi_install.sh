@@ -206,9 +206,8 @@ function php_multi_install() {
     echo
 
   done
-  source create_hotlist.sh
+  source /root/rish/create_hotlist.sh
   create_hotlist
 
 }
-
 

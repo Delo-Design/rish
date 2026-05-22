@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 function create_hotlist() {
+  mkdir -p ~/.config/mc
   cat >~/.config/mc/hotlist <<EOF
 ENTRY "/etc" URL "/etc"
 ENTRY "/root" URL "/root"
@@ -12,7 +13,7 @@ EOF
   local installed_versions
   local users
   local user
-  mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
+  mapfile -t installed_versions < <(rpm -qa | grep '^php[0-9][0-9]-php-fpm' | grep -oE '^php[0-9]{2}' | sort -r | uniq)
   for installed in "${installed_versions[@]}"; do
     echo 'ENTRY "Путь к пулам '${installed}' /etc/opt/remi/'${installed}'/php-fpm.d" URL "/etc/opt/remi/'${installed}'/php-fpm.d"' >>~/.config/mc/hotlist
     echo 'ENTRY "Путь к php.ini '${installed}' /etc/opt/remi/'${installed}'" URL "/etc/opt/remi/'${installed}'"' >>~/.config/mc/hotlist

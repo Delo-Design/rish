@@ -1,0 +1,11 @@
+[www]
+listen = /var/opt/remi/{{PHP_VERSION}}/run/php-fpm/www.sock
+user = apache
+group = apache
+listen.owner = apache
+listen.group = apache
+listen.allowed_clients = 127.0.0.1
+
+pm = ondemand
+pm.max_children = 5
+pm.process_idle_timeout = 10s
