@@ -505,6 +505,48 @@ check_php_fpm_configtests() {
   shopt -u nullglob
 }
 
+check_reboot_required() {
+  local reboot_status
+  local current_kernel
+  local latest_kernel
+
+  if command -v rpm >/dev/null 2>&1; then
+    printf 'Проверка загруженного ядра: '
+    current_kernel="$(uname -r 2>/dev/null)"
+    latest_kernel="$(rpm -q kernel-core --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' 2>/dev/null | sort -V | tail -n 1)"
+
+    if [[ -n "$current_kernel" && -n "$latest_kernel" ]]; then
+      if [[ "$current_kernel" == "$latest_kernel" ]]; then
+        printf '%b\n' "${GREEN}ok${WHITE} (используется последнее установленное)"
+      else
+        printf '%b\n' "${YELLOW}текущее ${current_kernel}, последнее установленное ${latest_kernel}${WHITE}"
+      fi
+    else
+      printf '%b\n' "${YELLOW}не удалось определить${WHITE}"
+    fi
+  fi
+
+  if command -v needs-restarting >/dev/null 2>&1; then
+    printf 'Проверка необходимости перезагрузки: '
+    needs-restarting -r >/dev/null 2>&1
+    reboot_status=$?
+
+    case "$reboot_status" in
+      0)
+        printf '%b\n' "${GREEN}ok${WHITE} (перезагрузка не требуется)"
+        ;;
+      1)
+        printf '%b\n' "${YELLOW}требуется перезагрузка${WHITE}"
+        ;;
+      *)
+        printf '%b\n' "${YELLOW}не удалось выполнить needs-restarting -r${WHITE}"
+        ;;
+    esac
+  else
+    printf '%b\n' "Проверка необходимости перезагрузки: ${YELLOW}needs-restarting не найден${WHITE}"
+  fi
+}
+
 collect_issues() {
   reset_state
   check_prerequisites
@@ -523,6 +565,7 @@ collect_issues() {
     log
     check_apache_configtest
     check_php_fpm_configtests
+    check_reboot_required
   fi
 }
 
