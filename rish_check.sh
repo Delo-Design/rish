@@ -476,11 +476,20 @@ check_hotlist_php_versions() {
 }
 
 check_apache_configtest() {
+  local output
+  local status
+
   if command -v apachectl >/dev/null 2>&1; then
-    if apachectl configtest >/dev/null 2>&1; then
+    output="$(apachectl configtest 2>&1)"
+    status=$?
+    if [[ "$status" -eq 0 ]]; then
       log "Проверка конфигурации Apache: ${GREEN}ok${WHITE}"
     else
-      add_issue "Apache configtest завершился с ошибкой" "" ""
+      log "Проверка конфигурации Apache: ${RED}ошибка${WHITE}"
+      log
+      printf '%s\n' "$output"
+      log
+      return 1
     fi
   fi
 }
@@ -489,6 +498,8 @@ check_php_fpm_configtests() {
   local php_dir
   local php_version
   local fpm_binary
+  local output
+  local status=0
 
   shopt -s nullglob
   for php_dir in /etc/opt/remi/php[0-9][0-9]; do
@@ -496,13 +507,19 @@ check_php_fpm_configtests() {
     php_version="$(basename "$php_dir")"
     fpm_binary="/opt/remi/${php_version}/root/usr/sbin/php-fpm"
     [[ -x "$fpm_binary" ]] || continue
-    if "$fpm_binary" -t >/dev/null 2>&1; then
+    output="$("$fpm_binary" -t 2>&1)"
+    if [[ "$?" -eq 0 ]]; then
       log "Проверка конфигурации ${php_version}-php-fpm: ${GREEN}ok${WHITE}"
     else
-      add_issue "${php_version}-php-fpm configtest завершился с ошибкой" "" ""
+      log "Проверка конфигурации ${php_version}-php-fpm: ${RED}ошибка${WHITE}"
+      log
+      printf '%s\n' "$output"
+      log
+      status=1
     fi
   done
   shopt -u nullglob
+  return "$status"
 }
 
 check_reboot_required() {
@@ -561,12 +578,18 @@ collect_issues() {
   check_php_fpm
   check_php_fpm_restart_policy
   check_hotlist_php_versions
-  if [[ "$SILENT" -ne 1 ]]; then
-    log
-    check_apache_configtest
-    check_php_fpm_configtests
-    check_reboot_required
-  fi
+}
+
+run_final_configtests() {
+  local status=0
+
+  [[ "$SILENT" -eq 1 ]] && return
+
+  log
+  check_apache_configtest || status=1
+  check_php_fpm_configtests || status=1
+  check_reboot_required
+  return "$status"
 }
 
 print_issues() {
@@ -600,7 +623,6 @@ print_final_report() {
 
   if [[ "${#ISSUE_MESSAGES[@]}" -eq 0 ]]; then
     log "${GREEN}Настройки RISH в порядке.${WHITE}"
-    log
     return
   fi
 
@@ -828,17 +850,25 @@ fi
 
 if [[ "$MODE" == "fix" ]]; then
   run_fix
-  exit $?
+  status=$?
+  run_final_configtests || [[ "$status" -ne 0 ]] || status=1
+  exit $status
 fi
 
 collect_issues
 print_final_report
+configtest_status=0
+run_final_configtests || configtest_status=1
 
 if [[ "${#ERRORS[@]}" -gt 0 ]]; then
   exit 2
 fi
 
 if [[ "${#ISSUE_MESSAGES[@]}" -gt 0 ]]; then
+  exit 1
+fi
+
+if [[ "$configtest_status" -ne 0 ]]; then
   exit 1
 fi
 
