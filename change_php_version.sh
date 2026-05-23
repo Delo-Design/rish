@@ -55,6 +55,38 @@ function create_php_fpm_pool() {
   fi
 }
 
+function highlight_path_basename() {
+  local path="$1"
+  local dir="${path%/*}"
+  local file="${path##*/}"
+
+  if [[ "$dir" == "$path" ]]; then
+    echo -e "${YELLOW}${file}${WHITE}"
+  else
+    echo -e "${dir}/${YELLOW}${file}${WHITE}"
+  fi
+}
+
+function update_site_php_conf() {
+  local conf_file="$1"
+  local selected_php="$2"
+  local backup_file="${conf_file}.bak"
+
+  [[ -f "$conf_file" ]] || return 0
+
+  cp "$conf_file" "$backup_file" || return 1
+
+  sed -i -r "s|/var/opt/remi/php[0-9][0-9]/run/php-fpm/|/var/opt/remi/${selected_php}/run/php-fpm/|g" "$conf_file" || return 1
+
+  if cmp -s "$conf_file" "$backup_file"; then
+    echo -e " Замен в файле ${RED}${conf_file}${WHITE} не произведено."
+    rm "$backup_file" || return 1
+  else
+    echo -e "Версия PHP в файле ${conf_file} изменена на ${GREEN}${selected_php}${WHITE}."
+    echo -e "Сохранен предыдущий конфиг: $(highlight_path_basename "$backup_file")"
+  fi
+}
+
 function change_php_version() {
   echo
   local path="$2"
@@ -117,25 +149,13 @@ function change_php_version() {
       fi
 
     fi
-    cp "/etc/httpd/conf.d/${site_name}.conf" "/etc/httpd/conf.d/${site_name}.conf.old"
-    # Меняем путь к сокету
-    sed -i -r "s|/var/opt/remi/php[0-9][0-9]/run/php-fpm/|/var/opt/remi/${selected_php}/run/php-fpm/|g" "/etc/httpd/conf.d/${site_name}.conf"
-    if [[ -f "/etc/httpd/conf.d/${site_name}-ssl.conf" ]]; then
-        sed -i -r "s|/var/opt/remi/php[0-9][0-9]/run/php-fpm/|/var/opt/remi/${selected_php}/run/php-fpm/|g" "/etc/httpd/conf.d/${site_name}-ssl.conf"
-    fi
-    if [[ -f "/etc/httpd/conf.d/${site_name}-le-ssl.conf" ]]; then
-        sed -i -r "s|/var/opt/remi/php[0-9][0-9]/run/php-fpm/|/var/opt/remi/${selected_php}/run/php-fpm/|g" "/etc/httpd/conf.d/${site_name}-le-ssl.conf"
-    fi
-    if cmp -s "/etc/httpd/conf.d/${site_name}.conf" "/etc/httpd/conf.d/${site_name}.conf.old"; then
-      echo -e " Замен в файле ${RED}/etc/httpd/conf.d/${site_name}.conf${WHITE} не произведено."
-      rm "/etc/httpd/conf.d/${site_name}.conf.old"
-    else
-      echo -e "Версия PHP в файле /etc/httpd/conf.d/${site_name}.conf изменена на ${GREEN}${selected_php}${WHITE}."
-      rm "/etc/httpd/conf.d/${site_name}.conf.old"
-    fi
+    update_site_php_conf "/etc/httpd/conf.d/${site_name}.conf" "$selected_php" || return 1
+    update_site_php_conf "/etc/httpd/conf.d/${site_name}-ssl.conf" "$selected_php" || return 1
+    update_site_php_conf "/etc/httpd/conf.d/${site_name}-le-ssl.conf" "$selected_php" || return 1
     if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then
       mv "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf.old"
     fi
+    echo
     echo -e -n "Перезапускаем apache для активации сайта ${LRED}${site_name}${WHITE}?"
         # Проверяем, а не punycode ли?
     if [[ "$site_name" =~ (xn\-\-) ]]

@@ -68,7 +68,7 @@ fi
 
 STEP="Настройка hard_delete для Yandex remote"
 if ! check_step "$STEP"; then
-  echo -e "Проверяем настройки удаления для подключений ${GREEN}rclone${WHITE}..."
+  echo -e "Проверяем параметр hard_delete для Yandex-подключений ${GREEN}rclone${WHITE}..."
   rclone_config_dump="$(rclone config dump 2>/dev/null || true)"
   yandex_total=0
   yandex_updated=0
@@ -85,7 +85,7 @@ if ! check_step "$STEP"; then
     )
 
     if [ "${#yandex_remotes[@]}" -eq 0 ]; then
-      echo -e "${YELLOW}Yandex-подключения в rclone не найдены.${WHITE}"
+      echo -e "${YELLOW}Yandex-подключения rclone не найдены, настройка hard_delete не требуется.${WHITE}"
     else
       for remote_name in "${yandex_remotes[@]}"; do
         yandex_total=$((yandex_total + 1))

@@ -441,7 +441,7 @@ R  Управление сервером
 	./ri.sh
 	cd ${r}
 
-O  Oбнoвлeниe RISH {VER}
+O  Oбнoвлeниe/прoверкa RISH {VER}
   bash /root/rish/update.sh
 
 Z  Статистика сайтов сервера

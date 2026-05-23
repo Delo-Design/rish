@@ -24,6 +24,7 @@ declare -a ISSUE_ARGS=()
 declare -a ERRORS=()
 declare -A REFERENCED_POOLS=()
 declare -A REFERENCED_POOL_FILES=()
+APACHE_RESTART_REQUIRED=0
 
 usage() {
   cat <<EOF
@@ -73,6 +74,31 @@ add_issue() {
   ISSUE_MESSAGES+=("$1")
   ISSUE_FIXES+=("${2:-}")
   ISSUE_ARGS+=("${3:-}")
+}
+
+mark_apache_restart_required() {
+  local fix_action="$1"
+  local fix_arg="$2"
+  local target_file
+
+  case "$fix_action" in
+    fix_template_file)
+      target_file="${fix_arg#*|}"
+      [[ "$target_file" == /etc/httpd/conf.d/* ]] && APACHE_RESTART_REQUIRED=1
+      ;;
+    fix_remove_file|fix_disable_file|fix_ssl_protocols)
+      [[ "$fix_arg" == /etc/httpd/conf.d/* ]] && APACHE_RESTART_REQUIRED=1
+      ;;
+  esac
+}
+
+print_apache_restart_notice() {
+  [[ "$SILENT" -eq 1 ]] && return
+  [[ "$APACHE_RESTART_REQUIRED" -eq 1 ]] || return
+
+  log
+  log "${YELLOW}Изменены настройки Apache. ${WHITE}Для применения изменений перезапустите Apache через меню в ${CYAN}MC${WHITE}:"
+  log "  Перезaпуск и стaтус серверa apache"
 }
 
 reset_state() {
@@ -759,6 +785,7 @@ apply_issues() {
             ;;
         esac
       then
+        mark_apache_restart_required "$fix_action" "$fix_arg"
         log "${GREEN}Исправлено:${WHITE} ${message}"
         changed=1
       else
@@ -852,6 +879,7 @@ if [[ "$MODE" == "fix" ]]; then
   run_fix
   status=$?
   run_final_configtests || [[ "$status" -ne 0 ]] || status=1
+  print_apache_restart_notice
   exit $status
 fi
 

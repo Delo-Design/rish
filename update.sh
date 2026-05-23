@@ -244,12 +244,17 @@ if [[ -f /root/rish2.tar.gz ]]; then
   echo
   Update
 else
-  if wget --timeout=15 --tries=1 https://rish.su/rish2.tar.gz > /dev/null 2>&1
+  echo "Скачиваем архив RISH с rish.su..."
+  if curl -L --connect-timeout 15 --max-time 60 --fail --progress-bar -o rish2.tar.gz https://rish.su/rish2.tar.gz
   then
+    echo "Архив RISH скачан."
     Update
   else
-    if wget https://api.github.com/repos/Delo-Design/rish/releases/latest -O - | awk -F \" -v RS="," '/browser_download_url/ {print $(NF-1)}' | xargs wget > /dev/null 2>&1
+    echo "rish.su недоступен, пробуем скачать релиз с GitHub..."
+    release_url="$(curl -fsSL --connect-timeout 15 --max-time 30 https://api.github.com/repos/Delo-Design/rish/releases/latest | awk -F \" -v RS="," '/browser_download_url/ {print $(NF-1)}' | head -n 1)"
+    if [[ -n "$release_url" ]] && curl -L --connect-timeout 15 --max-time 60 --fail --progress-bar -o rish2.tar.gz "$release_url"
     then
+      echo "Архив RISH скачан с GitHub."
       Update
     else
       echo "Не удалось скачать архив"
