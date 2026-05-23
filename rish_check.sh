@@ -478,7 +478,7 @@ check_hotlist_php_versions() {
 check_apache_configtest() {
   if command -v apachectl >/dev/null 2>&1; then
     if apachectl configtest >/dev/null 2>&1; then
-      log "Apache configtest: ${GREEN}ok${WHITE}"
+      log "Проверка конфигурации Apache: ${GREEN}ok${WHITE}"
     else
       add_issue "Apache configtest завершился с ошибкой" "" ""
     fi
@@ -497,7 +497,7 @@ check_php_fpm_configtests() {
     fpm_binary="/opt/remi/${php_version}/root/usr/sbin/php-fpm"
     [[ -x "$fpm_binary" ]] || continue
     if "$fpm_binary" -t >/dev/null 2>&1; then
-      log "${php_version}-php-fpm configtest: ${GREEN}ok${WHITE}"
+      log "Проверка конфигурации ${php_version}-php-fpm: ${GREEN}ok${WHITE}"
     else
       add_issue "${php_version}-php-fpm configtest завершился с ошибкой" "" ""
     fi
@@ -577,7 +577,7 @@ confirm_fix() {
   source "${SCRIPT_DIR}/windows.sh"
   echo
   echo -e "${YELLOW}Исправить:${WHITE} ${message}?"
-  vertical_menu "current" 2 0 5 "Да" "Нет" "Выйти"
+  vertical_menu "current" 2 0 13 "Да" "Нет" "Исправить все" "Выйти"
   choice=$?
   case "$choice" in
     0)
@@ -585,6 +585,10 @@ confirm_fix() {
       ;;
     1)
       return 1
+      ;;
+    2)
+      ASSUME_YES=1
+      return 0
       ;;
     *)
       return 2
