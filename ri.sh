@@ -82,6 +82,7 @@ source windows.sh
 source clonesite.sh
 source checkip.sh
 source php_multi_install.sh
+source php_helpers.sh
 source mariadb_install.sh
 source create_hotlist.sh
 source create_swapfile.sh
@@ -1242,11 +1243,10 @@ else
   sshd -T | grep passwordauthentication
   echo
   echo -e "Установленные версии ${GREEN}PHP${WHITE}:"
-  mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
+  mapfile -t installed_versions < <(get_installed_php_version_labels)
   for installed in "${installed_versions[@]}"; do
     echo "       "$installed
   done
-  needs-restarting -r
 
   while true; do
 

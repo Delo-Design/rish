@@ -11,3 +11,20 @@ get_installed_php_versions() {
   shopt -u nullglob
 }
 
+get_installed_php_version_labels() {
+  local php_version
+  local fpm_binary
+  local version_label
+
+  while IFS= read -r php_version; do
+    fpm_binary="/opt/remi/${php_version}/root/usr/sbin/php-fpm"
+    [[ -x "$fpm_binary" ]] || continue
+
+    version_label="$("$fpm_binary" -v 2>/dev/null | sed -n '1s/^PHP \([0-9][^ ]*\).*/php \1/p')"
+    if [[ -n "$version_label" ]]; then
+      echo "$version_label"
+    else
+      echo "$php_version"
+    fi
+  done < <(get_installed_php_versions)
+}
