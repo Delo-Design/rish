@@ -24,6 +24,7 @@ declare -a ISSUE_ARGS=()
 declare -a ERRORS=()
 declare -A REFERENCED_POOLS=()
 declare -A REFERENCED_POOL_FILES=()
+declare -A PHP_FPM_RESTART_REQUIRED=()
 APACHE_RESTART_REQUIRED=0
 
 usage() {
@@ -92,13 +93,111 @@ mark_apache_restart_required() {
   esac
 }
 
-print_apache_restart_notice() {
-  [[ "$SILENT" -eq 1 ]] && return
-  [[ "$APACHE_RESTART_REQUIRED" -eq 1 ]] || return
+mark_php_fpm_restart_required() {
+  local fix_action="$1"
+  local fix_arg="$2"
+  local target_file
+  local php_version
+
+  case "$fix_action" in
+    fix_pool_upload_tmp)
+      target_file="${fix_arg%%|*}"
+      ;;
+    fix_www_template)
+      php_version="${fix_arg%%|*}"
+      ;;
+    fix_disable_file)
+      target_file="$fix_arg"
+      ;;
+    fix_php_fpm_restart_conf)
+      php_version="$fix_arg"
+      ;;
+  esac
+
+  if [[ -z "${php_version:-}" && -n "${target_file:-}" ]]; then
+    php_version="$(echo "$target_file" | sed -n 's|^/etc/opt/remi/\(php[0-9][0-9]\)/php-fpm\.d/.*|\1|p')"
+  fi
+
+  if [[ "${php_version:-}" =~ ^php[0-9][0-9]$ ]]; then
+    PHP_FPM_RESTART_REQUIRED["$php_version"]=1
+  fi
+}
+
+restart_required_php_fpm() {
+  local php_version
+  local fpm_binary
+  local output
+  local status=0
+
+  [[ "${#PHP_FPM_RESTART_REQUIRED[@]}" -gt 0 ]] || return 0
+  [[ "$SILENT" -eq 1 ]] && return 0
 
   log
-  log "${YELLOW}Изменены настройки Apache. ${WHITE}Для применения изменений перезапустите Apache через меню в ${CYAN}MC${WHITE}:"
+  log "${YELLOW}Изменены настройки PHP-FPM. ${WHITE}Перезапускаем затронутые версии PHP-FPM:"
+
+  while IFS= read -r php_version; do
+    [[ -n "$php_version" ]] || continue
+    fpm_binary="/opt/remi/${php_version}/root/usr/sbin/php-fpm"
+
+    if [[ ! -x "$fpm_binary" ]]; then
+      log "  ${RED}${php_version}-php-fpm${WHITE}: не найден ${fpm_binary}"
+      status=1
+      continue
+    fi
+
+    output="$("$fpm_binary" -t 2>&1)"
+    if [[ "$?" -ne 0 ]]; then
+      log "  ${RED}${php_version}-php-fpm${WHITE}: ошибка конфигурации, сервис не перезапущен"
+      printf '%s\n' "$output"
+      status=1
+      continue
+    fi
+
+    if systemctl restart "${php_version}-php-fpm"; then
+      log "  ${GREEN}${php_version}-php-fpm${WHITE} перезапущен"
+    else
+      log "  ${RED}${php_version}-php-fpm${WHITE}: ошибка перезапуска"
+      status=1
+    fi
+  done < <(printf '%s\n' "${!PHP_FPM_RESTART_REQUIRED[@]}" | sort -r)
+
+  return "$status"
+}
+
+reload_required_apache() {
+  local choice
+
+  [[ "$APACHE_RESTART_REQUIRED" -eq 1 ]] || return 0
+  [[ "$SILENT" -eq 1 ]] && return 0
+
+  log
+  if [[ "$ASSUME_YES" -eq 1 ]]; then
+    log "${YELLOW}Изменены настройки Apache.${WHITE} Применяем изменения без остановки сайтов..."
+  else
+    source "${SCRIPT_DIR}/windows.sh"
+    echo
+    echo -e "${YELLOW}Изменены настройки Apache.${WHITE}"
+    echo "Apache может перечитать настройки без остановки сайтов."
+    echo "Сделать это сейчас?"
+    vertical_menu "current" 2 0 13 "Да" "Нет"
+    choice=$?
+    if [[ "$choice" -ne 0 ]]; then
+      log "${YELLOW}Настройки Apache изменены, но пока не применены.${WHITE}"
+      log "Их можно применить позже через меню ${CYAN}MC${WHITE}:"
+      log "  Перезaпуск и стaтус серверa apache"
+      return 0
+    fi
+  fi
+
+  if systemctl reload httpd; then
+    log "${GREEN}Apache перечитал настройки.${WHITE}"
+    return 0
+  fi
+
+  log "${RED}Не удалось применить настройки Apache.${WHITE}"
+  log "Проверьте статус Apache через меню ${CYAN}MC${WHITE}:"
   log "  Перезaпуск и стaтус серверa apache"
+  return 1
 }
 
 reset_state() {
@@ -786,6 +885,7 @@ apply_issues() {
         esac
       then
         mark_apache_restart_required "$fix_action" "$fix_arg"
+        mark_php_fpm_restart_required "$fix_action" "$fix_arg"
         log "${GREEN}Исправлено:${WHITE} ${message}"
         changed=1
       else
@@ -878,8 +978,12 @@ fi
 if [[ "$MODE" == "fix" ]]; then
   run_fix
   status=$?
-  run_final_configtests || [[ "$status" -ne 0 ]] || status=1
-  print_apache_restart_notice
+  if run_final_configtests; then
+    restart_required_php_fpm || status=1
+    reload_required_apache || status=1
+  elif [[ "$status" -eq 0 ]]; then
+    status=1
+  fi
   exit $status
 fi
 

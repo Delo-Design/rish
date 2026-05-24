@@ -25,30 +25,7 @@ source "${RISH_HOME}/php_helpers.sh"
 cd /root || exit 1
 clear
 source "${RISH_HOME}/rish_config.sh"
-
-CheckRishSettingsNotice() {
-  local rish_check_status
-
-  bash "${RISH_HOME}/rish_check.sh" silent
-  rish_check_status=$?
-
-  case "$rish_check_status" in
-    0)
-      ;;
-    1)
-      RISH_SETTINGS_NEED_FIX=1
-      echo
-      echo -e "${YELLOW}Требуется проверка и восстановление настроек RISH${WHITE}"
-      echo
-      ;;
-    2)
-      echo
-      echo -e "${RED}Проверка настроек RISH завершилась с ошибкой:${WHITE}"
-      bash "${RISH_HOME}/rish_check.sh"
-      echo
-      ;;
-  esac
-}
+LocalServer="${LocalServer:-false}"
 
 PrintPackageUpdates() {
   local update_line
@@ -192,7 +169,14 @@ Update() {
         if tar -tzf rish2.tar.gz > /dev/null 2>&1
         then
           echo "${folder_version}" > /root/rish/version_previous
-          tar --no-same-owner -xvf rish2.tar.gz
+          echo "Распаковываем файлы RISH..."
+          if tar --no-same-owner -xf rish2.tar.gz; then
+            echo -e "Файлы RISH ${GREEN}обновлены${WHITE}."
+          else
+            echo -e "${RED}Не удалось${WHITE} распаковать архив RISH."
+            vertical_menu "current" 2 0 5 "Нажмите Enter"
+            exit 1
+          fi
           cd /root/rish || exit 1
           rm /etc/mc/mc.menu
           cp mc.menu /etc/mc/mc.menu
@@ -234,7 +218,26 @@ Update() {
   fi
 }
 
-CheckRishSettingsNotice
+bash "${RISH_HOME}/rish_check.sh" silent
+rish_check_status=$?
+
+case "$rish_check_status" in
+  0)
+    ;;
+  1)
+    RISH_SETTINGS_NEED_FIX=1
+    echo
+    echo -e "${YELLOW}Требуется проверка и восстановление настроек RISH${WHITE}"
+    echo
+    ;;
+  2)
+    echo
+    echo -e "${RED}Проверка настроек RISH завершилась с ошибкой:${WHITE}"
+    bash "${RISH_HOME}/rish_check.sh"
+    echo
+    ;;
+esac
+
 echo "Проверяем обновление..."
 if [[ -f /root/rish2.tar.gz ]]; then
   echo
