@@ -11,6 +11,7 @@ ASSUME_YES=0
 SILENT=0
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+source "${SCRIPT_DIR}/windows.sh"
 TEMPLATE_DIR="${SCRIPT_DIR}/templates"
 NOINDEX_TEMPLATE="${TEMPLATE_DIR}/apache-noindex.html"
 WWW_TEMPLATE="${TEMPLATE_DIR}/php-fpm-www.conf.template"
@@ -26,6 +27,7 @@ declare -A REFERENCED_POOLS=()
 declare -A REFERENCED_POOL_FILES=()
 declare -A PHP_FPM_RESTART_REQUIRED=()
 APACHE_RESTART_REQUIRED=0
+KERNEL_REBOOT_REQUIRED=0
 
 usage() {
   cat <<EOF
@@ -174,7 +176,6 @@ reload_required_apache() {
   if [[ "$ASSUME_YES" -eq 1 ]]; then
     log "${YELLOW}Изменены настройки Apache.${WHITE} Применяем изменения без остановки сайтов..."
   else
-    source "${SCRIPT_DIR}/windows.sh"
     echo
     echo -e "${YELLOW}Изменены настройки Apache.${WHITE}"
     echo "Apache может перечитать настройки без остановки сайтов."
@@ -215,9 +216,6 @@ check_prerequisites() {
   [[ -f "$DEFAULT_VHOST_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${DEFAULT_VHOST_TEMPLATE}")
   [[ -f "$DEFAULT_SSL_VHOST_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${DEFAULT_SSL_VHOST_TEMPLATE}")
 
-  if [[ "$MODE" == "fix" && "$ASSUME_YES" -ne 1 && ! -f "${SCRIPT_DIR}/windows.sh" ]]; then
-    ERRORS+=("Не найден ${SCRIPT_DIR}/windows.sh, интерактивное исправление невозможно")
-  fi
 }
 
 render_www_template() {
@@ -386,7 +384,7 @@ check_apache_conf_files() {
   local default_ssl_vhost="/etc/httpd/conf.d/000-default-ssl.conf"
 
   if [[ -f /etc/httpd/conf.d/autoindex.conf ]]; then
-    add_issue "Найден лишний Apache-конфиг /etc/httpd/conf.d/autoindex.conf" "fix_remove_file" "/etc/httpd/conf.d/autoindex.conf"
+    add_issue "Открыт служебный URL /icons/ на всех сайтах в файле /etc/httpd/conf.d/autoindex.conf" "fix_remove_file" "/etc/httpd/conf.d/autoindex.conf"
   fi
 
   if [[ ! -f "$default_vhost" ]]; then
@@ -647,25 +645,111 @@ check_php_fpm_configtests() {
   return "$status"
 }
 
+print_kernel_default_fix_hint() {
+  local latest_kernel_path="$1"
+
+  log
+  log "${YELLOW}Чтобы загрузиться с последним установленным ядром:${WHITE}"
+  log "  ${YELLOW}grubby --set-default ${latest_kernel_path}${WHITE}"
+  log "  ${YELLOW}reboot${WHITE}"
+  log
+  log "После перезагрузки проверьте версию ядра:"
+  log "  ${YELLOW}uname -r${WHITE}"
+}
+
+fix_kernel_default() {
+  local latest_kernel="$1"
+  local latest_kernel_path="$2"
+  local current_default_kernel
+  local choice
+
+  if [[ ! -f "$latest_kernel_path" ]]; then
+    log
+    log "Файл ядра не найден: ${YELLOW}${latest_kernel_path}${WHITE}"
+    log "Проверьте установленные ядра:"
+    log "  rpm -q kernel-core"
+    log "  ls -1 /boot/vmlinuz-*"
+    return 1
+  fi
+
+  if ! command -v grubby >/dev/null 2>&1; then
+    log
+    log "${YELLOW}grubby не найден${WHITE}, автоматическое исправление невозможно."
+    print_kernel_default_fix_hint "$latest_kernel_path"
+    return 1
+  fi
+
+  current_default_kernel="$(grubby --default-kernel 2>/dev/null)"
+  if [[ "$current_default_kernel" == "$latest_kernel_path" ]]; then
+    log
+    log "${GREEN}Последнее ядро уже выбрано для следующей загрузки.${WHITE}"
+    log "Осталось перезагрузить сервер вручную:"
+    log "  ${YELLOW}reboot${WHITE}"
+    return 0
+  fi
+
+  if [[ "$MODE" != "fix" ]]; then
+    print_kernel_default_fix_hint "$latest_kernel_path"
+    return 0
+  fi
+
+  if [[ "$ASSUME_YES" -ne 1 ]]; then
+    echo
+    echo -e "Сделать последнее установленное ядро ${YELLOW}${latest_kernel}${WHITE} загрузочным по умолчанию?"
+    echo "Будет выполнено:"
+    echo -e "  ${YELLOW}grubby --set-default ${latest_kernel_path}${WHITE}"
+    echo
+    echo "Перезагрузку нужно будет сделать вручную."
+    vertical_menu "current" 2 0 13 "Да" "Нет"
+    choice=$?
+    if [[ "$choice" -ne 0 ]]; then
+      log "${YELLOW}Выбор ядра пропущен.${WHITE}"
+      print_kernel_default_fix_hint "$latest_kernel_path"
+      return 1
+    fi
+  fi
+
+  if grubby --set-default "$latest_kernel_path"; then
+    log "${GREEN}Последнее ядро выбрано для следующей загрузки.${WHITE}"
+    log "Теперь перезагрузите сервер вручную:"
+    log "  reboot"
+    return 0
+  fi
+
+  log "${RED}Не удалось выбрать ядро для следующей загрузки.${WHITE}"
+  print_kernel_default_fix_hint "$latest_kernel_path"
+  return 1
+}
+
 check_reboot_required() {
   local reboot_status
   local current_kernel
   local latest_kernel
+  local latest_kernel_path
 
   if command -v rpm >/dev/null 2>&1; then
     printf 'Проверка загруженного ядра: '
     current_kernel="$(uname -r 2>/dev/null)"
     latest_kernel="$(rpm -q kernel-core --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' 2>/dev/null | sort -V | tail -n 1)"
+    latest_kernel_path="/boot/vmlinuz-${latest_kernel}"
 
     if [[ -n "$current_kernel" && -n "$latest_kernel" ]]; then
       if [[ "$current_kernel" == "$latest_kernel" ]]; then
-        printf '%b\n' "${GREEN}ok${WHITE} (используется последнее установленное)"
+        printf '%b\n' "${GREEN}ok${WHITE} (используется последнее установленное ${YELLOW}${current_kernel}${WHITE})"
       else
-        printf '%b\n' "${YELLOW}текущее ${current_kernel}, последнее установленное ${latest_kernel}${WHITE}"
+        printf '%b\n' "текущее ${YELLOW}${current_kernel}${WHITE}, последнее установленное ${YELLOW}${latest_kernel}${WHITE}"
+        KERNEL_REBOOT_REQUIRED=1
+        fix_kernel_default "$latest_kernel" "$latest_kernel_path"
       fi
     else
       printf '%b\n' "${YELLOW}не удалось определить${WHITE}"
     fi
+  fi
+
+  if [[ "$KERNEL_REBOOT_REQUIRED" -eq 1 ]]; then
+    printf 'Проверка необходимости перезагрузки: '
+    printf '%b\n' "${YELLOW}требуется перезагрузка для загрузки последнего ядра${WHITE}"
+    return 0
   fi
 
   if command -v needs-restarting >/dev/null 2>&1; then
@@ -764,7 +848,6 @@ confirm_fix() {
 
   [[ "$ASSUME_YES" -eq 1 ]] && return 0
 
-  source "${SCRIPT_DIR}/windows.sh"
   echo
   echo -e "${YELLOW}Исправить:${WHITE} ${message}?"
   vertical_menu "current" 2 0 13 "Да" "Нет" "Исправить все" "Выйти"
