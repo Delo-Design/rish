@@ -743,8 +743,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         echo -e "Закрываем порт доступа ${GREEN}cockpit${WHITE}?"
         echo "Если не знаете что это такое — закрывайте"
         if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-          firewall-cmd --zone="${ZoneName}" --remove-service=cockpit --permanent
-          firewall-cmd --reload
+          ZoneName="$(firewall-cmd --get-default-zone)"
+          if firewall-cmd --get-zones | grep -qw "$ZoneName"; then
+            firewall-cmd --zone="${ZoneName}" --remove-service=cockpit --permanent
+            firewall-cmd --reload
+          else
+            echo -e "${YELLOW}Зона firewalld ${ZoneName} не найдена, cockpit не изменён${WHITE}"
+          fi
         fi
         Up
       else
