@@ -218,6 +218,7 @@ Update() {
   fi
 }
 
+echo "Проверяем настройки RISH..."
 bash "${RISH_HOME}/rish_check.sh" silent
 rish_check_status=$?
 

@@ -277,17 +277,20 @@ EOF
 collect_referenced_pools() {
   local conf_file
   local socket_path
+  local socket_rest
   local php_version
   local user_name
 
   shopt -s nullglob
   for conf_file in /etc/httpd/conf.d/*.conf; do
     [[ -f "$conf_file" ]] || continue
-    [[ "$(basename "$conf_file")" =~ ^php[0-9][0-9]-php\.conf$ ]] && continue
+    [[ "${conf_file##*/}" =~ ^php[0-9][0-9]-php\.conf$ ]] && continue
     while IFS= read -r socket_path; do
-      php_version="$(echo "$socket_path" | sed -n 's|.*/remi/\(php[0-9][0-9]\)/run/php-fpm/.*|\1|p')"
-      user_name="$(basename "$socket_path" .sock)"
-      [[ -n "$php_version" && -n "$user_name" ]] || continue
+      socket_rest="${socket_path#*/remi/}"
+      php_version="${socket_rest%%/*}"
+      user_name="${socket_path##*/}"
+      user_name="${user_name%.sock}"
+      [[ "$php_version" =~ ^php[0-9][0-9]$ && -n "$user_name" ]] || continue
       REFERENCED_POOLS["${php_version}:${user_name}"]=1
       if [[ -z "${REFERENCED_POOL_FILES["${php_version}:${user_name}"]:-}" ]]; then
         REFERENCED_POOL_FILES["${php_version}:${user_name}"]="$conf_file"
