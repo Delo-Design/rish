@@ -879,6 +879,7 @@ apply_issues() {
   local message
   local path
   local value
+  local disabled_file
   local changed=0
   local confirm_status
 
@@ -935,8 +936,12 @@ apply_issues() {
             ;;
           fix_disable_file)
             if [[ -f "$fix_arg" ]]; then
-              mv -f "$fix_arg" "${fix_arg}.old" || return 1
-              log "Отключен $(highlight_path_file "$fix_arg") -> $(highlight_path_file "${fix_arg}.old")"
+              disabled_file="${fix_arg}.bak"
+              if [[ "${fix_arg##*/}" == "www.conf" ]]; then
+                disabled_file="${fix_arg}.old"
+              fi
+              mv -f "$fix_arg" "$disabled_file" || return 1
+              log "Отключен $(highlight_path_file "$fix_arg") -> $(highlight_path_file "$disabled_file")"
             fi
             ;;
           fix_pool_upload_tmp)
