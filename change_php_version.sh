@@ -87,6 +87,29 @@ function update_site_php_conf() {
   fi
 }
 
+function get_site_php_version() {
+  local site_name="$1"
+  local conf_file
+  local php_version
+
+  for conf_file in \
+    "/etc/httpd/conf.d/${site_name}.conf" \
+    "/etc/httpd/conf.d/${site_name}-ssl.conf" \
+    "/etc/httpd/conf.d/${site_name}-le-ssl.conf"; do
+    [[ -f "$conf_file" ]] || continue
+
+    php_version=$(grep -oE '/var/opt/remi/php[0-9]{2}/run/php-fpm/' "$conf_file" \
+      | grep -oE 'php[0-9]{2}' \
+      | head -n 1)
+    if [[ -n "$php_version" ]]; then
+      echo "$php_version"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 function change_php_version() {
   echo
   local path="$2"
@@ -95,7 +118,14 @@ function change_php_version() {
   local php_version
   if [[ -f "/etc/httpd/conf.d/$site_name.conf" ]]; then
 
-    php_version=$(grep -oP 'SetHandler "proxy:unix:/var/opt/remi/\Kphp[0-9]+' "/etc/httpd/conf.d/$site_name.conf")
+    php_version=$(get_site_php_version "$site_name")
+    if [[ -z "$php_version" ]]; then
+      echo -e "Сайт ${GREEN}${site_name}${WHITE} не использует ${GREEN}PHP-FPM${WHITE}."
+      echo "Смена версии PHP для этого сайта недоступна."
+      echo "Никаких изменений не произведено."
+      return
+    fi
+
     echo -e "Сайт ${GREEN}${site_name}${WHITE} использует ${GREEN}${php_version}${WHITE}"
     username=$(echo "$path" | cut -d'/' -f4)
     mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)

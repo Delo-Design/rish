@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${SCRIPT_DIR}/windows.sh"
 TEMPLATE_DIR="${SCRIPT_DIR}/templates"
 NOINDEX_TEMPLATE="${TEMPLATE_DIR}/apache-noindex.html"
+DEFAULT_NOINDEX_TEMPLATE="${TEMPLATE_DIR}/default-apache-noindex.html"
 WWW_TEMPLATE="${TEMPLATE_DIR}/php-fpm-www.conf.template"
 DEFAULT_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default.conf"
 DEFAULT_SSL_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default-ssl.conf"
@@ -211,7 +212,14 @@ reset_state() {
 }
 
 check_prerequisites() {
-  [[ -f "$NOINDEX_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${NOINDEX_TEMPLATE}")
+  if [[ ! -f "$NOINDEX_TEMPLATE" ]]; then
+    if [[ ! -f "$DEFAULT_NOINDEX_TEMPLATE" ]]; then
+      ERRORS+=("Не найден шаблон ${DEFAULT_NOINDEX_TEMPLATE}. Переустановите RISH.")
+    elif ! install -m 644 "$DEFAULT_NOINDEX_TEMPLATE" "$NOINDEX_TEMPLATE"; then
+      ERRORS+=("Не удалось создать шаблон ${NOINDEX_TEMPLATE}. Проверьте права доступа и свободное место на диске.")
+    fi
+  fi
+
   [[ -f "$WWW_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${WWW_TEMPLATE}")
   [[ -f "$DEFAULT_VHOST_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${DEFAULT_VHOST_TEMPLATE}")
   [[ -f "$DEFAULT_SSL_VHOST_TEMPLATE" ]] || ERRORS+=("Не найден шаблон ${DEFAULT_SSL_VHOST_TEMPLATE}")
@@ -497,6 +505,11 @@ check_php_fpm() {
       key="${php_version}:${user_name}"
       expected_listen="/var/opt/remi/${php_version}/run/php-fpm/${user_name}.sock"
 
+      if [[ -z "${REFERENCED_POOLS[$key]:-}" ]]; then
+        add_issue "Pool $(highlight_path_file "$pool_file") не используется ни одним Apache vhost" "fix_disable_file" "$pool_file"
+        continue
+      fi
+
       if ! id "$user_name" >/dev/null 2>&1; then
         add_issue "Pool $(highlight_path_file "$pool_file") ссылается на отсутствующего пользователя ${user_name}" "" ""
       fi
@@ -511,10 +524,6 @@ check_php_fpm() {
 
       if ! grep -qE '^[[:space:]]*listen[[:space:]]*=[[:space:]]*'"${expected_listen}"'[[:space:]]*$' "$pool_file"; then
         add_issue "В $(highlight_path_file "$pool_file") listen не совпадает с ${expected_listen}" "" ""
-      fi
-
-      if [[ -z "${REFERENCED_POOLS[$key]:-}" ]]; then
-        add_issue "Pool $(highlight_path_file "$pool_file") не используется ни одним Apache vhost" "fix_disable_file" "$pool_file"
       fi
     done
   done

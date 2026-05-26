@@ -132,6 +132,14 @@ if ! check_step "$STEP"; then
   mark_step_completed "$STEP"
 fi
 
+STEP="Инициализация шаблона заглушки Apache"
+if ! check_step "$STEP"; then
+  if [[ ! -f /root/rish/templates/apache-noindex.html ]]; then
+    install -m 644 /root/rish/templates/default-apache-noindex.html /root/rish/templates/apache-noindex.html || exit 1
+  fi
+  mark_step_completed "$STEP"
+fi
+
 declare -A missing_tmp_param # ассоциативный массив: php_version_dir => username
 
 shopt -s nullglob   # если *.conf не найден — массив пустой, цикл не выполнится

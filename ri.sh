@@ -619,27 +619,47 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP="Выбор типа установки сервера"
   Down
   if ! check_step "$STEP"; then
-    echo -e "Начать ${GREEN}установку${WHITE} сервера?"
+    echo -e "Выберите тип установки:"
+    echo -e "${YELLOW}Боевой (production) сервер${WHITE} — для размещения сайтов, доступных из интернета."
+    echo -e "${VIOLET}Локальный сервер${WHITE} — для разработки и тестирования:"
+    echo -e "  при клонировании сайтов домен будет заменяться на ${GREEN}.test${WHITE},"
+    echo -e "  будет предложена установка ${GREEN}Xdebug${WHITE},"
+    echo -e "  в меню MC появятся инструменты для локальной сети."
+    echo
     LocalServer=false
-    vertical_menu "current" 2 0 5 "Установка боевого (production) сервера" "Установка локального сервера" "Выйти"
-    ret=$?
-    if ((ret > 1)); then
-      RemoveRim
-      echo -e "${YELLOW}Установка сервера прервана${WHITE}"
-      exit
-    fi
-    if ((ret == 1)); then
-      LocalServer=true
-      add_var_if_not_exists "LocalServer" "LocalServer=true"
-      Up
-      echo -e "Установка ${VIOLET}локального${WHITE} сервера"
-      Down
-    else
+    while true; do
+      vertical_menu "current" 2 0 5 "Установка боевого (production) сервера" "Установка локального сервера" "Выйти"
+      ret=$?
+      if ((ret > 1)); then
+        RemoveRim
+        echo -e "${YELLOW}Установка сервера прервана${WHITE}"
+        echo -e "Продолжить установку можно, запустив команду ${GREEN}/root/rish/ri.sh${WHITE}"
+        exit
+      fi
+      if ((ret == 1)); then
+        echo -e "Вы выбрали ${VIOLET}локальную${WHITE} установку."
+        echo "Этот режим предназначен для разработки и тестирования, а не для публичного сервера."
+        echo -e "При клонировании сайтов домены будут заменяться на ${GREEN}.test${WHITE}."
+        echo
+        echo "Продолжить с локальной установкой?"
+        vertical_menu "current" 2 0 5 "Да, установить локальный сервер" "Нет, вернуться к выбору"
+        if (($? == 0)); then
+          LocalServer=true
+          add_var_if_not_exists "LocalServer" "LocalServer=true"
+          Up
+          echo -e "Установка ${VIOLET}локального${WHITE} сервера"
+          Down
+          break
+        fi
+        echo
+        continue
+      fi
       Up
       echo -e "Установка ${YELLOW}боевого${WHITE} сервера"
       add_var_if_not_exists "LocalServer" "LocalServer=false"
       Down
-    fi
+      break
+    done
 
     mark_step_completed "$STEP"
   else
@@ -768,8 +788,10 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   fi
   STEP="Замена стандартной заглушки Alma на заглушку RISH"
   if ! check_step "$STEP"; then
-    rm -f /usr/share/httpd/noindex/index.html &>>$LOG_FILE
-    cp ${RISH_HOME}/index.html /usr/share/httpd/noindex/index.html &>>$LOG_FILE
+    if [[ ! -f "${RISH_HOME}/templates/apache-noindex.html" ]]; then
+      install -m 644 "${RISH_HOME}/templates/default-apache-noindex.html" "${RISH_HOME}/templates/apache-noindex.html" &>>"$LOG_FILE" || exit 1
+    fi
+    install -D -m 644 "${RISH_HOME}/templates/apache-noindex.html" /usr/share/httpd/noindex/index.html &>>"$LOG_FILE" || exit 1
     mark_step_completed "$STEP"
   fi
   STEP="Проверка на наличие ServerName и исправление если его нет."

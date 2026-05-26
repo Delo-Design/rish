@@ -198,6 +198,11 @@ backupall() {
             continue
         fi
 
+        if [ ! -d "/var/www/${USER}/www/${TARGET}" ]; then
+            echo -e "${YELLOW}Пропускаем ${TARGET}: каталог не найден.${WHITE}"
+            continue
+        fi
+
         ARCHIVE_NAME="${TARGET}_${DATE_TS}"
         CLEANUP_TARGETS["$REMOTE|$USER"]=1
         CLEANUP_REMOTES["$REMOTE"]=1
@@ -221,11 +226,42 @@ backupall() {
         mkdir -p "$DIR_BACKUP/$server/$USER/$DATE_DIR/"
         if [ "$TYPE" = "site" ]; then
             echo -e "Архивация сайта ${GREEN}${TARGET}${WHITE}."
+        elif [ "$TYPE" = "db" ]; then
+            echo -e "Архивация базы сайта ${GREEN}${TARGET}${WHITE}."
         else
             echo -e "Архивация папки ${GREEN}${TARGET}${WHITE}."
         fi
         cd "/var/www/${USER}/www"
-        if [ -z "$DB" ]; then
+        if [ "$TYPE" = "db" ]; then
+            if [ -z "$DB" ]; then
+                echo -e "${LRED}Для ${TARGET} не указана база данных. Архивация пропущена.${WHITE}"
+                continue
+            fi
+            echo -e "Создаем дамп базы ${GREEN}${DB}${WHITE}..."
+            if ! (set -o pipefail; mariadb-dump \
+                --extended-insert \
+                --single-transaction \
+                --quick \
+                --routines \
+                --events \
+                --triggers \
+                --quote-names \
+                --order-by-primary \
+                --hex-blob \
+                "$DB" \
+                | sed '1{/999999.*sandbox/d}' \
+                | sed '/NOTE_VERBOSITY/d' \
+                | gzip \
+                | split -b $splitarchive --numeric-suffix - \
+                    $DIR_BACKUP/"${server}/${USER}/${DATE_DIR}/${ARCHIVE_NAME}.sql.gz-part-"); then
+                rm -f "$DIR_BACKUP/${server}/${USER}/${DATE_DIR}/${ARCHIVE_NAME}.sql.gz-part-"*
+                echo -e "${LRED}Не удалось создать дамп базы ${DB}. Архивация пропущена.${WHITE}"
+                continue
+            fi
+        elif [ -z "$DB" ] || ! db_exists "$DB"; then
+            if [ -n "$DB" ]; then
+                echo -e "${YELLOW}База ${DB} не найдена: архивируем только файлы сайта.${WHITE}"
+            fi
             echo "Идет создание архива файлов..."
             echo "Обработано: 0MB"
             tar -czhf - "${EXCLUDE_OPTS[@]}" $TARGET \
@@ -317,7 +353,7 @@ createlist() {
 	fi
 
 	echo -n "" > "$backupall2"
-	echo "# format: user;name;type(site|folder);db;remote;archive(yes|no);exclude_list" >> "$backupall2"
+	echo "# format: user;name;type(site|folder|db);db;remote;archive(yes|no);exclude_list" >> "$backupall2"
     let ii=0
     maxlen=0
     shopt -s nullglob
@@ -413,6 +449,8 @@ updatelist() {
         fi
         if [ "$TYPE" = "site" ]; then
             kind_label="сайт"
+        elif [ "$TYPE" = "db" ]; then
+            kind_label="база сайта"
         else
             kind_label="папка"
         fi
@@ -428,12 +466,14 @@ updatelist() {
             old_type="unknown"
         fi
 
-        TYPE="$(object_type_for_target "$TARGET")"
+        if [ "$old_type" != "db" ]; then
+            TYPE="$(object_type_for_target "$TARGET")"
+        fi
         if [ "$old_type" != "$TYPE" ] && [ "$old_type" != "unknown" ]; then
             echo -e "Изменен тип: ${GREEN}${TARGET}${WHITE} (${USER}) ${YELLOW}${old_type}${WHITE} -> ${GREEN}${TYPE}${WHITE}"
         fi
 
-        if [ "$TYPE" = "site" ]; then
+        if [ "$TYPE" = "site" ] || [ "$TYPE" = "db" ]; then
             if [ -z "$DB" ]; then
                 if db_exists "$TARGET"; then
                     DB="$TARGET"
@@ -494,7 +534,7 @@ updatelist() {
     shopt -u nullglob
 
     {
-        echo "# format: user;name;type(site|folder);db;remote;archive(yes|no);exclude_list"
+        echo "# format: user;name;type(site|folder|db);db;remote;archive(yes|no);exclude_list"
         cat "$tmp_list"
     } > "$backupall2"
     rm -f "$tmp_list"
@@ -664,7 +704,7 @@ ensure_remote_index() {
     local status_row="${2:-}"
     local status_col="${3:-1}"
     local rel_path user_name rest_path date_dir file_name archive_base site_name
-    local ts_part date_part time_part label pair_key
+    local ts_part date_part time_part label pair_key archive_kind
     local processed_files=0 progress_step=50
     local -a sorted_sites labels_for_site
     local -A seen_users seen_user_dates seen_sites site_user seen_site_labels snapshot_meta
@@ -698,7 +738,13 @@ ensure_remote_index() {
             progress_line_stderr "$status_row" "$status_col" "Сканирование ${YELLOW}${remote_name}${WHITE}: обработано файлов ${YELLOW}${processed_files}${WHITE}, пользователей ${YELLOW}${#seen_users[@]}${WHITE}, дат ${YELLOW}${#seen_user_dates[@]}${WHITE}, найдено сайтов ${YELLOW}${#seen_sites[@]}${WHITE}"
         fi
 
-        archive_base="${file_name%.tar.gz-part-00}"
+        archive_kind="full"
+        if [[ "$file_name" == *.sql.gz-part-00 ]]; then
+            archive_base="${file_name%.sql.gz-part-00}"
+            archive_kind="sql"
+        else
+            archive_base="${file_name%.tar.gz-part-00}"
+        fi
         if [[ "$archive_base" =~ ^(.+)_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2})$ ]]; then
             site_name="${BASH_REMATCH[1]}"
             ts_part="${BASH_REMATCH[2]}"
@@ -710,10 +756,13 @@ ensure_remote_index() {
             date_part="${ts_part%%_*}"
             time_part="${ts_part##*_}"
             label="${date_part} ${time_part//-/:}"
+            if [ "$archive_kind" = "sql" ]; then
+                label="${label} [SQL]"
+            fi
             pair_key="${site_name}|${label}"
             if [ -z "${seen_site_labels[$pair_key]:-}" ]; then
                 seen_site_labels["$pair_key"]=1
-                snapshot_meta["$pair_key"]="${user_name};${date_dir};${site_name};${ts_part}"
+                snapshot_meta["$pair_key"]="${user_name};${date_dir};${site_name};${ts_part};${archive_kind}"
             fi
         elif [[ -n "$archive_base" ]]; then
             site_name="$archive_base"
@@ -728,14 +777,20 @@ ensure_remote_index() {
             fi
             ts_part="${date_part}_00-00"
             label="${date_part} 00:00"
+            if [ "$archive_kind" = "sql" ]; then
+                label="${label} [SQL]"
+            fi
             pair_key="${site_name}|${label}"
             if [ -z "${seen_site_labels[$pair_key]:-}" ]; then
                 seen_site_labels["$pair_key"]=1
-                snapshot_meta["$pair_key"]="${user_name};${date_dir};${site_name};${ts_part}"
+                snapshot_meta["$pair_key"]="${user_name};${date_dir};${site_name};${ts_part};${archive_kind}"
             fi
         fi
     done < <(
-        rclone lsf -R --max-depth 3 --files-only --include "*.tar.gz-part-00" --fast-list "${remote_name}:${server}/" 2>/dev/null
+        rclone lsf -R --max-depth 3 --files-only \
+            --include "*.tar.gz-part-00" \
+            --include "*.sql.gz-part-00" \
+            --fast-list "${remote_name}:${server}/" 2>/dev/null
     )
     if [ -n "$status_row" ]; then
         progress_line_stderr "$status_row" "$status_col" "Сканирование ${YELLOW}${remote_name}${WHITE} завершено: обработано файлов ${YELLOW}${processed_files}${WHITE}, пользователей ${YELLOW}${#seen_users[@]}${WHITE}, дат ${YELLOW}${#seen_user_dates[@]}${WHITE}, найдено сайтов ${YELLOW}${#seen_sites[@]}${WHITE}"
@@ -820,22 +875,33 @@ download_site_snapshot_archive() {
     local site_name="$4"
     local ts_part="$5"
     local status_row="$6"
-    local tmp_dir archive_path target_dir target_archive
-    local -a part_files
+    local archive_kind="${7:-full}"
+    local tmp_dir archive_path target_dir target_archive archive_extension
+    local -a part_files include_opts
+
+    if [ "$archive_kind" = "sql" ]; then
+        archive_extension=".sql.gz"
+    else
+        archive_extension=".tar.gz"
+    fi
 
     tmp_dir="$(mktemp -d)" || return 1
     target_dir="$(pwd)"
-    target_archive="${target_dir}/${site_name}_${ts_part}.tar.gz"
-    archive_path="${tmp_dir}/${site_name}_${ts_part}.tar.gz"
+    target_archive="${target_dir}/${site_name}_${ts_part}${archive_extension}"
+    archive_path="${tmp_dir}/${site_name}_${ts_part}${archive_extension}"
 
     cursor_to "$status_row" 1
     printf '\033[K'
     echo -e "Загрузка архива в ${GREEN}${target_archive}${WHITE}"
 
+    include_opts=(--include "${site_name}_${ts_part}${archive_extension}-part-*")
+    if [ "$archive_kind" != "sql" ]; then
+        include_opts+=(--include "${site_name}.tar.gz-part-*")
+    fi
+
     if ! rclone copy --progress --stats-one-line --stats=1s \
         "${remote_name}:${server}/${user_name}/${date_dir}/" "$tmp_dir/" \
-        --include "${site_name}_${ts_part}.tar.gz-part-*" \
-        --include "${site_name}.tar.gz-part-*"; then
+        "${include_opts[@]}"; then
         printf '\033[1A\r\033[K'
         cursor_to "$status_row" 1
         printf '\033[K'
@@ -845,8 +911,8 @@ download_site_snapshot_archive() {
     fi
     printf '\033[1A\r\033[K'
 
-    mapfile -t part_files < <(ls -1 "${tmp_dir}/${site_name}_${ts_part}.tar.gz-part-"* 2>/dev/null | sort)
-    if [ "${#part_files[@]}" -eq 0 ]; then
+    mapfile -t part_files < <(ls -1 "${tmp_dir}/${site_name}_${ts_part}${archive_extension}-part-"* 2>/dev/null | sort)
+    if [ "$archive_kind" != "sql" ] && [ "${#part_files[@]}" -eq 0 ]; then
         mapfile -t part_files < <(ls -1 "${tmp_dir}/${site_name}.tar.gz-part-"* 2>/dev/null | sort)
     fi
     if [ "${#part_files[@]}" -eq 0 ]; then
@@ -863,7 +929,7 @@ download_site_snapshot_archive() {
     rm -rf "$tmp_dir"
     cursor_to "$status_row" 1
     printf '\033[K'
-    echo -e "Архив ${GREEN}${site_name}_${ts_part}.tar.gz${WHITE} загружен в ${GREEN}${target_dir}${WHITE}"
+    echo -e "Архив ${GREEN}${site_name}_${ts_part}${archive_extension}${WHITE} загружен в ${GREEN}${target_dir}${WHITE}"
     return 0
 }
 
@@ -874,7 +940,7 @@ restore_backup_menu() {
     local site_name_from_line site_user_from_line
     local snapshot_line snapshot_label snapshot_meta_line
     local right_x right_y snapshot_x snapshot_y
-    local snapshot_meta snapshot_user snapshot_date snapshot_site snapshot_ts status_row
+    local snapshot_meta snapshot_user snapshot_date snapshot_site snapshot_ts snapshot_kind status_row
     local remote_menu_y remote_menu_h snapshot_menu_y snapshot_menu_h
     local site_menu_y site_menu_x site_menu_h site_menu_w site_menu_drawn
     local -a remotes remote_menu site_entries sites site_menu snapshot_entries snapshots snapshot_menu
@@ -1050,7 +1116,7 @@ restore_backup_menu() {
 
             selected_snapshot="${snapshots[$remote_choice]}"
             snapshot_meta="${snapshot_map[$selected_snapshot]}"
-            IFS=';' read -r snapshot_user snapshot_date snapshot_site snapshot_ts <<< "$snapshot_meta"
+            IFS=';' read -r snapshot_user snapshot_date snapshot_site snapshot_ts snapshot_kind <<< "$snapshot_meta"
             if [ -z "$snapshot_user" ] || [ -z "$snapshot_date" ] || [ -z "$snapshot_site" ] || [ -z "$snapshot_ts" ]; then
                 cursor_to "$status_row" 1
                 echo -e "${LRED}Не удалось разобрать выбранную копию.${WHITE}"
@@ -1062,7 +1128,7 @@ restore_backup_menu() {
                 site_menu_drawn=0
             fi
 
-            download_site_snapshot_archive "$selected_remote" "$snapshot_user" "$snapshot_date" "$snapshot_site" "$snapshot_ts" "$status_header_row"
+            download_site_snapshot_archive "$selected_remote" "$snapshot_user" "$snapshot_date" "$snapshot_site" "$snapshot_ts" "$status_header_row" "$snapshot_kind"
         done
 
         cursor_to "$menu_start_row" 1
