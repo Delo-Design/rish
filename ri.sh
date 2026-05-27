@@ -204,6 +204,23 @@ Install() {
     Down
 }
 
+configure_httpd_tmpfiles_override() {
+  local vendor_conf="/usr/lib/tmpfiles.d/httpd.conf"
+  local override_conf="/etc/tmpfiles.d/httpd.conf"
+  local tmp_conf="${override_conf}.rish-tmp.$$"
+
+  if [[ ! -f "$vendor_conf" ]] || ! awk '$1 == "d" && $2 == "/var/www" { found=1 } END { exit !found }' "$vendor_conf"; then
+    rm -f "$override_conf"
+    return 0
+  fi
+
+  install -d -m 755 /etc/tmpfiles.d || return 1
+  awk '$1 == "d" && $2 == "/var/www" { $3="751"; $4="root"; $5="root" } { print }' "$vendor_conf" > "$tmp_conf" || return 1
+  install -m 644 "$tmp_conf" "$override_conf" || return 1
+  rm -f "$tmp_conf"
+  systemd-tmpfiles --create "$override_conf"
+}
+
 
 OpenFirewall() {
   # Проверка наличия и состояния firewalld
@@ -745,6 +762,16 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   if ! check_step "$STEP"; then
     chown root:root /var/www
     chmod 751 /var/www
+    mark_step_completed "$STEP"
+  fi
+
+  STEP="Настройка tmpfiles для прав /var/www"
+  if ! check_step "$STEP"; then
+    configure_httpd_tmpfiles_override || {
+      echo "Не удалось настроить постоянные права /var/www через tmpfiles."
+      RemoveRim
+      exit 1
+    }
     mark_step_completed "$STEP"
   fi
 

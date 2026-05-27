@@ -19,6 +19,8 @@ WWW_TEMPLATE="${TEMPLATE_DIR}/php-fpm-www.conf.template"
 DEFAULT_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default.conf"
 DEFAULT_SSL_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default-ssl.conf"
 PHP_FPM_RESTART_CONF="local.conf"
+HTTPD_TMPFILES_VENDOR="/usr/lib/tmpfiles.d/httpd.conf"
+HTTPD_TMPFILES_OVERRIDE="/etc/tmpfiles.d/httpd.conf"
 
 declare -a ISSUE_MESSAGES=()
 declare -a ISSUE_FIXES=()
@@ -282,6 +284,35 @@ RestartSec=180
 EOF
 }
 
+httpd_vendor_manages_var_www() {
+  [[ -f "$HTTPD_TMPFILES_VENDOR" ]] || return 1
+  awk '$1 == "d" && $2 == "/var/www" { found=1 } END { exit !found }' "$HTTPD_TMPFILES_VENDOR"
+}
+
+render_httpd_tmpfiles_override() {
+  awk '$1 == "d" && $2 == "/var/www" { $3="751"; $4="root"; $5="root" } { print }' "$HTTPD_TMPFILES_VENDOR"
+}
+
+httpd_tmpfiles_override_matches() {
+  [[ -f "$HTTPD_TMPFILES_OVERRIDE" ]] || return 1
+  render_httpd_tmpfiles_override | cmp -s - "$HTTPD_TMPFILES_OVERRIDE"
+}
+
+write_httpd_tmpfiles_override() {
+  local tmp_file="${HTTPD_TMPFILES_OVERRIDE}.rish-tmp.$$"
+
+  if ! httpd_vendor_manages_var_www; then
+    rm -f "$HTTPD_TMPFILES_OVERRIDE"
+    return 0
+  fi
+
+  install -d -m 755 /etc/tmpfiles.d || return 1
+  render_httpd_tmpfiles_override > "$tmp_file" || return 1
+  install -m 644 "$tmp_file" "$HTTPD_TMPFILES_OVERRIDE" || return 1
+  rm -f "$tmp_file"
+  systemd-tmpfiles --create "$HTTPD_TMPFILES_OVERRIDE"
+}
+
 collect_referenced_pools() {
   local conf_file
   local socket_path
@@ -356,6 +387,16 @@ check_var_www() {
     check_user_tmp_dir "$user_name"
   done
   shopt -u nullglob
+}
+
+check_httpd_tmpfiles_override() {
+  if httpd_vendor_manages_var_www; then
+    if ! httpd_tmpfiles_override_matches; then
+      add_issue "$(highlight_path_file "$HTTPD_TMPFILES_OVERRIDE") не сохраняет права 751 для /var/www при обработке tmpfiles" "fix_httpd_tmpfiles_override" ""
+    fi
+  elif [[ -f "$HTTPD_TMPFILES_OVERRIDE" ]]; then
+    add_issue "$(highlight_path_file "$HTTPD_TMPFILES_OVERRIDE") больше не требуется: пакет httpd не управляет /var/www через tmpfiles" "fix_httpd_tmpfiles_override" ""
+  fi
 }
 
 check_user_tmp_dir() {
@@ -791,6 +832,7 @@ collect_issues() {
   [[ "${#ERRORS[@]}" -gt 0 ]] && return
 
   collect_referenced_pools
+  check_httpd_tmpfiles_override
   check_var_www
   check_noindex
   check_apache_conf_files
@@ -923,6 +965,9 @@ apply_issues() {
             path="${fix_arg%%|*}"
             value="${fix_arg#*|}"
             chmod "$value" "$path" || return 1
+            ;;
+          fix_httpd_tmpfiles_override)
+            write_httpd_tmpfiles_override || return 1
             ;;
           fix_user_tmp)
             install -d -m 755 -o "$fix_arg" -g "$fix_arg" "/var/www/${fix_arg}/tmp" || return 1
