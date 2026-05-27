@@ -59,10 +59,14 @@ configure_httpd_tmpfiles_override() {
   local tmp_conf="${override_conf}.rish-tmp.$$"
 
   if [[ ! -f "$vendor_conf" ]] || ! awk '$1 == "d" && $2 == "/var/www" { found=1 } END { exit !found }' "$vendor_conf"; then
-    rm -f "$override_conf"
+    if [[ -f "$override_conf" ]]; then
+      echo "Удаляем больше не требуемую настройку tmpfiles для /var/www."
+      rm -f "$override_conf" || return 1
+    fi
     return 0
   fi
 
+  echo "Настраиваем постоянные права /var/www через tmpfiles."
   install -d -m 755 /etc/tmpfiles.d || return 1
   awk '$1 == "d" && $2 == "/var/www" { $3="751"; $4="root"; $5="root" } { print }' "$vendor_conf" > "$tmp_conf" || return 1
   install -m 644 "$tmp_conf" "$override_conf" || return 1
@@ -263,7 +267,6 @@ if [ -f /etc/httpd/conf.d/autoindex.conf ]; then
     rm -f /etc/httpd/conf.d/autoindex.conf
 fi
 
-echo "Настраиваем постоянные права /var/www через tmpfiles."
 configure_httpd_tmpfiles_override || {
   echo -e "${RED}Не удалось${WHITE} настроить постоянные права /var/www через tmpfiles."
   exit 1
