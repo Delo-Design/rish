@@ -68,7 +68,7 @@ function php_multi_install() {
       skip=
       for installed in "${installed_versions[@]}"; do
         installed_phpver="${installed%% *}" # тоже только phpXX
-        if [[ $phpver == $installed_phpver ]]; then
+        if [[ "$phpver" == "$installed_phpver" ]]; then
           skip=1
           break
         fi
@@ -101,9 +101,11 @@ function php_multi_install() {
     local right_block_x=$((left_block_width + 13))
     local arrow_x=$((left_block_width + 1))
 
-    local current_y=$(get_cursor_row)
+    local current_y
+    current_y=$(get_cursor_row)
     echo
-    local size=$(stty size)
+    local size
+    size=$(stty size)
     local lines=${size% *}
     ((skip_lines=0))
     ((need_to_skeep=${#installed_versions[@]}))
@@ -127,8 +129,7 @@ function php_multi_install() {
     echo "Доступно:"
     vertical_menu "current" 1 0 10 "${options[@]}"
     local ret=$?
-    cursor_to $(($current_y)) 0
-    echo -en ${ESC}"[0J"
+    echo -en "${ESC}[1A${ESC}[K"
     if (( ret == 255 )) || (( ret == ${#options[@]}-1 )); then
       return 0
     fi
@@ -183,7 +184,6 @@ function php_multi_install() {
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
       Install "${selected_version}-php-pecl-imagick"
-      #yum install php-pecl-imagick
     fi
     if ${LocalServer}; then
       echo -e ${CURSORUP}"Ставим ${GREEN}Xdebug${WHITE}?${ERASEUNTILLENDOFLINE}"
@@ -229,4 +229,3 @@ EOF
   create_hotlist
 
 }
-

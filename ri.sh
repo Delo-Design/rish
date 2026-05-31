@@ -637,8 +637,8 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   Down
   if ! check_step "$STEP"; then
     echo -e "Выберите тип установки:"
-    echo -e "${YELLOW}Боевой (production) сервер${WHITE} — для размещения сайтов, доступных из интернета."
-    echo -e "${VIOLET}Локальный сервер${WHITE} — для разработки и тестирования:"
+    echo -e "${GREEN}Боевой (production) сервер${WHITE} — для размещения сайтов, доступных из интернета."
+    echo -e "${YELLOW}Локальный сервер${WHITE} — для разработки и тестирования:"
     echo -e "  при клонировании сайтов домен будет заменяться на ${GREEN}.test${WHITE},"
     echo -e "  будет предложена установка ${GREEN}Xdebug${WHITE},"
     echo -e "  в меню MC появятся инструменты для локальной сети."
@@ -654,7 +654,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         exit
       fi
       if ((ret == 1)); then
-        echo -e "Вы выбрали ${VIOLET}локальную${WHITE} установку."
+        echo -e "Вы выбрали ${YELLOW}локальную${WHITE} установку."
         echo "Этот режим предназначен для разработки и тестирования, а не для публичного сервера."
         echo -e "При клонировании сайтов домены будут заменяться на ${GREEN}.test${WHITE}."
         echo
@@ -664,7 +664,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
           LocalServer=true
           add_var_if_not_exists "LocalServer" "LocalServer=true"
           Up
-          echo -e "Установка ${VIOLET}локального${WHITE} сервера"
+          echo -e "Установка ${YELLOW}локального${WHITE} сервера"
           Down
           break
         fi
@@ -672,7 +672,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         continue
       fi
       Up
-      echo -e "Установка ${YELLOW}боевого${WHITE} сервера"
+      echo -e "Установка ${GREEN}боевого${WHITE} сервера"
       add_var_if_not_exists "LocalServer" "LocalServer=false"
       Down
       break
