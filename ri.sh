@@ -1008,42 +1008,74 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     cd /etc/yum.repos.d/
 
     echo
-    echo -e "${GREEN}MariaDB${WHITE} на данный момент имеет 3 релиза с долгосрочной поддержкой:"
+    echo -e "${GREEN}MariaDB${WHITE} на данный момент имеет 5 релизов с долгосрочной поддержкой:"
     echo "10.6  со сроком поддержки до 6 июля 2026"
     echo "10.11 со сроком поддержки до 16 февраля 2028"
     echo -e "${GREEN}11.4${WHITE}  со сроком поддержки до 29 мая 2029"
+    echo "11.8  со сроком поддержки до 4 июня 2028"
+    echo "12.3  со сроком поддержки до мая 2029"
     echo
     echo "Какой релиз ставить?"
-    vertical_menu "current" 2 0 5 "MariaDB 11.4" "MariaDB 10.11" "MariaDB 10.6"
-    choice=$?
-    case "$choice" in
-    0)
-      Maria_Version="11.4"
-      ;;
-    1)
-      Maria_Version="10.11"
-      ;;
-    2)
-      Maria_Version="10.6"
-      ;;
-    esac
+    while true; do
+      Maria_Version_Custom=0
+      vertical_menu "current" 2 0 10 default=2 "MariaDB 10.6" "MariaDB 10.11" "MariaDB 11.4" "MariaDB 11.8" "MariaDB 12.3" "Ввести другую версию вручную"
+      choice=$?
+      case "$choice" in
+      0)
+        Maria_Version="10.6"
+        ;;
+      1)
+        Maria_Version="10.11"
+        ;;
+      2)
+        Maria_Version="11.4"
+        ;;
+      3)
+        Maria_Version="11.8"
+        ;;
+      4)
+        Maria_Version="12.3"
+        ;;
+      5)
+        Maria_Version_Custom=1
+        echo -e -n "Введите версию MariaDB в формате ${GREEN}X.Y${WHITE} (пустая строка для возврата в меню): ${GREEN}"
+        read -r -e Maria_Version
+        echo -e -n "${WHITE}"
+        if [[ -z "$Maria_Version" ]]; then
+          continue
+        fi
+        if [[ ! "$Maria_Version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+          echo -e "${RED}Некорректная версия.${WHITE} Используйте формат X.Y, например 12.2."
+          continue
+        fi
+        ;;
+      *)
+        continue
+        ;;
+      esac
 
-    echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
+      echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
 
-    if ! bash /root/rish/mariadb_repo_setup.sh --mariadb-server-version="${Maria_Version}" --skip-maxscale
-    then
-      {
-        echo "[mariadb]"
-        echo "name = MariaDB"
-        echo "# rpm.mariadb.org is a dynamic mirror if your preferred mirror goes offline. See https://mariadb.org/mirrorbits/ for details."
-        echo "# baseurl = https://rpm.mariadb.org/${Maria_Version}/rhel/\$releasever/\$basearch"
-        echo "baseurl = https://mirror.docker.ru/mariadb/yum/${Maria_Version}/rhel/\$releasever/\$basearch"
-        echo "module_hotfixes = 1"
-        echo "# gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
-        echo "gpgkey = https://mirror.docker.ru/mariadb/yum/RPM-GPG-KEY-MariaDB"
-        echo "gpgcheck = 1"
-      } >mariadb.repo
-    fi
+      if ! bash /root/rish/mariadb_repo_setup.sh --mariadb-server-version="${Maria_Version}" --skip-maxscale
+      then
+        if ((Maria_Version_Custom)); then
+          echo -e "${RED}Указанная версия MariaDB недоступна.${WHITE} Выберите другую версию."
+          continue
+        fi
+        {
+          echo "[mariadb]"
+          echo "name = MariaDB"
+          echo "# rpm.mariadb.org is a dynamic mirror if your preferred mirror goes offline. See https://mariadb.org/mirrorbits/ for details."
+          echo "# baseurl = https://rpm.mariadb.org/${Maria_Version}/rhel/\$releasever/\$basearch"
+          echo "baseurl = https://mirror.docker.ru/mariadb/yum/${Maria_Version}/rhel/\$releasever/\$basearch"
+          echo "module_hotfixes = 1"
+          echo "# gpgkey = https://rpm.mariadb.org/RPM-GPG-KEY-MariaDB"
+          echo "gpgkey = https://mirror.docker.ru/mariadb/yum/RPM-GPG-KEY-MariaDB"
+          echo "gpgcheck = 1"
+        } >mariadb.repo
+      fi
+      break
+    done
     mark_step_completed "$STEP"
   fi
 

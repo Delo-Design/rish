@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # shellcheck disable=2016 disable=1091 disable=2059
 
-version="2025-08-07"
+version="2026-04-23"
 
 # Notes:
+#   2026-04-23 - Deprecate RHEL/CentOS 7 and Ubuntu 20.04
+#              - Update URLs for tools repository
+#              - Update URL for legacy MariaDB repositories
+#              - Remove uneeded Enterprise key from key list
+#   2025-12-10 - Update key used by MaxScale repositories
+#   2025-11-18 - Fix 12.x matching
 #   2025-08-07 - Update MariaDB default to 12.rolling
 #              - Change SLES version/arch default to $releasever/$basearch
 #              - Add Debian 13 "Trixie", RHEL/Rocky/Alma 10, 
@@ -90,8 +96,7 @@ version="2025-08-07"
 
 supported="# The MariaDB Repository only supports these distributions:
 #    * RHEL/Rocky 8, 9, & 10 (rhel)
-#    * RHEL/CentOS 7 (rhel)
-#    * Ubuntu 20.04 LTS (focal), 22.04 LTS (jammy), and 24.04 LTS (noble)
+#    * 22.04 LTS (jammy), and 24.04 LTS (noble)
 #    * Debian 11 (bullseye), Debian 12 (bookworm), and Debian 13 (trixie)
 #    * SLES 12 & 15 (sles)"
 
@@ -178,6 +183,8 @@ key_ids=( 0x8167EE24 0xE3C94F49 0xcbcb082a1bb943db 0xf1656f24c74cd1d8 0x135659e9
 # These GPG URLs are used to fetch GPG keys on RHEL and SLES
 key_urls=(
     https://supplychain.mariadb.com/MariaDB-Server-GPG-KEY
+    https://supplychain.mariadb.com/MariaDB-MaxScale-GPG-KEY
+    https://supplychain.mariadb.com/MariaDB-Enterprise-GPG-KEY-2025
 )
 
 msg(){
@@ -223,9 +230,9 @@ verify_server_os_combo() {
 verify_mariadb_server_version() {
   # version regex
   if (($skip_eol_check)); then
-    rx='^(mariadb-){0,1}(10\.[0-9]|10\.1[0-1]|10\.[0-9]\.[1-9]{0,1}[0-9]{1}|10\.1[0-1]\.[1-9]{1}[0-9]{0,1}|11\.[0-8]|1[1-2]{1}\.[0-8]\.[1-9]{1}[0-9]{0,1}|1[1-2]{1}\.rc|1[1-2]{1}\.rolling)$'
+    rx='^(mariadb-){0,1}(10\.[0-9]|10\.1[0-1]|10\.[0-9]\.[1-9]{0,1}[0-9]{1}|10\.1[0-1]\.[1-9]{1}[0-9]{0,1}|1[1-2]{1}\.[0-8]|1[1-2]{1}\.[0-8]\.[1-9]{1}[0-9]{0,1}|1[1-2]{1}\.rc|1[1-2]{1}\.rolling)$'
   else
-    rx='^(mariadb-){0,1}(10\.[4569]|10\.1[0-1]|10\.[4569]\.[1-9]{0,1}[0-9]{1}|10\.1[0-1]\.[1-9]{1}[0-9]{0,1}|11\.[0-8]|1[1-2]{1}\.[0-8]\.[1-9]{1}[0-9]{0,1}|1[1-2]{1}\.rc|1[1-2]{1}\.rolling)$'
+    rx='^(mariadb-){0,1}(10\.[4569]|10\.1[0-1]|10\.[4569]\.[1-9]{0,1}[0-9]{1}|10\.1[0-1]\.[1-9]{1}[0-9]{0,1}|1[1-2]{1}\.[0-8]|1[1-2]{1}\.[0-8]\.[1-9]{1}[0-9]{0,1}|1[1-2]{1}\.rc|1[1-2]{1}\.rolling)$'
   fi
   if [[ $@ =~ $rx ]] ; then
     case $os_type in
@@ -483,7 +490,7 @@ identify_os(){
         case $el_version in
             5*) os_version=5 ; ((skip_os_eol_check)) || error "RHEL/CentOS 5 is no longer supported" "$supported" ;;
             6*) os_version=6 ; ((skip_os_eol_check)) || error "RHEL/CentOS 6 is no longer supported" "$supported" ;;
-            7*) os_version=7 ;;
+            7*) os_version=7 ; ((skip_os_eol_check)) || error "RHEL/CentOS 7 is no longer supported" "$supported" ;;
             8*) os_version=8 ; extra_options="module_hotfixes = 1" ;;
             9*) os_version=9 ; extra_options="module_hotfixes = 1" ;;
             10*) os_version=10 ; extra_options="module_hotfixes = 1" ;;
@@ -683,7 +690,7 @@ then
       7*|8*|9*|10*)
         if [ $os_type = 'rhel' ] ; then
           case $os_version in
-            7*) os_version=7 ;;
+            7*) os_version=7 ; ((skip_os_eol_check)) || msg warning "RHEL/CentOS 7 has reached End of Life and is no longer supported." "$supported" ;;
             8*) os_version=8 ; extra_options="module_hotfixes = 1" ;;
             9*) os_version=9 ; extra_options="module_hotfixes = 1" ;;
             10*) os_version=10 ; extra_options="module_hotfixes = 1" ;;
@@ -701,7 +708,7 @@ then
       10|11|13)
         if [ $os_type = 'debian' ] ; then
           case $os_version in
-            10) os_version='buster' ;;
+            10) os_version='buster' ; ((skip_os_eol_check)) || msg warning "Debian 10 'buster' has reached End of Life and is no longer supported." "$supported" ;;
             11) os_version='bullseye' ;;
             13) os_version='trixie' ;;
           esac
@@ -789,7 +796,7 @@ case ${mariadb_server_version} in
     *10.3.[0-2]*|*10.3.[0-9]) ;& # 10.3: old server has <= .32, dlm has >= .29, we switch at .30
     *10.4.[0-1]*|*10.4.[0-9]) ;& # 10.4: dlm has >= 10.4.20
     *10.5.[0-9])     # 10.5: dlm has >= 10.5.10
-    url_base="downloads.mariadb.com"
+    url_base="legacy-downloads.mariadb.com"
     url_mariadb_repo="https://${url_base}/MariaDB"
     mariadb_server_version_real=$mariadb_server_version
     ;;
@@ -815,7 +822,7 @@ enabled = 1'
 rhel_repo_tools='
 [mariadb-tools]
 name = MariaDB Tools
-baseurl = https://downloads.mariadb.com/Tools/rhel/%s/x86_64
+baseurl = https://custom-downloads.mariadb.com/legacy/tools/rhel/%s/x86_64
 gpgkey = file:///etc/pki/rpm-gpg/MariaDB-Enterprise-GPG-KEY
 gpgcheck = 1
 enabled = 1'
@@ -832,7 +839,7 @@ deb_repo_maxscale='
 deb [arch=amd64,arm64] https://dlm.mariadb.com/repo/maxscale/%s/%s %s main'
 deb_repo_tools='
 # MariaDB Tools
-deb [arch=amd64] http://downloads.mariadb.com/Tools/%s %s main'
+deb [arch=amd64] http://custom-downloads.mariadb.com/legacy/tools/%s %s main'
 
 sles_repo_server="
 [mariadb-server]
@@ -860,7 +867,7 @@ priority=10'
 sles_repo_tools='
 [mariadb-tools]
 name = MariaDB Tools
-baseurl = https://downloads.mariadb.com/Tools/sles/%s/x86_64
+baseurl = https://custom-downloads.mariadb.com/legacy/tools/sles/%s/x86_64
 gpgkey = file:///etc/pki/trust/MariaDB-Enterprise-GPG-KEY
 enabled = 1
 autorefresh=1
@@ -908,13 +915,13 @@ case $os_type in
         if ! ((skip_key_import))
         then
             msg info 'Adding trusted package signing keys...' 
-            if curl -LsSO https://supplychain.mariadb.com/mariadb-keyring-2019.gpg
+            if curl -LsSO https://supplychain.mariadb.com/mariadb-keyring-2025.gpg
             then
-                if curl -LsS https://supplychain.mariadb.com/mariadb-keyring-2019.gpg.sha256 | sha256sum -c --quiet
+                if curl -LsS https://supplychain.mariadb.com/mariadb-keyring-2025.gpg.sha256 | sha256sum -c --quiet
                 then
                     msg info 'Running apt-get update...'
-                    if mv mariadb-keyring-2019.gpg /etc/apt/trusted.gpg.d/ &&
-                      chmod 644 /etc/apt/trusted.gpg.d/mariadb-keyring-2019.gpg &&
+                    if mv mariadb-keyring-2025.gpg /etc/apt/trusted.gpg.d/ &&
+                      chmod 644 /etc/apt/trusted.gpg.d/mariadb-keyring-2025.gpg &&
                       apt-get -qq update
                     then
                         msg info 'Done adding trusted package signing keys'
