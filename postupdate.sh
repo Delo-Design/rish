@@ -38,6 +38,11 @@ fi
 if [[ -f /root/rish/templates/mc.menu.local ]]; then
   rm -f /root/rish/mc.menu.local
 fi
+for archive in /root/rish/phpMyAdmin-*-all-languages.tar.gz; do
+  if [[ -f "$archive" && -f "/root/rish/templates/$(basename "$archive")" ]]; then
+    rm -f "$archive"
+  fi
+done
 
 Install() {
   if ! rpm -q "$@" >/dev/null 2>&1; then

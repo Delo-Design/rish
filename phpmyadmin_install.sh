@@ -90,7 +90,7 @@ latest_local_archive()
   local archives=()
   local archive
 
-  for archive in "${RISH_HOME}"/phpMyAdmin-*-"${PMA_LANGUAGE}".tar.gz; do
+  for archive in "${RISH_HOME}/templates"/phpMyAdmin-*-"${PMA_LANGUAGE}".tar.gz; do
     [[ -f "$archive" ]] && archives+=("$archive")
   done
 
@@ -429,7 +429,7 @@ if [[ -n "$PMA_VERSION" ]]; then
 fi
 
 if [[ -z "$PMA_ARCHIVE" ]]; then
-  PMA_ARCHIVE="$(latest_local_archive)" || fail "Online-загрузка недоступна, локальный архив phpMyAdmin в ${RISH_HOME} не найден."
+  PMA_ARCHIVE="$(latest_local_archive)" || fail "Online-загрузка недоступна, локальный архив phpMyAdmin в ${RISH_HOME}/templates не найден."
   PMA_VERSION="$(archive_version "$PMA_ARCHIVE")"
   echo -e "Используем локальный архив: ${YELLOW}$(basename "$PMA_ARCHIVE")${WHITE}"
 fi
