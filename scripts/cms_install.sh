@@ -848,7 +848,8 @@ fi
 
 php_bin=$(get_site_php_bin)
 if [[ -n "$php_bin" ]]; then
-  echo -e "Установка/обновление CMS для сайта: ${GREEN}${site_name}${WHITE}"
+  echo -e "Установка/управление CMS для сайта: ${GREEN}${site_name}${WHITE}"
+  echo
   echo -e "DocumentRoot сайта: ${GREEN}${site_path}${WHITE}"
   echo -e "Для сайта будет использован PHP: ${GREEN}${php_bin}${WHITE}"
 else

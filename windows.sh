@@ -226,14 +226,48 @@ function refresh_window {
 	do
 		cursor_to $(($top_y + ${i}  + 1)) $(($left_x))
 		print_option "│  ${menu_items[${i}+${shift_y}]}"
-		repl " " $(( ${MaxWindowWidth}-${#menu_items[${i}+${shift_y}]} ))
-		printf "│"
+		repl " " $(( ${MaxWindowWidth}-${#menu_items[${i}+${shift_y}]} - 1 ))
+		print_vertical_menu_right_border "$i" "$height" "$shift_y" "${#menu_items[@]}"
 	done
 
 	cursor_to $(($top_y + ${i} +1 )) $(($left_x))
 	printf "└"
 	repl "─" $(( $MaxWindowWidth + 3 ))
 	printf "┘"
+}
+
+print_vertical_menu_right_border() {
+  local row="$1"
+  local height="$2"
+  local shift_y="$3"
+  local item_count="$4"
+
+  if ((row == 0 && shift_y > 0)); then
+    printf "↑│"
+  elif ((row == height - 1 && shift_y + height < item_count)); then
+    printf "↓│"
+  else
+    printf " │"
+  fi
+}
+
+print_vertical_menu_selected_row() {
+  local top_y="$1"
+  local left_x="$2"
+  local selected="$3"
+  local height="$4"
+  local MaxWindowWidth="$5"
+  local shift_y="$6"
+  local menu_item="$7"
+  local item_count="$8"
+
+  cursor_to $(($top_y + $selected + 1)) $(($left_x))
+  printf "│ "
+  print_selected_on
+  printf " ${menu_item}"
+  repl " " $(($MaxWindowWidth - ${#menu_item}))
+  print_selected_off
+  print_vertical_menu_right_border "$selected" "$height" "$shift_y" "$item_count"
 }
 
 function vertical_menu {
@@ -290,6 +324,9 @@ function vertical_menu {
 
   ms=("${new_menu_items[@]:0:4}")
   menu_items=("${new_menu_items[@]:4}")
+  if ((${#menu_items[@]} == 0)); then
+    return 255
+  fi
   left_x=${ms[1]}
   top_y=${ms[0]}
   MaxWindowWidth=${ms[3]}
@@ -377,16 +414,10 @@ function vertical_menu {
 
     cursor_to $(($top_y + $previous_selected + 1)) $(($left_x))
     print_option "│  ${menu_items[$previous_selected + ${shift_y}]}"
-    repl " " $(($MaxWindowWidth - ${#menu_items[$previous_selected + ${shift_y}]}))
-    printf "│"
+    repl " " $(($MaxWindowWidth - ${#menu_items[$previous_selected + ${shift_y}]} - 1))
+    print_vertical_menu_right_border "$previous_selected" "$height" "$shift_y" "${#menu_items[@]}"
 
-    cursor_to $(($top_y + $selected + 1)) $(($left_x))
-    printf "│ "
-    print_selected_on
-    printf " ${menu_items[${selected} + ${shift_y}]}"
-    repl " " $(($MaxWindowWidth - ${#menu_items[$selected + ${shift_y}]}))
-    print_selected_off
-    printf " │"
+    print_vertical_menu_selected_row "$top_y" "$left_x" "$selected" "$height" "$MaxWindowWidth" "$shift_y" "${menu_items[$selected + $shift_y]}" "${#menu_items[@]}"
 
     # user key control
     key_input ReturnKey
@@ -426,7 +457,13 @@ function vertical_menu {
       IFS=':' read -r _ mouse_x mouse_y <<< "$ReturnKey"
       if ((mouse_x >= left_x && mouse_x <= left_x + MaxWindowWidth + 4 &&
            mouse_y >= top_y + 1 && mouse_y <= top_y + height)); then
+        cursor_to $(($top_y + $selected + 1)) $(($left_x))
+        print_option "│  ${menu_items[$selected + ${shift_y}]}"
+        repl " " $(($MaxWindowWidth - ${#menu_items[$selected + ${shift_y}]} - 1))
+        print_vertical_menu_right_border "$selected" "$height" "$shift_y" "${#menu_items[@]}"
         selected=$((mouse_y - top_y - 1))
+        print_vertical_menu_selected_row "$top_y" "$left_x" "$selected" "$height" "$MaxWindowWidth" "$shift_y" "${menu_items[$selected + $shift_y]}" "${#menu_items[@]}"
+        sleep 0.08
         break
       fi
       ;;
