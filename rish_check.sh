@@ -626,29 +626,37 @@ check_php_fpm_restart_policy() {
   shopt -u nullglob
 }
 
-get_hotlist_php_versions() {
+check_hotlist() {
+  local expected_hotlist
   local hotlist_file="${HOME}/.config/mc/hotlist"
-
-  [[ -f "$hotlist_file" ]] || return 0
-  grep -oE '/etc/opt/remi/php[0-9]{2}/php-fpm\.d' "$hotlist_file" | grep -oE 'php[0-9]{2}' | sort -r | uniq
-}
-
-check_hotlist_php_versions() {
-  local installed_versions
-  local hotlist_versions
-  local hotlist_file="${HOME}/.config/mc/hotlist"
-
-  installed_versions="$(get_installed_php_versions)"
-  hotlist_versions="$(get_hotlist_php_versions)"
 
   if [[ ! -f "$hotlist_file" ]]; then
     add_issue "Midnight Commander hotlist ${hotlist_file} отсутствует" "fix_hotlist" ""
     return
   fi
 
-  if [[ "$installed_versions" != "$hotlist_versions" ]]; then
-    add_issue "Список PHP в Midnight Commander hotlist не соответствует установленным PHP-FPM версиям" "fix_hotlist" ""
+  expected_hotlist="$(mktemp)" || {
+    ERRORS+=("Не удалось создать временный файл для проверки Midnight Commander hotlist")
+    return
+  }
+
+  source "${SCRIPT_DIR}/create_hotlist.sh" || {
+    rm -f "$expected_hotlist"
+    ERRORS+=("Не удалось загрузить генератор Midnight Commander hotlist")
+    return
+  }
+
+  if ! create_hotlist "$expected_hotlist"; then
+    rm -f "$expected_hotlist"
+    ERRORS+=("Не удалось сформировать ожидаемый Midnight Commander hotlist")
+    return
   fi
+
+  if ! cmp -s "$expected_hotlist" "$hotlist_file"; then
+    add_issue "Midnight Commander hotlist не соответствует текущим настройкам сервера" "fix_hotlist" ""
+  fi
+
+  rm -f "$expected_hotlist"
 }
 
 check_apache_configtest() {
@@ -840,7 +848,7 @@ collect_issues() {
   check_vhost_handlers
   check_php_fpm
   check_php_fpm_restart_policy
-  check_hotlist_php_versions
+  check_hotlist
 }
 
 run_final_configtests() {

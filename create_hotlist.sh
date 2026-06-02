@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 function create_hotlist() {
-  mkdir -p ~/.config/mc
+  local hotlist_file="${1:-${HOME}/.config/mc/hotlist}"
   local installed
   local installed_versions
   local fpm_binary
@@ -14,6 +14,7 @@ function create_hotlist() {
   local site_user
   local users
   local user
+  mkdir -p "$(dirname "$hotlist_file")"
   mapfile -t sites < <(find "/var/www" -mindepth 3 -maxdepth 3 -type d -path "/var/www/*/www/*" -printf '%f\t%p\n' | sort)
   for site_entry in "${sites[@]}"; do
     site_name="${site_entry%%$'\t'*}"
@@ -21,7 +22,7 @@ function create_hotlist() {
       max_site_name_length=${#site_name}
     fi
   done
-  echo 'GROUP "Список сайтов"' >~/.config/mc/hotlist
+  echo 'GROUP "Список сайтов"' >"$hotlist_file"
   for site_entry in "${sites[@]}"; do
     site_name="${site_entry%%$'\t'*}"
     site_path="${site_entry#*$'\t'}"
@@ -30,9 +31,9 @@ function create_hotlist() {
     printf -v site_padding "%*s" "$((max_site_name_length - ${#site_name}))" ""
     site_padding="${site_padding// / }"
     site_label="${site_name}${site_padding}  (${site_user})"
-    echo 'ENTRY "'${site_label}'" URL "'${site_path}'"' >>~/.config/mc/hotlist
+    echo 'ENTRY "'${site_label}'" URL "'${site_path}'"' >>"$hotlist_file"
   done
-  cat >>~/.config/mc/hotlist <<EOF
+  cat >>"$hotlist_file" <<EOF
 ENDGROUP
 ENTRY "/etc" URL "/etc"
 ENTRY "/root" URL "/root"
@@ -50,12 +51,12 @@ EOF
     shopt -u nullglob
   )
   for installed in "${installed_versions[@]}"; do
-    echo 'ENTRY "Путь к пулам '${installed}' /etc/opt/remi/'${installed}'/php-fpm.d" URL "/etc/opt/remi/'${installed}'/php-fpm.d"' >>~/.config/mc/hotlist
-    echo 'ENTRY "Путь к php.ini '${installed}' /etc/opt/remi/'${installed}'" URL "/etc/opt/remi/'${installed}'"' >>~/.config/mc/hotlist
+    echo 'ENTRY "Путь к пулам '${installed}' /etc/opt/remi/'${installed}'/php-fpm.d" URL "/etc/opt/remi/'${installed}'/php-fpm.d"' >>"$hotlist_file"
+    echo 'ENTRY "Путь к php.ini '${installed}' /etc/opt/remi/'${installed}'" URL "/etc/opt/remi/'${installed}'"' >>"$hotlist_file"
   done
-  echo "ENDGROUP" >>~/.config/mc/hotlist
+  echo "ENDGROUP" >>"$hotlist_file"
   mapfile -t users < <(find "/var/www" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | grep -vE "^(cgi-bin|html)$" | sort)
   for user in "${users[@]}"; do
-    echo 'ENTRY "Путь к сайтам '${user}' /var/www/'${user}'/www" URL "/var/www/'${user}'/www"' >>~/.config/mc/hotlist
+    echo 'ENTRY "Путь к сайтам '${user}' /var/www/'${user}'/www" URL "/var/www/'${user}'/www"' >>"$hotlist_file"
   done
 }
