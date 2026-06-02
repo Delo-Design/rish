@@ -6,6 +6,10 @@
 ESC=$( printf "\033")
 cursor_blink_on()     { printf "%s" "${ESC}[?25h"; }
 cursor_blink_off()    { printf "%s" "${ESC}[?25l"; }
+mouse_tracking_on()   { printf "%s" "${ESC}[?1000h${ESC}[?1006h"; }
+mouse_tracking_off()  { printf "%s" "${ESC}[?1006l${ESC}[?1000l"; }
+
+VERTICAL_MENU_LAST_WHEEL_MS=0
 
 # Метаданные последнего отрисованного меню (обновляются в vertical_menu)
 VERTICAL_MENU_LAST_WIDTH=0
@@ -42,6 +46,54 @@ drain_input_tail() {
   while IFS= read -rsn1 -t 0.001 dummy 2>/dev/null; do :; done
 }
 
+vertical_menu_cleanup() {
+  mouse_tracking_off
+  cursor_blink_on
+  if [[ -n "$stty_state" ]]; then
+    stty "$stty_state"
+  fi
+}
+
+vertical_menu_restore_traps() {
+  if [[ -n "$previous_int_trap" ]]; then eval "$previous_int_trap"; else trap - INT; fi
+  if [[ -n "$previous_term_trap" ]]; then eval "$previous_term_trap"; else trap - TERM; fi
+  if [[ -n "$previous_hup_trap" ]]; then eval "$previous_hup_trap"; else trap - HUP; fi
+}
+
+vertical_menu_install_traps() {
+  trap 'vertical_menu_handle_signal INT' INT
+  trap 'vertical_menu_handle_signal TERM' TERM
+  trap 'vertical_menu_handle_signal HUP' HUP
+}
+
+vertical_menu_handle_signal() {
+  local signal="$1"
+  vertical_menu_cleanup
+  vertical_menu_restore_traps
+  kill -s "$signal" "$$"
+
+  # If the previous handler returned or ignored the signal, resume the menu.
+  vertical_menu_install_traps
+  if [[ -n "$stty_state" ]]; then
+    stty -echo
+  fi
+  mouse_tracking_on
+  cursor_blink_off
+}
+
+get_time_ms() {
+  local now
+
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    now="${EPOCHREALTIME/./}"
+    printf "%s\n" "${now:0:${#now}-3}"
+    return
+  fi
+
+  now=$(date +%s%3N)
+  [[ "$now" =~ ^[0-9]+$ ]] && printf "%s\n" "$now" || printf "0\n"
+}
+
 get_cursor_row() {
     local row col
     IFS=';' read -sdR -p $'\E[6n' row col
@@ -68,7 +120,14 @@ key_input() {
     local key=""
     local c1=""
     local c2=""
+    local c=""
     local esc=$'\e'
+    local mouse_sequence=""
+    local mouse_button
+    local mouse_x
+    local mouse_y
+    local mouse_action
+    local mouse_wheel_ms
 
     IFS= read -rsn1 key 2>/dev/null || true
 
@@ -79,12 +138,44 @@ key_input() {
             return
         fi
 
-        # Поддерживаем только стрелки вверх/вниз.
+        # Поддерживаем стрелки вверх/вниз и SGR-события мыши.
         if [[ "$c1" == "[" || "$c1" == "O" ]]; then
             if IFS= read -rsn1 -t 0.008 c2 2>/dev/null; then
                 case "$c2" in
                     A) printf -v "$result_var" "%s" "up"; return ;;
                     B) printf -v "$result_var" "%s" "down"; return ;;
+                    "<")
+                        while IFS= read -rsn1 -t 0.008 c 2>/dev/null; do
+                            if [[ "$c" == "M" || "$c" == "m" ]]; then
+                                mouse_action="$c"
+                                break
+                            fi
+                            mouse_sequence+="$c"
+                            ((${#mouse_sequence} < 32)) || break
+                        done
+                        IFS=';' read -r mouse_button mouse_x mouse_y <<< "$mouse_sequence"
+                        if [[ "$mouse_button" =~ ^[0-9]+$ && "$mouse_x" =~ ^[0-9]+$ && "$mouse_y" =~ ^[0-9]+$ ]]; then
+                            if ((mouse_button & 64)); then
+                                mouse_wheel_ms=$(get_time_ms)
+                                if ((mouse_wheel_ms > 0 &&
+                                     mouse_wheel_ms - VERTICAL_MENU_LAST_WHEEL_MS < 30)); then
+                                    printf -v "$result_var" "%s" "other:mouse_wheel_ignored"
+                                    return
+                                fi
+                                VERTICAL_MENU_LAST_WHEEL_MS=$mouse_wheel_ms
+                                case $((mouse_button & 3)) in
+                                    0) printf -v "$result_var" "%s" "up"; return ;;
+                                    1) printf -v "$result_var" "%s" "down"; return ;;
+                                esac
+                            fi
+                            if [[ "$mouse_action" == "m" ]] && (( (mouse_button & 3) == 0 )); then
+                                printf -v "$result_var" "%s" "mouse_click:${mouse_x}:${mouse_y}"
+                                return
+                            fi
+                            printf -v "$result_var" "%s" "other:mouse_ignored"
+                            return
+                        fi
+                        ;;
                 esac
             fi
         fi
@@ -179,6 +270,9 @@ function vertical_menu {
   local shift_y=0
   local el
   local arg
+  local previous_int_trap
+  local previous_term_trap
+  local previous_hup_trap
   size=$(stty size)
   lines=${size% *}
   columns=${size#* }
@@ -259,8 +353,12 @@ function vertical_menu {
   if [[ -n "$stty_state" ]]; then
     stty -echo
   fi
-  # Ensure terminal state is restored on Ctrl+C while waiting for keys.
-  trap 'cursor_blink_on; if [[ -n "$stty_state" ]]; then stty "$stty_state"; fi; printf "\n"; exit 130' INT
+  # Ensure terminal state is restored if the menu is interrupted while waiting for keys.
+  previous_int_trap="$(trap -p INT)"
+  previous_term_trap="$(trap -p TERM)"
+  previous_hup_trap="$(trap -p HUP)"
+  vertical_menu_install_traps
+  mouse_tracking_on
   cursor_blink_off
   refresh_window ${top_y} ${left_x} ${height} ${MaxWindowWidth} ${shift_y} "${menu_items[@]}"
 
@@ -322,17 +420,24 @@ function vertical_menu {
         selected=${previous_selected}
       fi
       ;;
+    mouse_click:*)
+      local mouse_x
+      local mouse_y
+      IFS=':' read -r _ mouse_x mouse_y <<< "$ReturnKey"
+      if ((mouse_x >= left_x && mouse_x <= left_x + MaxWindowWidth + 4 &&
+           mouse_y >= top_y + 1 && mouse_y <= top_y + height)); then
+        selected=$((mouse_y - top_y - 1))
+        break
+      fi
+      ;;
     esac
   done
 
   if ((is_current_mode == 1)); then
     printf "\n"
   fi
-  cursor_blink_on
-  if [[ -n "$stty_state" ]]; then
-    stty "$stty_state"
-  fi
-  trap - INT
+  vertical_menu_cleanup
+  vertical_menu_restore_traps
   if ((is_current_mode == 1)); then
     if [[ ${ms[0]} == "current" ]]; then
       cursor_to ${current_y} 1
