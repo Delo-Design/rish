@@ -243,6 +243,9 @@ function create_site() {
       echo "Сервер apache перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
     fi
 
+    source /root/rish/create_hotlist.sh
+    create_hotlist
+
   else
     ret=$?
     echo -e "Создание сайта (vhost) для имени ${YELLOW}$site_name${WHITE} пропущено."

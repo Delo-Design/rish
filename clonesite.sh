@@ -476,5 +476,7 @@ CloneSite() {
   else
     echo "Сервер не был перезагружен"
   fi
+  source /root/rish/create_hotlist.sh
+  create_hotlist
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 }
