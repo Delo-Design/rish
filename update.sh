@@ -179,9 +179,9 @@ Update() {
           fi
           cd /root/rish || exit 1
           rm /etc/mc/mc.menu
-          cp mc.menu /etc/mc/mc.menu
+          cp templates/mc.menu /etc/mc/mc.menu
           if ${LocalServer}; then
-            cat mc.menu.local >> /etc/mc/mc.menu
+            cat templates/mc.menu.local >> /etc/mc/mc.menu
           fi
           chmod u+x ri.sh
           chmod u+x update.sh

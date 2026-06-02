@@ -196,7 +196,7 @@ i       IP адрес сервера
 	read
 
 + d /var/www/ & t d
-j  Установка/обновление CMS
+j  Установка/управление CMS
   bash /root/rish/scripts/cms_install.sh "%d" "%f"
 
 + d /var/www/ & t d

@@ -2,6 +2,7 @@
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[0;33m'
 WHITE='\033[0m'
 LRED='\033[1;31m'
 
@@ -350,6 +351,57 @@ install_joomla() {
   wait_for_enter
 }
 
+update_joomla() {
+  local user
+  local cr
+
+  if ! user=$(get_site_user "$directory"); then
+    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+
+  echo -e "Перед обновлением рекомендуется создать резервную копию файлов сайта и базы данных."
+  echo -e "Продолжить обновление Joomla для сайта ${YELLOW}${site_name}${WHITE}?"
+  vertical_menu "current" 2 0 5 "Продолжить" "Отмена"
+  cr=$?
+  if (( cr != 0 )); then
+    echo "Обновление Joomla отменено."
+    wait_for_enter
+    return
+  fi
+
+  echo "Проверяем наличие обновлений Joomla..."
+  (
+    cd "$site_path" &&
+      timeout 30s runuser -u "$user" -- "$php_bin" cli/joomla.php core:check-updates
+  )
+  cr=$?
+  if (( cr == 124 )); then
+    echo -e "Проверка обновлений Joomla ${RED}не завершилась за 30 секунд${WHITE}."
+    echo "Проверьте доступ к серверу обновлений."
+    wait_for_enter
+    return
+  elif (( cr != 0 )); then
+    echo -e "Не удалось ${RED}проверить наличие обновлений Joomla${WHITE}."
+    wait_for_enter
+    return
+  fi
+
+  echo "Обновляем Joomla..."
+  if ! (
+    cd "$site_path" &&
+      runuser -u "$user" -- "$php_bin" cli/joomla.php core:update
+  ); then
+    echo -e "Обновление Joomla ${RED}завершилось с ошибкой${WHITE}."
+    wait_for_enter
+    return
+  fi
+
+  echo -e "${GREEN}Обновление Joomla завершено.${WHITE}"
+  wait_for_enter
+}
+
 install_wordpress() {
   local wp_cli="/usr/local/bin/wp"
   local wp_cli_tmp
@@ -591,13 +643,31 @@ fi
 
 echo
 echo "Выберите CMS:"
-vertical_menu "current" 2 0 30 "Joomla" "WordPress" "Выйти"
+menu_items=()
+menu_actions=()
+if [[ -f "${site_path}/configuration.php" &&
+  -f "${site_path}/administrator/manifests/files/joomla.xml" &&
+  -f "${site_path}/cli/joomla.php" ]]; then
+  joomla_version=$(
+    sed -nE 's@.*<version>[[:space:]]*([0-9]+(\.[0-9]+)+)[[:space:]]*</version>.*@\1@p' \
+      "${site_path}/administrator/manifests/files/joomla.xml" |
+      head -n 1
+  )
+  if [[ -n "$joomla_version" ]]; then
+    menu_items+=("Обновление Joomla ${joomla_version}")
+  else
+    menu_items+=("Обновление Joomla")
+  fi
+  menu_actions+=("update_joomla")
+fi
+menu_items+=("Установка Joomla" "Установка WordPress" "Выйти")
+menu_actions+=("install_joomla" "install_wordpress" "exit")
+
+vertical_menu "current" 2 0 30 "${menu_items[@]}"
 choice=$?
-case "$choice" in
-  0) install_joomla ;;
-  1) install_wordpress ;;
-  *)
-    echo "Выход. Никаких действий произведено не было."
-    wait_for_enter
-    ;;
-esac
+if (( choice == 255 )) || [[ "${menu_actions[${choice}]}" == "exit" ]]; then
+  echo "Выход. Никаких действий произведено не было."
+  wait_for_enter
+else
+  "${menu_actions[${choice}]}"
+fi

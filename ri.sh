@@ -1182,12 +1182,12 @@ EOF
   if ! check_step "$STEP"; then
     mkdir -p ~/.config/mc
     cd ${RISH_HOME}
-    if [[ -e mc.menu ]]; then
+    if [[ -e "${RISH_HOME}/templates/mc.menu" ]]; then
       rm /etc/mc/mc.menu
+      cp "${RISH_HOME}/templates/mc.menu" /etc/mc/mc.menu
       if ${LocalServer}; then
-        cat mc.menu.local >>mc.menu
+        cat "${RISH_HOME}/templates/mc.menu.local" >> /etc/mc/mc.menu
       fi
-      cp mc.menu /etc/mc/mc.menu
     fi
     v=$(tr -d '\r' < /root/rish/version | awk '{$1=$1;print}')
     sed -i "s/{VER}/$v/g" /etc/mc/mc.menu

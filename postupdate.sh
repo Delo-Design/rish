@@ -31,6 +31,14 @@ mark_step_completed() {
 source $config_file
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
+# Удаление устаревших копий шаблонов из корня RISH
+if [[ -f /root/rish/templates/mc.menu ]]; then
+  rm -f /root/rish/mc.menu
+fi
+if [[ -f /root/rish/templates/mc.menu.local ]]; then
+  rm -f /root/rish/mc.menu.local
+fi
+
 Install() {
   if ! rpm -q "$@" >/dev/null 2>&1; then
     echo -e "Ставим ${GREEN}${*}${WHITE}"
@@ -66,9 +74,14 @@ configure_httpd_tmpfiles_override() {
     return 0
   fi
 
-  echo "Настраиваем постоянные права /var/www через tmpfiles."
   install -d -m 755 /etc/tmpfiles.d || return 1
   awk '$1 == "d" && $2 == "/var/www" { $3="751"; $4="root"; $5="root" } { print }' "$vendor_conf" > "$tmp_conf" || return 1
+  if [[ -f "$override_conf" ]] && cmp -s "$tmp_conf" "$override_conf"; then
+    rm -f "$tmp_conf"
+    return 0
+  fi
+
+  echo "Настраиваем постоянные права /var/www через tmpfiles."
   install -m 644 "$tmp_conf" "$override_conf" || return 1
   rm -f "$tmp_conf"
   systemd-tmpfiles --create "$override_conf"
