@@ -402,6 +402,223 @@ update_joomla() {
   wait_for_enter
 }
 
+install_opencart() {
+  local -a downloads
+  local -a opencarts
+  local choice
+  local opencart_version
+  local archive_name
+  local archive_path
+  local package_path
+  local staging_path
+  local upload_path
+  local releases_json
+  local site_url="http://${site_name}"
+  local user
+  local cr
+  local db_password
+  local db_exists
+  local admin_email
+  local admin_password
+
+  if ! releases_json=$(curl -fsSL https://api.github.com/repos/opencart/opencart/releases); then
+    echo -e "${RED}Не удалось получить список версий OpenCart.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+  mapfile -t downloads < <(
+    printf '%s\n' "$releases_json" |
+      grep browser_download_url |
+      grep -Eo 'https?://[^ "]+/opencart-[34](\.[0-9]+)+\.zip'
+  )
+  if (( ${#downloads[@]} == 0 )); then
+    echo -e "${RED}Не найдены доступные для скачивания версии OpenCart.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+  echo "Выберите версию OpenCart для скачивания:"
+  mapfile -t opencarts < <(
+    printf '%s\n' "${downloads[@]}" |
+      awk -F"/" '{print $NF}'
+  )
+  vertical_menu "current" 2 0 30 "${opencarts[@]}"
+  choice=$?
+  if (( choice == 255 )); then
+    echo "Выход. Каталог не тронут. Никаких действий произведено не было."
+    wait_for_enter
+    exit
+  fi
+  archive_name="${opencarts[${choice}]}"
+  opencart_version=$( echo "$archive_name" | sed -n 's/^opencart-\([0-9.]\+\)\.zip$/\1/p' )
+  if [[ -z "$opencart_version" ]]; then
+    echo -e "${RED}Не удалось определить версию выбранного архива OpenCart.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+
+  if [[ -f "/etc/httpd/conf.d/${site_name}-ssl.conf" ||
+    -f "/etc/httpd/conf.d/${site_name}-le-ssl.conf" ]]; then
+    site_url="https://${site_name}"
+  fi
+
+  if ! user=$(get_site_user "$directory"); then
+    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+
+  db_password=$( awk '/^Database:/ { print $2 }' "/home/${user}/.pass.txt" )
+  admin_email=$( awk '/^defaultsiteaccount / { print $2 }' "/home/${user}/.pass.txt" )
+  admin_password=$( awk '/^defaultsiteaccount / { print $3 }' "/home/${user}/.pass.txt" )
+  if [[ -z "$db_password" || -z "$admin_email" || -z "$admin_password" ]]; then
+    echo -e "Не удалось прочитать учетные данные из ${RED}/home/${user}/.pass.txt${WHITE}."
+    wait_for_enter
+    exit 1
+  fi
+
+  echo -e "Установка OpenCart version ${GREEN}${opencart_version}${WHITE}"
+  if [ -n "$(ls -A "${site_path}")" ]; then
+    echo -e "Удалить содержимое папки ${GREEN}${site_path}${WHITE}?"
+    vertical_menu "current" 2 0 5 "Да" "Нет"
+    cr=$?
+    if (( cr != 0 )); then
+      echo "Установка отменена. Каталог не был изменен."
+      wait_for_enter
+      exit
+    fi
+  fi
+
+  if ! db_exists=$(mariadb -uroot -NBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='${folder}'"); then
+    echo -e "Не удалось проверить наличие базы данных ${RED}${folder}${WHITE}."
+    wait_for_enter
+    exit 1
+  fi
+  if [[ -z "$db_exists" ]]; then
+    echo -e "Базы данных с именем ${GREEN}${folder}${WHITE} не существует. Создать?"
+  else
+    echo -e "База данных с именем ${GREEN}${folder}${WHITE} уже существует. Хотите очистить ее?"
+  fi
+  vertical_menu "current" 2 0 5 "Да" "Нет"
+  cr=$?
+  if (( cr != 0 )); then
+    echo "Установка отменена. База данных не была изменена."
+    wait_for_enter
+    exit
+  fi
+
+  echo -e "Скачиваем OpenCart ${GREEN}${opencart_version}${WHITE}..."
+  if ! archive_path=$(mktemp "/tmp/rish-${archive_name}.XXXXXX"); then
+    echo -e "${RED}Не удалось создать временный файл для архива OpenCart.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+  if ! wget -q --show-progress --progress=bar:force:noscroll \
+    -O "$archive_path" "${downloads[${choice}]}"; then
+    rm -f -- "$archive_path"
+    echo -e "Не удалось скачать OpenCart ${RED}${opencart_version}${WHITE}."
+    wait_for_enter
+    exit 1
+  fi
+
+  if compgen -G "${site_path}.rish-install.*" > /dev/null ||
+    compgen -G "${site_path}.rish-package.*" > /dev/null; then
+    rm -f -- "$archive_path"
+    echo -e "${RED}Найдены временные папки предыдущей установки.${WHITE}"
+    echo "Удалите их вручную после проверки содержимого:"
+    echo "${site_path}.rish-install.*"
+    echo "${site_path}.rish-package.*"
+    wait_for_enter
+    exit 1
+  fi
+  if ! package_path=$(mktemp -d "${site_path}.rish-package.XXXXXX") ||
+    ! staging_path=$(mktemp -d "${site_path}.rish-install.XXXXXX") ||
+    ! chmod 755 "$package_path" "$staging_path" ||
+    ! unzip -q "$archive_path" -d "$package_path"; then
+    rm -f -- "$archive_path"
+    rm -rf -- "$package_path" "$staging_path"
+    echo -e "${RED}Не удалось распаковать архив OpenCart.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+  rm -f -- "$archive_path"
+
+  upload_path="${package_path}/upload"
+  if [[ ! -d "$upload_path" ]]; then
+    upload_path=$(find "$package_path" -mindepth 1 -maxdepth 3 -type d -name upload -print -quit)
+  fi
+  if [[ -z "$upload_path" || ! -f "${upload_path}/install/cli_install.php" ]] ||
+    ! cp -a "${upload_path}/." "$staging_path" ||
+    ! cp "${staging_path}/config-dist.php" "${staging_path}/config.php" ||
+    ! cp "${staging_path}/admin/config-dist.php" "${staging_path}/admin/config.php" ||
+    ! chown -R "${user}:${user}" "$staging_path"; then
+    rm -rf -- "$package_path" "$staging_path"
+    echo -e "${RED}Не удалось подготовить файлы OpenCart.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+  rm -rf -- "$package_path"
+
+  if [[ -n "$db_exists" ]]; then
+    if ! mariadb-admin -f -u root drop "${folder}"; then
+      rm -rf -- "$staging_path"
+      echo -e "При удалении базы данных ${RED}${folder}${WHITE} произошли ${RED}ошибки${WHITE}"
+      wait_for_enter
+      exit 1
+    fi
+    echo -e "База данных ${GREEN}${folder}${WHITE} удалена"
+  fi
+  if ! mariadb -u root -e "CREATE DATABASE \`${folder}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
+    rm -rf -- "$staging_path"
+    echo -e "Не удалось создать базу данных ${RED}${folder}${WHITE}."
+    wait_for_enter
+    exit 1
+  fi
+  echo -e "База mysql с именем ${GREEN}${folder}${WHITE} создана"
+  if ! mariadb -uroot -e "GRANT ALL PRIVILEGES ON \`${folder}\`.* TO '${user}'@'localhost'; FLUSH PRIVILEGES;"; then
+    rm -rf -- "$staging_path"
+    echo -e "Не удалось выдать права на базу данных пользователю ${RED}${user}${WHITE}."
+    wait_for_enter
+    exit 1
+  fi
+  echo -e "Права на базу выданы пользователю ${GREEN}${user}${WHITE}"
+
+  if ! rm -rf -- "$site_path" ||
+    ! mv -- "$staging_path" "$site_path"; then
+    rm -rf -- "$staging_path"
+    echo -e "${RED}Не удалось заменить файлы сайта.${WHITE}"
+    echo "База данных уже была пересоздана."
+    wait_for_enter
+    exit 1
+  fi
+
+  echo -e "Будет использована учетная запись ${GREEN}${admin_email}${WHITE}"
+  if ! (
+    cd "${site_path}" &&
+      runuser -u "$user" -- "$php_bin" install/cli_install.php install \
+        --username admin \
+        --email "$admin_email" \
+        --password "$admin_password" \
+        --http_server "$site_url/" \
+        --db_hostname localhost \
+        --db_username "$user" \
+        --db_password "$db_password" \
+        --db_database "$folder"
+  ); then
+    echo -e "${RED}Установка OpenCart завершилась с ошибкой.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+  if ! rm -rf -- "${site_path}/install"; then
+    echo -e "${RED}OpenCart установлен, но не удалось удалить папку install.${WHITE}"
+    wait_for_enter
+    exit 1
+  fi
+
+  echo
+  echo -e "${GREEN}Установка OpenCart завершена.${WHITE}"
+  wait_for_enter
+}
+
 install_wordpress() {
   local wp_cli="/usr/local/bin/wp"
   local wp_cli_tmp
@@ -660,8 +877,8 @@ if [[ -f "${site_path}/configuration.php" &&
   fi
   menu_actions+=("update_joomla")
 fi
-menu_items+=("Установка Joomla" "Установка WordPress" "Выйти")
-menu_actions+=("install_joomla" "install_wordpress" "exit")
+menu_items+=("Установка Joomla" "Установка WordPress" "Установка OpenCart" "Выйти")
+menu_actions+=("install_joomla" "install_wordpress" "install_opencart" "exit")
 
 vertical_menu "current" 2 0 30 "${menu_items[@]}"
 choice=$?
