@@ -178,11 +178,6 @@ Update() {
             exit 1
           fi
           cd /root/rish || exit 1
-          rm /etc/mc/mc.menu
-          cp templates/mc.menu /etc/mc/mc.menu
-          if ${LocalServer}; then
-            cat templates/mc.menu.local >> /etc/mc/mc.menu
-          fi
           chmod u+x ri.sh
           chmod u+x update.sh
           chmod u+x clonesite.sh

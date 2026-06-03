@@ -10,8 +10,6 @@ version_gt() {
 }
 #Вспомогательное внутри сценария
 LOG_FILE="/root/rish/logfile_rish_install.log"
-# Путь к конфигурационному файлу
-config_file="/root/rish/rish_config.sh"
 # Проверка на существование файла лога
 if [ ! -f "$LOG_FILE" ]; then
   echo "Отсутствует лог файл установки RISH. Установка была выполнена неверно."
@@ -28,8 +26,35 @@ mark_step_completed() {
   local step=$1
   echo "$step" >>"$LOG_FILE"
 }
-source $config_file
+source /root/rish/rish_config.sh
+LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
+
+UpdateMcMenu() {
+  local menu_template="/root/rish/templates/mc.menu"
+  local local_menu_template="/root/rish/templates/mc.menu.local"
+  local menu_target="/etc/mc/mc.menu"
+  local v
+
+  if [[ ! -f "$menu_template" ]]; then
+    echo -e "${YELLOW}Шаблон меню ${menu_template} не найден, пропускаю обновление MC menu.${WHITE}"
+    return 0
+  fi
+
+  cp "$menu_template" "$menu_target" || return 1
+
+  if [[ "$LocalServer" == "true" ]]; then
+    if [[ -f "$local_menu_template" ]]; then
+      cat "$local_menu_template" >> "$menu_target" || return 1
+    else
+      echo -e "${YELLOW}Локальный шаблон меню ${local_menu_template} не найден.${WHITE}"
+    fi
+  fi
+
+  v=$(tr -d '\r' < /root/rish/version | awk '{$1=$1;print}')
+  sed -i "s/{VER}/$v/g" "$menu_target" || return 1
+  echo -e "Меню Midnight Commander ${GREEN}обновлено${WHITE}."
+}
 
 # Удаление устаревших копий шаблонов из корня RISH
 if [[ -f /root/rish/templates/mc.menu ]]; then
@@ -43,6 +68,12 @@ for archive in /root/rish/phpMyAdmin-*-all-languages.tar.gz; do
     rm -f "$archive"
   fi
 done
+
+# Обновление меню Midnight Commander
+if ! UpdateMcMenu; then
+  echo -e "${RED}Ошибка:${WHITE} не удалось обновить меню Midnight Commander."
+  exit 1
+fi
 
 Install() {
   if ! rpm -q "$@" >/dev/null 2>&1; then
@@ -189,7 +220,7 @@ for php_version_dir in /etc/opt/remi/*; do
         username=$(basename "$conf_file" .conf)
         if ! grep -q "php_value\[upload_tmp_dir\]" "$conf_file"; then
             missing_tmp_param["$conf_file"]="/var/www/$username/tmp"
-            echo -e "${YELLOW}${username} ($(basename $php_version_dir))${WHITE}: отсутствует параметр php_value[upload_tmp_dir] "
+            echo -e "${YELLOW}${username} ($(basename "$php_version_dir"))${WHITE}: отсутствует параметр php_value[upload_tmp_dir] "
         fi
     done
 done
@@ -201,13 +232,14 @@ if [ ${#missing_tmp_param[@]} -gt 0 ]; then
   if vertical_menu "current" 2 0 5 "Да" "Нет"; then
       for dir in /var/www/*; do
         # Проверяем, что это директория и она не является cgi-bin или html
-        if [ -d "$dir" ] && [[ $(basename "$dir") != "cgi-bin" && $(basename "$dir") != "html" ]]; then
+        dir_name=$(basename "$dir")
+        if [ -d "$dir" ] && [[ "$dir_name" != "cgi-bin" && "$dir_name" != "html" ]]; then
             # Проверяем, существует ли папка tmp
             if [ ! -d "$dir/tmp" ]; then
                 # Если папки нет, создаем её и выводим сообщение
                 mkdir "$dir/tmp"
-                echo -e ${GREEN}$(basename "$dir")${WHITE}": папка tmp создана в $dir"
-                chown $(basename "$dir"):$(basename "$dir") "$dir/tmp"
+                echo -e "${GREEN}${dir_name}${WHITE}: папка tmp создана в $dir"
+                chown "${dir_name}:${dir_name}" "$dir/tmp"
             fi
         fi
       done
@@ -237,9 +269,9 @@ if [ ${#missing_tmp_param[@]} -gt 0 ]; then
                       fi
                       # Если параметра нет, добавляем его в конец файла.
                       echo "php_value[upload_tmp_dir] = /var/www/$username/tmp" >> "$conf_file"
-                      echo -e "${GREEN}${username} ($(basename $php_version_dir))${WHITE}: Добавлен параметр php_value[upload_tmp_dir] в $conf_file"
+                      echo -e "${GREEN}${username} ($(basename "$php_version_dir"))${WHITE}: Добавлен параметр php_value[upload_tmp_dir] в $conf_file"
                   else
-                      echo -e "${username} ($(basename $php_version_dir)): Параметр php_value[upload_tmp_dir] уже существует в $conf_file"
+                      echo -e "${username} ($(basename "$php_version_dir")): Параметр php_value[upload_tmp_dir] уже существует в $conf_file"
                   fi
               done
           fi
@@ -249,7 +281,7 @@ if [ ${#missing_tmp_param[@]} -gt 0 ]; then
 
       # Перезапуск всех версий
       for version in "${versions[@]}"; do
-        if /opt/remi/${version}/root/usr/sbin/php-fpm -t; then
+        if /opt/remi/"${version}"/root/usr/sbin/php-fpm -t; then
           if systemctl restart "${version}-php-fpm"; then
             echo -e "Версия ${GREEN}${version}${WHITE} корректно перезапущена."
             echo
@@ -294,8 +326,10 @@ check_dir() {
   local expected_perm="$2"
   local expected_owner="$3"
 
-  local actual_perm=$(stat -c "%a" "$dir")
-  local actual_owner=$(stat -c "%U:%G" "$dir")
+  local actual_perm
+  local actual_owner
+  actual_perm=$(stat -c "%a" "$dir")
+  actual_owner=$(stat -c "%U:%G" "$dir")
 
   if [[ "$actual_perm" != "$expected_perm" || "$actual_owner" != "$expected_owner" ]]; then
     if [[ "$dir" == "/var/www" ]]; then
@@ -422,10 +456,6 @@ if printf '%s\n' "$cron_jobs" | grep -Eq '^[[:space:]]*[^#].*/root/rish/backup\.
   echo "Переключитесь на новую систему бэкапов - в cron замените  backup.sh на backup2.sh."
   echo
 fi
-
-# Установка версии скрипта в меню
-v=$(tr -d '\r' < /root/rish/version | awk '{$1=$1;print}')
-sed -i "s/{VER}/$v/g" /etc/mc/mc.menu
 
 # Пост-апдейт проверка: в default-зоне закрыть сервис ispmanager, если он включён.
 
