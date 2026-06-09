@@ -14,6 +14,16 @@ fail() {
   exit 1
 }
 
+site_display_name() {
+  local name="$1"
+
+  if [[ "$name" =~ (xn\-\-) ]]; then
+    printf '%s (%s)' "$name" "$(idn2 -d "$name")"
+  else
+    printf '%s' "$name"
+  fi
+}
+
 directory="$1"
 site_name="$2"
 directory="${directory%/}"
@@ -28,6 +38,7 @@ user_name="${BASH_REMATCH[1]}"
 if [[ ! "$site_name" =~ ^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
   fail "Имя выбранной папки ${YELLOW}${site_name}${WHITE} не является корректным именем сайта. Удаление прервано."
 fi
+site_label="$(site_display_name "$site_name")"
 
 if [[ ! -d "$site_path" ]]; then
   fail "Это не является папкой сайта. Удаление прервано."
@@ -37,7 +48,7 @@ if [[ ! -f "/etc/httpd/conf.d/${site_name}.conf" ]]; then
   fail "Для выбранной папки ${YELLOW}${site_path}${WHITE} не найден Apache vhost ${YELLOW}/etc/httpd/conf.d/${site_name}.conf${WHITE}. Удаление прервано."
 fi
 
-echo -e "Вы действительно хотите удалить сайт ${LRED}${site_name}${WHITE}?"
+echo -e "Вы действительно хотите удалить сайт ${LRED}${site_label}${WHITE}?"
 vertical_menu "current" 2 0 5 "Нет" "Да"
 choice=$?
 if [[ "$choice" == "255" || "$choice" == "0" ]]; then
@@ -88,12 +99,12 @@ else
 fi
 
 if rm -R "$site_path"; then
-  echo -e "Папка сайта ${GREEN}${site_name}${WHITE} удалена"
+  echo -e "Папка сайта ${GREEN}${site_label}${WHITE} удалена"
 else
   trap - EXIT
   restore_vhosts
   apachectl configtest && systemctl reload httpd
-  fail "В процессе удаления папки сайта ${RED}${site_name}${WHITE} возникли проблемы. Apache vhost восстановлен."
+  fail "В процессе удаления папки сайта ${RED}${site_label}${WHITE} возникли проблемы. Apache vhost восстановлен."
 fi
 trap - EXIT
 rm -rf "$vhost_backup_dir"
@@ -121,9 +132,9 @@ fi
 if [[ -n "$(mariadb -uroot -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='${site_name}'" 2>&1)" ]]; then
   echo "У сайта есть база данных"
   if mariadb-admin -f -u root drop "$site_name"; then
-    echo -e "База данных ${GREEN}${site_name}${WHITE} удалена"
+    echo -e "База данных ${GREEN}${site_label}${WHITE} удалена"
   else
-    echo -e "При удалении базы данных ${RED}${site_name}${WHITE} произошли ${RED}ошибки${WHITE}"
+    echo -e "При удалении базы данных ${RED}${site_label}${WHITE} произошли ${RED}ошибки${WHITE}"
   fi
 fi
 
