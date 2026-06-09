@@ -718,6 +718,89 @@ print_kernel_default_fix_hint() {
   log "  ${YELLOW}uname -r${WHITE}"
 }
 
+print_kernel_saved_entry_fix_hint() {
+  local latest_kernel_id="$1"
+
+  log
+  log "${YELLOW}Чтобы GRUB загрузил уже выбранное последнее ядро:${WHITE}"
+  log "  ${YELLOW}grub2-set-default '${latest_kernel_id}'${WHITE}"
+  log "  ${YELLOW}reboot${WHITE}"
+  log
+  log "После перезагрузки проверьте версию ядра:"
+  log "  ${YELLOW}uname -r${WHITE}"
+}
+
+ensure_kernel_saved_entry() {
+  local latest_kernel="$1"
+  local latest_kernel_path="$2"
+  local latest_kernel_id
+  local saved_entry
+  local grub_default
+  local choice
+
+  if ! command -v grub2-editenv >/dev/null 2>&1 || ! command -v grub2-set-default >/dev/null 2>&1; then
+    log
+    log "${GREEN}Последнее ядро уже выбрано для следующей загрузки.${WHITE}"
+    log "Осталось перезагрузить сервер вручную:"
+    log "  ${YELLOW}reboot${WHITE}"
+    return 0
+  fi
+
+  grub_default="$(awk -F= '{key=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)} key == "GRUB_DEFAULT" {value=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); gsub(/^"|"$/, "", value); print value; exit}' /etc/default/grub 2>/dev/null)"
+  if [[ "$grub_default" != "saved" ]]; then
+    log
+    log "${GREEN}Последнее ядро уже выбрано для следующей загрузки.${WHITE}"
+    log "Осталось перезагрузить сервер вручную:"
+    log "  ${YELLOW}reboot${WHITE}"
+    return 0
+  fi
+
+  latest_kernel_id="$(grubby --info="$latest_kernel_path" 2>/dev/null | awk -F= '$1 == "id" {gsub(/^"|"$/, "", $2); print $2; exit}')"
+  saved_entry="$(grub2-editenv list 2>/dev/null | awk -F= '$1 == "saved_entry" {print $2; exit}')"
+
+  if [[ -z "$latest_kernel_id" || "$saved_entry" == "$latest_kernel_id" ]]; then
+    log
+    log "${GREEN}Последнее ядро уже выбрано для следующей загрузки.${WHITE}"
+    log "Осталось перезагрузить сервер вручную:"
+    log "  ${YELLOW}reboot${WHITE}"
+    return 0
+  fi
+
+  if [[ "$MODE" != "fix" ]]; then
+    log
+    log "${YELLOW}Последнее ядро выбрано через grubby, но GRUB saved_entry указывает не на него.${WHITE}"
+    print_kernel_saved_entry_fix_hint "$latest_kernel_id"
+    return 0
+  fi
+
+  if [[ "$ASSUME_YES" -ne 1 ]]; then
+    echo
+    echo -e "Сохранить в GRUB загрузку последнего ядра ${YELLOW}${latest_kernel}${WHITE}?"
+    echo "Будет выполнено:"
+    echo -e "  ${YELLOW}grub2-set-default '${latest_kernel_id}'${WHITE}"
+    echo
+    echo "Перезагрузку нужно будет сделать вручную."
+    vertical_menu "current" 2 0 13 "Да" "Нет"
+    choice=$?
+    if [[ "$choice" -ne 0 ]]; then
+      log "${YELLOW}Сохранение GRUB saved_entry пропущено.${WHITE}"
+      print_kernel_saved_entry_fix_hint "$latest_kernel_id"
+      return 1
+    fi
+  fi
+
+  if grub2-set-default "$latest_kernel_id"; then
+    log "${GREEN}GRUB saved_entry обновлен на последнее ядро.${WHITE}"
+    log "Теперь перезагрузите сервер вручную:"
+    log "  reboot"
+    return 0
+  fi
+
+  log "${RED}Не удалось обновить GRUB saved_entry.${WHITE}"
+  print_kernel_saved_entry_fix_hint "$latest_kernel_id"
+  return 1
+}
+
 fix_kernel_default() {
   local latest_kernel="$1"
   local latest_kernel_path="$2"
@@ -742,11 +825,8 @@ fix_kernel_default() {
 
   current_default_kernel="$(grubby --default-kernel 2>/dev/null)"
   if [[ "$current_default_kernel" == "$latest_kernel_path" ]]; then
-    log
-    log "${GREEN}Последнее ядро уже выбрано для следующей загрузки.${WHITE}"
-    log "Осталось перезагрузить сервер вручную:"
-    log "  ${YELLOW}reboot${WHITE}"
-    return 0
+    ensure_kernel_saved_entry "$latest_kernel" "$latest_kernel_path"
+    return $?
   fi
 
   if [[ "$MODE" != "fix" ]]; then
@@ -771,10 +851,8 @@ fix_kernel_default() {
   fi
 
   if grubby --set-default "$latest_kernel_path"; then
-    log "${GREEN}Последнее ядро выбрано для следующей загрузки.${WHITE}"
-    log "Теперь перезагрузите сервер вручную:"
-    log "  reboot"
-    return 0
+    ensure_kernel_saved_entry "$latest_kernel" "$latest_kernel_path"
+    return $?
   fi
 
   log "${RED}Не удалось выбрать ядро для следующей загрузки.${WHITE}"
