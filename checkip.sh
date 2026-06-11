@@ -104,6 +104,7 @@ CheckIP() {
   echo -e "Адрес этого сервера: ${GREEN}${myip}${WHITE}"
 
   echo "───────────────────────────────────────────"
+  local site_number=1
   for file in /var/www/*; do
     if [ -d "$file" ]; then
       local SiteUser="${file##*/}"
@@ -120,13 +121,15 @@ CheckIP() {
           local CONF_FILE="/etc/httpd/conf.d/${SiteName}.conf"
 
           if [ -f "$CONF_FILE" ]; then
+            printf " %3d │ " "$site_number"
+            ((site_number++))
             if curl -I http://"$SiteName" &>/dev/null; then
               local ip
               ip=$(ping -c 1 $SiteName | grep PING | awk '{ print $3 }')
               if [[ "$myip" == "$ip" ]]; then
-                printf "   ${GREEN}%-19s${WHITE}" "$ip"
+                printf "${GREEN}%-19s${WHITE}" "$ip"
               else
-                printf "   %-19s" "$ip"
+                printf "%-19s" "$ip"
               fi
               check_certificate "$SiteName"
               if [[ "$SiteName" =~ (xn\-\-) ]]
@@ -141,7 +144,7 @@ CheckIP() {
               check_certificate_expiration "$SiteName"
             else
               # Держим ту же сетку колонок, что и у "живой" строки: IP(19) + proto(8)
-              printf "   %-19s%-8s" " " " "
+              printf "%-19s%-8s" " " " "
               if [[ "$SiteName" =~ (xn\-\-) ]]
               then
                 unicode_domain=$(idn2 -d "$SiteName")
@@ -160,12 +163,12 @@ CheckIP() {
               printf " │ %15s" "-"
             fi
             PHP_VERSION=$(get_php_version "$SiteName")
-            printf " │ %s" "${PHP_VERSION}"
+            printf " │ %6s" "${PHP_VERSION}"
             FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
             printf " │ ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
             echo
           else
-            printf "   %-19s" " "
+            printf "     │ %-19s" " "
             input_variable="папка ${RED}${SiteName}${WHITE} не сайт"
 
             # Убираем управляющие символы для подсчета длины строки
