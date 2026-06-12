@@ -79,7 +79,6 @@ export RISH_HOME=${_script_dir}
 cd ${RISH_HOME} || exit
 
 source windows.sh
-source clonesite.sh
 source checkip.sh
 source php_multi_install.sh
 source php_helpers.sh
@@ -900,16 +899,28 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка часового пояса для Москвы."
+  STEP="Установка часового пояса."
   if ! check_step "$STEP"; then
     Up
     echo -e "Устанавливаем ${GREEN}время${WHITE}:"
     Down
-    echo -e "Ставим ${GREEN}Московское время${WHITE}?"
-    if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-      mv /etc/localtime /etc/localtime.bak
-      ln -s /usr/share/zoneinfo/Europe/Moscow /etc/localtime
+    current_timezone="$(readlink -f /etc/localtime 2>/dev/null)"
+    current_timezone="${current_timezone#/usr/share/zoneinfo/}"
+    if [[ -z "$current_timezone" || "$current_timezone" == "/etc/localtime" ]]; then
+      current_timezone="$(timedatectl show -p Timezone --value 2>/dev/null)"
     fi
+    [[ -n "$current_timezone" ]] || current_timezone="не удалось определить"
+
+    echo -e "Выберите часовой пояс:"
+    vertical_menu "current" 2 0 45 "Москва (Europe/Moscow)" "Астана, Казахстан (Asia/Almaty)" "Оставить текущий (${current_timezone})"
+    case "$?" in
+      0)
+        ln -sfn /usr/share/zoneinfo/Europe/Moscow /etc/localtime
+        ;;
+      1)
+        ln -sfn /usr/share/zoneinfo/Asia/Almaty /etc/localtime
+        ;;
+    esac
     Up
     date
     Down
@@ -1316,8 +1327,6 @@ else
   options=("Создать пользователя"
     "Удалить пользователя"
     "Удалить базу данных пользователя"
-    "Клонирование сайта"
-    "Клонирование только базы данных сайта"
     "Установка новых версий PHP"
     "Запретить авторизацию по паролю по SSH"
     "Выйти")
@@ -1387,12 +1396,6 @@ else
       fi
       ;;
     3)
-      CloneSite
-      ;;
-    4)
-      CloneSite "Mysql"
-      ;;
-    5)
       echo -e "Выбор и установка нужных версий ${GREEN}PHP${WHITE}"
       clear
       # Рисуем разделительную линию
@@ -1409,7 +1412,7 @@ else
       repl "─" $((${columns}))
       cursor_to $((${rim} + 2)) 1
       ;;
-    6)
+    4)
       echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
         echo -e -n "${CURSORUP}"

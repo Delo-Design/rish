@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 source /root/rish/windows.sh
+source /root/rish/scripts/site_helpers.sh
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -313,62 +314,6 @@ function archive_file() {
   echo -e "Создаем архив файла ${GREEN}${filename}${WHITE}..."
   gzip -c "$filepath" > "$archive_name" && \
   echo -e "Архив файла ${GREEN}${archive_name}${WHITE} создан."
-}
-
-function fix_joomla_configuration() {
-  local site_path="$1"     # /var/www/siteuser/www
-  local site_name="$2"     # example.com
-
-  local config_file="${site_path}/${site_name}/configuration.php"
-  local site_full_path="${site_path}/${site_name}"
-
-  echo -e "Настройка файла ${GREEN}configuration.php${WHITE}..."
-
-  local user="${site_path#/var/www/}"
-  user="${user%%/*}"
-
-  local pass_file="/home/${user}/.pass.txt"
-  local MYSQLPASS=""
-
-  if [[ -f "$pass_file" ]]; then
-    MYSQLPASS=$(awk '/^Database:/ { print $2 }' "$pass_file")
-  else
-    echo -e "${RED}Файл с паролем базы данных не найден: ${WHITE}$pass_file"
-    return
-  fi
-
-  sed -i "s|\$password.*$|\$password = '${MYSQLPASS}';|" "$config_file"
-  echo -e "Пароль базы данных обновлён."
-
-  sed -i "s|\$user.*$|\$user = '${user}';|" "$config_file"
-  echo -e "Имя пользователя БД: ${GREEN}${user}${WHITE}"
-
-  sed -i "s|\$db .*$|\$db = '${site_name}';|" "$config_file"
-  echo -e "Имя базы данных: ${GREEN}${site_name}${WHITE}"
-
-  sed -i "s|\$log_path .*$|\$log_path = '${site_full_path}/administrator/logs';|" "$config_file"
-  echo -e "log_path: ${GREEN}${site_full_path}/administrator/logs${WHITE}"
-
-  sed -i "s|\$tmp_path .*$|\$tmp_path = '${site_full_path}/tmp';|" "$config_file"
-  echo -e "tmp_path: ${GREEN}${site_full_path}/tmp${WHITE}"
-
-  sed -i "s|\$host.*$|\$host = 'localhost';|" "$config_file"
-  echo -e "Хост базы данных установлен в: ${GREEN}localhost${WHITE}"
-}
-
-
-function fix_site_configuration() {
-  local site_path="$1"      # /var/www/siteuser/www
-  local site_name="$2"      # example.com
-  local full_path="${site_path}/${site_name}"
-
-  if [[ -f "$full_path/configuration.php" ]]; then
-    echo
-    echo -e "CMS определена как ${GREEN}Joomla${WHITE} — выполняем настройку..."
-    fix_joomla_configuration "$site_path" "$site_name"
-    return
-  fi
-
 }
 
 function clean_directory_contents() {

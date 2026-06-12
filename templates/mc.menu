@@ -207,3 +207,6 @@ Z  Статистика сайтов сервера
 
 B  Бэкaпы (peзepвноe кoпиpoвaниe)
     bash /root/rish/backup2.sh
+
+c  Клонирование сайта
+  bash /root/rish/scripts/clonesite.sh
