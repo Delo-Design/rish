@@ -105,54 +105,8 @@ i       IP адрес сервера
 	read
 
 + d /var/www/ & t d
-j  Установка/управление CMS
+j  Установка/управление CMS/PMA
   bash /root/rish/scripts/cms_install.sh "%d" "%f"
-
-+ d /var/www/ & t d
-p       Настроить Joomla в папке
-  source /root/rish/windows.sh
-	GREEN='\033[0;32m'
-	RED='\033[0;31m'
-	LRED='\033[1;31m'
-	WHITE='\033[0m'
-	r=%d
-	r=${r#/var/www/}
-	r=${r%/www*}
-	if [[ ${r} == "html" ]]
-	then
-		r="root"
-	else
-		MYSQLPASS=`cat /home/${r}/.pass.txt | grep Database | awk '{ print $2}'`
-	fi
-	if [[ -f "%d/%f/configuration.php" ]]
-	then
-		echo
-		echo -e "Сайт распознан как созданный на основе ${GREEN}Joomla${WHITE}."
-		echo -e "Вы хотите внести изменения в файл ${GREEN}configuration.php${WHITE}, чтобы сайт работал корректно?"
-    if vertical_menu "current" 2 0 5 "Да" "Нет"
-    then
-      sed -i "s/\$password.*$/\$password = '${MYSQLPASS}';/" %d/%f/configuration.php
-      echo "Новый пароль внесен в configuration.php"
-      sed -i "s/\$user.*$/\$user = '${r}';/" %d/%f/configuration.php
-      echo -e "Имя пользователя базы данных установлено ${GREEN}${r}${WHITE}"
-      sed -i "s/\$db .*$/\$db = '%f';/" %d/%f/configuration.php
-      echo -e "имя базы данных ${GREEN}%f${WHITE} установлено в configuration.php"
-      sed -i "s&\$log_path .*$&\$log_path = '%d\/%f\/administrator\/logs';&" %d/%f/configuration.php
-      echo -e "Путь к папке logs скорректирован ${GREEN}%d/%f/administrator/logs${WHITE}"
-      sed -i "s&\$tmp_path .*$&\$tmp_path = '%d\/%f\/tmp';&" %d/%f/configuration.php
-      echo -e "Путь к папке tmp скорректирован ${GREEN}%d/%f/tmp${WHITE}"
-      sed -i "s&\$host .*$&\$host = 'localhost';&" %d/%f/configuration.php
-      echo -e "Хост базы данных установлен в ${GREEN}localhost${WHITE}"
-      echo
-    else
-      echo -e "Никаких изменений в файл ${GREEN}configuration.php${WHITE} не вносилось."
-		fi
-	else
-		echo
-		echo -e "Сайт не имеет файла configuration.php"
-		echo
-	fi
-  vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 + d /var/www/ & t d
 9       Нacтpoить пpaвa дocтyпa кaтaлoгa
@@ -186,10 +140,6 @@ p       Настроить Joomla в папке
 		echo -e "Владельцем всех файлов установлен ${GREEN}${r}${WHITE}"
 	fi
 	vertical_menu "current" 2 0 5 "Нажмите Enter"
-
-+ d /var/www/ & t d
-s       Установка/обновление phpmyadmin
-  bash /root/rish/phpmyadmin_install.sh "%f" "%d"
 
 R  Управление сервером
 	r=$( pwd )

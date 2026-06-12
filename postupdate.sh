@@ -63,6 +63,16 @@ fi
 if [[ -f /root/rish/templates/mc.menu.local ]]; then
   rm -f /root/rish/mc.menu.local
 fi
+if [[ -f /root/rish/phpmyadmin_install.sh ]]; then
+  if [[ -f /root/rish/scripts/phpmyadmin_install.sh ]]; then
+    rm -f /root/rish/phpmyadmin_install.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/phpmyadmin_install.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
 for archive in /root/rish/phpMyAdmin-*-all-languages.tar.gz; do
   if [[ -f "$archive" && -f "/root/rish/templates/$(basename "$archive")" ]]; then
     rm -f "$archive"

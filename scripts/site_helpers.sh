@@ -88,6 +88,7 @@ function import_database_file() {
 function fix_joomla_configuration() {
   local site_path="$1"
   local site_name="$2"
+  local db_name="${3:-$site_name}"
 
   local config_file="${site_path}/${site_name}/configuration.php"
   local site_full_path="${site_path}/${site_name}"
@@ -113,8 +114,8 @@ function fix_joomla_configuration() {
   sed -i "s|\$user.*$|\$user = '${user}';|" "$config_file"
   echo -e "Имя пользователя БД: ${GREEN}${user}${WHITE}"
 
-  sed -i "s|\$db .*$|\$db = '${site_name}';|" "$config_file"
-  echo -e "Имя базы данных: ${GREEN}${site_name}${WHITE}"
+  sed -i "s|\$db .*$|\$db = '${db_name}';|" "$config_file"
+  echo -e "Имя базы данных: ${GREEN}${db_name}${WHITE}"
 
   sed -i "s|\$log_path .*$|\$log_path = '${site_full_path}/administrator/logs';|" "$config_file"
   echo -e "log_path: ${GREEN}${site_full_path}/administrator/logs${WHITE}"
@@ -124,6 +125,9 @@ function fix_joomla_configuration() {
 
   sed -i "s|\$host.*$|\$host = 'localhost';|" "$config_file"
   echo -e "Хост базы данных установлен в: ${GREEN}localhost${WHITE}"
+
+  sed -i "s|\$live_site .*$|\$live_site = '';|" "$config_file"
+  echo -e "${YELLOW}live_site${WHITE} сброшен."
 }
 
 function fix_site_configuration() {

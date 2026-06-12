@@ -7,12 +7,17 @@ WHITE='\033[0m'
 LRED='\033[1;31m'
 
 source /root/rish/windows.sh
+source /root/rish/scripts/site_helpers.sh
 
 directory="$1"
 folder="$2"
 site_root_path="${directory}/${folder}"
 site_path=""
 site_name="${folder}"
+site_cms=""
+joomla_version=""
+site_phpmyadmin_path=""
+site_phpmyadmin_version=""
 
 wait_for_enter() {
   vertical_menu "current" 2 0 5 "Нажмите Enter"
@@ -810,6 +815,85 @@ install_wordpress() {
   wait_for_enter
 }
 
+install_phpmyadmin() {
+  bash /root/rish/scripts/phpmyadmin_install.sh "$folder" "$directory"
+}
+
+dir_is_phpmyadmin() {
+  local target="$1"
+
+  [[ -f "${target}/README" && -f "${target}/config.sample.inc.php" ]]
+}
+
+phpmyadmin_version() {
+  local target="$1"
+  local version
+
+  version="$(sed -n 's/^Version \(.*\)$/\1/p' "${target}/README" | head -n 1)"
+  if [[ -n "$version" ]]; then
+    printf '%s' "$version"
+  else
+    printf 'unknown version'
+  fi
+}
+
+detect_phpmyadmin_installations() {
+  local candidate
+  local relative_path
+  local version
+
+  while IFS= read -r candidate; do
+    candidate="${candidate%/config.sample.inc.php}"
+    dir_is_phpmyadmin "$candidate" || continue
+
+    if [[ "$candidate" == "$site_path" ]]; then
+      relative_path="корень сайта"
+    else
+      relative_path="${candidate#${site_path}/}"
+    fi
+
+    version="$(phpmyadmin_version "$candidate")"
+    site_phpmyadmin_version="$version"
+    site_phpmyadmin_path="$relative_path"
+    return 0
+  done < <(
+    find "$site_path" \
+      -maxdepth 4 \
+      \( -path "${site_path}/cache" -o \
+         -path "${site_path}/tmp" -o \
+         -path "${site_path}/administrator/cache" -o \
+         -path "${site_path}/vendor" -o \
+         -path "${site_path}/node_modules" -o \
+         -path "${site_path}/wp-content/uploads" \) -prune -o \
+      -type f -name config.sample.inc.php -print 2>/dev/null
+  )
+  return 1
+}
+
+fix_joomla_site_configuration() {
+  local config_parent="${site_path%/*}"
+  local config_name="${site_path##*/}"
+
+  if [[ ! -f "${site_path}/configuration.php" ]]; then
+    echo
+    echo -e "В выбранной папке нет файла ${GREEN}configuration.php${WHITE}."
+    echo "Папка не выглядит как сайт Joomla."
+    wait_for_enter
+    return
+  fi
+
+  echo
+  echo -e "Сайт распознан как созданный на основе ${GREEN}Joomla${WHITE}."
+  echo -e "Вы хотите внести изменения в файл ${GREEN}configuration.php${WHITE}, чтобы сайт работал корректно?"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+    fix_joomla_configuration "$config_parent" "$config_name" "$folder"
+    echo
+  else
+    echo -e "Никаких изменений в файл ${GREEN}configuration.php${WHITE} не вносилось."
+  fi
+  wait_for_enter
+}
+
 clear
 
 if [[ -z "$directory" || -z "$folder" || "$folder" == "." || "$folder" == ".." || ! -d "$site_root_path" ]]; then
@@ -847,22 +931,6 @@ if [[ "$site_path" != "$site_root_path" && "$site_path" != "$site_root_path/"* ]
 fi
 
 php_bin=$(get_site_php_bin)
-if [[ -n "$php_bin" ]]; then
-  echo -e "Установка/управление CMS для сайта: ${GREEN}${site_name}${WHITE}"
-  echo
-  echo -e "DocumentRoot сайта: ${GREEN}${site_path}${WHITE}"
-  echo -e "Для сайта будет использован PHP: ${GREEN}${php_bin}${WHITE}"
-else
-  echo -e "Не удалось определить PHP сайта из конфигурации ${RED}Apache${WHITE}."
-  echo "Проверьте vhost выбранного сайта и наличие /bin/phpXX."
-  wait_for_enter
-  exit 1
-fi
-
-echo
-echo "Выберите CMS:"
-menu_items=()
-menu_actions=()
 if [[ -f "${site_path}/configuration.php" &&
   -f "${site_path}/administrator/manifests/files/joomla.xml" &&
   -f "${site_path}/cli/joomla.php" ]]; then
@@ -872,14 +940,45 @@ if [[ -f "${site_path}/configuration.php" &&
       head -n 1
   )
   if [[ -n "$joomla_version" ]]; then
-    menu_items+=("Обновление Joomla ${joomla_version}")
+    site_cms="Joomla ${joomla_version}"
   else
-    menu_items+=("Обновление Joomla")
+    site_cms="Joomla"
   fi
+fi
+if [[ -n "$php_bin" ]]; then
+  echo -e "Установка/управление CMS/phpMyAdmin для сайта: ${GREEN}${site_name}${WHITE}"
+  echo
+  echo -e "DocumentRoot сайта: ${GREEN}${site_path}${WHITE}"
+  echo -e "PHP сайта: ${GREEN}${php_bin}${WHITE}"
+  if [[ -n "$site_cms" ]]; then
+    echo -e "CMS сайта: ${GREEN}${site_cms}${WHITE}"
+  fi
+  if detect_phpmyadmin_installations; then
+    echo -e "phpMyAdmin: ${GREEN}${site_phpmyadmin_version}${WHITE} (установлен в ${site_phpmyadmin_path})"
+  fi
+else
+  echo -e "Не удалось определить PHP сайта из конфигурации ${RED}Apache${WHITE}."
+  echo "Проверьте vhost выбранного сайта и наличие /bin/phpXX."
+  wait_for_enter
+  exit 1
+fi
+
+echo
+echo "Выберите действие:"
+menu_items=()
+menu_actions=()
+if [[ -f "${site_path}/configuration.php" &&
+  -f "${site_path}/administrator/manifests/files/joomla.xml" &&
+  -f "${site_path}/cli/joomla.php" ]]; then
+  menu_items+=("Обновление Joomla")
   menu_actions+=("update_joomla")
 fi
-menu_items+=("Установка Joomla" "Установка WordPress" "Установка OpenCart" "Выйти")
-menu_actions+=("install_joomla" "install_wordpress" "install_opencart" "exit")
+if [[ -f "${site_path}/configuration.php" ]]; then
+  menu_items+=("Настроить Joomla configuration.php")
+  menu_actions+=("fix_joomla_site_configuration")
+fi
+menu_items+=("Установка Joomla" "Установка WordPress" "Установка OpenCart" "Установка/обновление phpMyAdmin" "Выйти")
+menu_actions+=("install_joomla" "install_wordpress" "install_opencart" "install_phpmyadmin" "exit")
 
 vertical_menu "current" 2 0 30 "${menu_items[@]}"
 choice=$?
