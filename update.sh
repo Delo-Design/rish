@@ -77,7 +77,6 @@ Update() {
           cd /root/rish || exit 1
           chmod u+x ri.sh
           chmod u+x update.sh
-          chmod u+x clonesite.sh
           chmod u+x backup2.sh
           chmod u+x rish_check.sh
           echo

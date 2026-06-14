@@ -1,2 +1,2 @@
 h  Домены Keenetic
-  bash /root/rish/local_router.sh
+  bash /root/rish/scripts/local_router.sh

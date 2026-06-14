@@ -113,6 +113,16 @@ if [[ -f /root/rish/mariadb_restart.sh ]]; then
     exit 1
   fi
 fi
+if [[ -f /root/rish/local_router.sh ]]; then
+  if [[ -f /root/rish/scripts/local_router.sh ]]; then
+    rm -f /root/rish/local_router.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/local_router.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
 if [[ -f /root/rish/clonesite.sh ]]; then
   if [[ -f /root/rish/scripts/clonesite.sh ]]; then
     rm -f /root/rish/clonesite.sh
