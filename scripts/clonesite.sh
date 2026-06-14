@@ -99,6 +99,7 @@ function select_clone_server() {
     mapfile -t servers < <(awk '$1 == "Host" && $2 != "*" { print $2 }' "$HOME/.ssh/config" | sort)
     count="${#servers[@]}"
     servers+=("Добавить сервер")
+    servers+=("Выйти")
 
     echo "Выберите сервер-источник:"
     vertical_menu "current" 2 0 40 "${servers[@]}"
@@ -109,6 +110,9 @@ function select_clone_server() {
     if (( choice < count )); then
       CLONE_SOURCE_HOST="${servers[$choice]}"
       return 0
+    fi
+    if (( choice == count + 1 )); then
+      return 1
     fi
     add_clone_server
   done
@@ -139,6 +143,21 @@ function format_document_root_label() {
   else
     printf '/%s' "${document_root#/}"
   fi
+}
+
+function format_site_name_label() {
+  local name="$1"
+  local decoded_name
+
+  if [[ "$name" =~ (^|\.)xn-- ]]; then
+    decoded_name="$(idn2 -d "$name" 2>/dev/null)"
+    if [[ -n "$decoded_name" && "$decoded_name" != "$name" ]]; then
+      printf '%s (%s)' "$name" "$decoded_name"
+      return 0
+    fi
+  fi
+
+  printf '%s' "$name"
 }
 
 function format_php_label() {
@@ -509,10 +528,6 @@ RISH_REMOTE_CLONE_INSPECT
 
   echo
   print_source_summary_box
-  if [[ -n "$CLONE_REMOTE_SSL_FILES" ]]; then
-    echo -e "На источнике найдены SSL-ссылки: ${YELLOW}${CLONE_REMOTE_SSL_FILES}${WHITE}"
-    echo "Автоматический перенос SSL в первом этапе не выполняется."
-  fi
 }
 
 function default_local_site_name() {
@@ -551,20 +566,35 @@ function select_local_user() {
 
 function confirm_local_site_name() {
   local proposed="$1"
-  local site_name
+  local site_name="$proposed"
 
-  echo -e "${WHITE}Подтвердите имя сайта для клонирования:${GREEN}"
-  read -r -e -i "$proposed" site_name
-  echo -e "${WHITE}"
+  while true; do
+    echo -e "${WHITE}Подтвердите имя сайта для клонирования:${GREEN}"
+    read -r -e -i "$site_name" site_name
+    echo -e "${WHITE}"
 
-  if [[ -z "$site_name" ]]; then
-    return 1
-  fi
-  site_name="${site_name,,}"
-  if ! validate_site_name "$site_name"; then
+    if [[ -z "$site_name" ]]; then
+      return 1
+    fi
+    site_name="${site_name,,}"
+
+    if echo "$site_name" | grep -qP '[А-Яа-яЁё]'; then
+      local punycode_input
+
+      punycode_input="$(idn2 --quiet "$site_name" 2>/dev/null)"
+      if [[ -n "$punycode_input" && "$punycode_input" != "$site_name" ]]; then
+        echo -e "${GREEN}${site_name}${WHITE}  --->  ${GREEN}${punycode_input}${WHITE}"
+        site_name="$punycode_input"
+      fi
+    fi
+
+    if validate_site_name "$site_name"; then
+      break
+    fi
+
     echo -e "Имя сайта ${RED}${site_name}${WHITE} некорректное."
-    return 1
-  fi
+    echo -e "Введите корректное имя сайта или очистите строку и нажмите ${YELLOW}Enter${WHITE} для выхода."
+  done
 
   CLONE_LOCAL_SITE="$site_name"
 }
@@ -573,7 +603,35 @@ function is_directory_empty() {
   local directory="$1"
 
   [[ -d "$directory" ]] || return 0
-  [[ -z "$(find "$directory" -mindepth 1 \( -type f -o -type l \) -print -quit 2>/dev/null)" ]]
+  [[ -z "$(find "$directory" -mindepth 1 -print -quit 2>/dev/null)" ]]
+}
+
+function handle_non_empty_target_site_root() {
+  local site_root="$1"
+  local target_action
+
+  echo -e "Целевая папка сайта уже содержит файлы: ${RED}${site_root}${WHITE}"
+  vertical_menu "current" 2 0 44 \
+    "Очистить папку и продолжить клонирование" \
+    "Не очищать папку и перезаписать содержимое" \
+    "Выйти"
+  target_action=$?
+
+  case "$target_action" in
+    0)
+      if ! find "$site_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; then
+        echo -e "Не удалось очистить папку ${RED}${site_root}${WHITE}."
+        return 1
+      fi
+      CLONE_TARGET_CLEARED=1
+      ;;
+    1)
+      ;;
+    *)
+      echo "Перенос остановлен."
+      return 1
+      ;;
+  esac
 }
 
 function get_local_vhost_document_root() {
@@ -590,6 +648,45 @@ function get_local_vhost_php_version() {
 
   [[ -f "$conf_file" ]] || return 1
   grep -Eo 'php[0-9]{2}' "$conf_file" | head -n 1
+}
+
+function check_existing_vhost_php_available() {
+  local site_name="$1"
+  local php_label
+  local php_fpm_bin
+
+  php_label="$(get_local_vhost_php_version "$site_name")"
+  if [[ -z "$php_label" ]]; then
+    echo -e "Версию PHP в существующем vhost ${YELLOW}${site_name}.conf${WHITE} определить не удалось."
+    return 1
+  fi
+
+  php_fpm_bin="/opt/remi/${php_label}/root/usr/sbin/php-fpm"
+  if [[ ! -x "$php_fpm_bin" ]]; then
+    echo -e "Существующий сайт ${GREEN}$(format_site_name_label "$site_name")${WHITE} использует ${YELLOW}${php_label}${WHITE}, но PHP-FPM ${RED}${php_label}${WHITE} не установлен."
+    echo -e "Установите ${YELLOW}${php_label}${WHITE} или измените версию PHP сайта перед клонированием."
+    return 1
+  fi
+}
+
+function offer_local_self_signed_ssl() {
+  local site_name="$1"
+
+  echo
+  echo -e "Создать самоподписанный ${GREEN}SSL${WHITE} сертификат для локального сайта ${GREEN}$(format_site_name_label "$site_name")${WHITE}?"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+    # shellcheck disable=SC1091
+    if ! source "${RISH_HOME}/certs.sh"; then
+      echo -e "Не удалось подключить скрипт: ${RED}${RISH_HOME}/certs.sh${WHITE}"
+      return 1
+    fi
+    if ! create_self_signed_cert_for_site "$site_name"; then
+      echo -e "Клонирование сайта завершено, но самоподписанный SSL-сертификат ${RED}не создан${WHITE}."
+      return 1
+    fi
+  else
+    echo "Self-signed SSL не создан."
+  fi
 }
 
 function can_use_existing_target_site() {
@@ -616,10 +713,10 @@ function can_use_existing_target_site() {
     return 1
   fi
 
+  check_existing_vhost_php_available "$site_name" || return 1
+
   if ! is_directory_empty "$site_root"; then
-    echo -e "Целевая папка сайта уже содержит файлы: ${RED}${site_root}${WHITE}"
-    echo "Политика первого этапа: не перезаписывать существующие файлы сайта."
-    return 1
+    handle_non_empty_target_site_root "$site_root" || return 1
   fi
 
   if [[ ! -d "$site_root" ]]; then
@@ -630,8 +727,6 @@ function can_use_existing_target_site() {
     fi
   fi
 
-  echo -e "Существующий vhost ${GREEN}${conf_file}${WHITE} указывает на ожидаемый DocumentRoot."
-  echo "Используем существующий сайт и продолжаем перенос файлов."
 }
 
 function select_clone_php_version() {
@@ -695,9 +790,11 @@ function copy_site_files() {
   local size_bytes
   local size_mb
   local remote_root_quoted
+  local local_site_name
 
   echo
-  echo -e "Переносим файлы сайта в site_root: ${GREEN}${local_site_root}${WHITE}"
+  local_site_name="$(basename -- "$local_site_root")"
+  echo -e "Переносим файлы сайта в site_root: ${GREEN}${local_site_name}${WHITE}"
   remote_root_quoted="$(remote_shell_quote "$remote_site_root")"
 
   size_bytes="$(ssh "$host" "du -sb ${remote_root_quoted} 2>/dev/null | awk '{print \$1}'")"
@@ -708,7 +805,6 @@ function copy_site_files() {
     echo -e "Размер исходного сайта ${YELLOW}определить не удалось${WHITE}."
   fi
 
-  echo "Передача выполняется tar-потоком через SSH со сжатием."
   if command -v pv >/dev/null 2>&1 && [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
     if ! (set -o pipefail; ssh -C "$host" "tar -C ${remote_root_quoted} -cf - ." | pv -s "$size_bytes" | tar -C "$local_site_root" -xf -); then
       echo -e "Ошибка при переносе файлов сайта tar-потоком."
@@ -741,7 +837,7 @@ function clone_database() {
   local remote_dump_command
 
   echo
-  echo -e "Переносим базу данных ${GREEN}${remote_db}${WHITE} -> ${GREEN}${local_db}${WHITE}."
+  echo -e "Переносим базу данных ${GREEN}${remote_db}${WHITE} (${YELLOW}${host}${WHITE}) -> ${GREEN}${local_db}${WHITE}."
   remote_dump_command="mariadb-dump --extended-insert --single-transaction --quick --routines --events --triggers --quote-names --order-by-primary --hex-blob $(remote_shell_quote "$remote_db") | sed '1{/999999.*sandbox/d}' | sed '/NOTE_VERBOSITY/d' | gzip -c"
   if ! ssh "$host" "bash -o pipefail -c $(remote_shell_quote "$remote_dump_command")" > "$dump_file"; then
     echo -e "Не удалось получить дамп базы ${RED}${remote_db}${WHITE} с источника."
@@ -873,7 +969,7 @@ function clone_site_prepare_target() {
   fi
 
   if [[ -e "/etc/httpd/conf.d/${CLONE_LOCAL_SITE}.conf" ]]; then
-    echo -e "Целевой vhost уже существует: ${YELLOW}/etc/httpd/conf.d/${CLONE_LOCAL_SITE}.conf${WHITE}"
+    echo -e "Целевой vhost уже существует: ${YELLOW}${CLONE_LOCAL_SITE}.conf${WHITE}"
     if [[ "${CLONE_REUSE_EXISTING_TARGET:-1}" != "1" ]]; then
       echo "Политика core запрещает использовать существующий vhost."
       return 1
@@ -882,19 +978,11 @@ function clone_site_prepare_target() {
       CLONE_USE_EXISTING_TARGET=1
       CLONE_TARGET_PHP_LABEL="$(get_local_vhost_php_version "$CLONE_LOCAL_SITE")"
       CLONE_TARGET_PHP_FULL_VERSION="$(get_local_php_full_version "$CLONE_TARGET_PHP_LABEL")"
-      if [[ -n "$CLONE_TARGET_PHP_LABEL" ]]; then
-        echo -e "Существующий vhost использует PHP: ${GREEN}${CLONE_TARGET_PHP_LABEL}${WHITE}"
-      else
-        echo -e "Версию PHP в существующем vhost ${YELLOW}определить не удалось${WHITE}."
-      fi
     else
-      echo "Перенос остановлен."
       return 1
     fi
   elif [[ -d "$CLONE_LOCAL_SITE_ROOT" ]] && ! is_directory_empty "$CLONE_LOCAL_SITE_ROOT"; then
-    echo -e "Целевая папка сайта уже содержит файлы: ${RED}${CLONE_LOCAL_SITE_ROOT}${WHITE}"
-    echo "Политика первого этапа: не перезаписывать существующие файлы сайта."
-    return 1
+    handle_non_empty_target_site_root "$CLONE_LOCAL_SITE_ROOT" || return 1
   elif [[ "${CLONE_CREATE_SITE:-1}" != "1" ]]; then
     echo -e "Целевой vhost ${RED}/etc/httpd/conf.d/${CLONE_LOCAL_SITE}.conf${WHITE} не найден."
     echo "Политика core запрещает создавать новый сайт."
@@ -909,6 +997,8 @@ function clone_site_create_or_reuse_target() {
     return 0
   fi
 
+  CLONE_TARGET_CREATED=0
+
   if [[ "$CLONE_USE_EXISTING_TARGET" -eq 1 ]]; then
     return 0
   fi
@@ -919,11 +1009,12 @@ function clone_site_create_or_reuse_target() {
   fi
 
   echo
-  echo -e "Создаем целевой сайт через ${GREEN}create_site_core${WHITE}."
+  echo -e "Создаем сайт ${GREEN}$(format_site_name_label "$CLONE_LOCAL_SITE")${WHITE}."
   if ! create_site_core "$CLONE_LOCAL_SITE" "$CLONE_LOCAL_PATH" "$CLONE_LOCAL_PHP" "$CLONE_REMOTE_DOCUMENT_ROOT_REL" "$CLONE_PHP_MODE" "$CLONE_RESTART_PHP_FPM" "$CLONE_RELOAD_APACHE" "$CLONE_UPDATE_HOTLIST"; then
     echo -e "Создание целевого сайта ${RED}${CLONE_LOCAL_SITE}${WHITE} не удалось. Перенос файлов не выполнялся."
     return 1
   fi
+  CLONE_TARGET_CREATED=1
 }
 
 function clone_site_core() {
@@ -941,6 +1032,10 @@ function clone_site_core() {
   : "${CLONE_RELOAD_APACHE:=1}"
   : "${CLONE_UPDATE_HOTLIST:=1}"
   : "${CLONE_TARGET_PREPARED:=0}"
+  if [[ "$CLONE_TARGET_PREPARED" != "1" ]]; then
+    CLONE_TARGET_CREATED=0
+    CLONE_TARGET_CLEARED=0
+  fi
 
   target_prepared="$CLONE_TARGET_PREPARED"
   CLONE_TARGET_PREPARED=0
@@ -994,13 +1089,10 @@ function clone_site_core() {
     fix_site_configuration "$CLONE_LOCAL_PATH" "$CLONE_LOCAL_SITE"
 
     if [[ "${LocalServer:-false}" == "true" ]]; then
-      echo
-      echo "Self-signed SSL для локального сайта в первом этапе не создается автоматически."
-      echo "Его лучше вынести в отдельную функцию после стабилизации базового переноса."
+      offer_local_self_signed_ssl "$CLONE_LOCAL_SITE" || rc=1
     elif [[ -n "$CLONE_REMOTE_SSL_FILES" ]]; then
       echo
-      echo "Server -> server: SSL сертификаты не переносились автоматически."
-      echo -e "Проверьте сертификаты/ключи источника: ${YELLOW}${CLONE_REMOTE_SSL_FILES}${WHITE}"
+      echo "SSL сертификаты с источника не переносились автоматически."
     fi
   fi
 
@@ -1013,7 +1105,15 @@ function clone_site_core() {
   if [[ "$rc" -eq 0 ]]; then
     echo
     if [[ "$CLONE_COPY_FILES" == "1" ]]; then
-      echo -e "Клонирование сайта ${GREEN}${CLONE_LOCAL_SITE}${WHITE} завершено."
+      if [[ "$CLONE_TARGET_CREATED" == "1" ]]; then
+        echo -e "Создан сайт ${GREEN}$(format_site_name_label "$CLONE_LOCAL_SITE")${WHITE} (vhost: ${YELLOW}${CLONE_LOCAL_SITE}.conf${WHITE})."
+      elif [[ "$CLONE_USE_EXISTING_TARGET" -eq 1 ]]; then
+        echo -e "Использован существующий сайт ${GREEN}$(format_site_name_label "$CLONE_LOCAL_SITE")${WHITE} (vhost: ${YELLOW}${CLONE_LOCAL_SITE}.conf${WHITE})."
+      fi
+      if [[ "$CLONE_TARGET_CLEARED" == "1" ]]; then
+        echo -e "Папка сайта ${GREEN}$(format_site_name_label "$CLONE_LOCAL_SITE")${WHITE} была ${YELLOW}очищена${WHITE} перед переносом файлов."
+      fi
+      echo -e "Клонирование сайта ${GREEN}$(format_site_name_label "$CLONE_LOCAL_SITE")${WHITE} завершено."
     else
       echo -e "Клонирование базы данных ${GREEN}${CLONE_LOCAL_SITE}${WHITE} завершено."
     fi
@@ -1055,6 +1155,8 @@ function clone_site_interactive() {
   CLONE_RELOAD_APACHE=1
   CLONE_UPDATE_HOTLIST=1
   CLONE_TARGET_PREPARED=0
+  CLONE_TARGET_CREATED=0
+  CLONE_TARGET_CLEARED=0
 
   echo
   if [[ -n "$only_database" ]]; then

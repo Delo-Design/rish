@@ -17,6 +17,21 @@ function validate_site_name() {
   echo "$name" | grep -Eq '^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
 }
 
+function format_site_name_label() {
+  local name="$1"
+  local decoded_name
+
+  if [[ "$name" =~ (^|\.)xn-- ]]; then
+    decoded_name="$(idn2 -d "$name" 2>/dev/null)"
+    if [[ -n "$decoded_name" && "$decoded_name" != "$name" ]]; then
+      printf '%s (%s)' "$name" "$decoded_name"
+      return 0
+    fi
+  fi
+
+  printf '%s' "$name"
+}
+
 function check_site() {
   local folder_name="$1"
   local directory_path="$2"
@@ -246,7 +261,14 @@ function create_site_core() {
   site_dir="${path}/${site_name}"
   document_root_path="${site_dir}${DocumentRoot}"
 
-  echo -e "Создаем папку сайта: ${GREEN}${document_root_path}${WHITE}"
+  if [[ -d "$document_root_path" ]]; then
+    echo -e "Используем существующую папку сайта: ${GREEN}${site_name}${WHITE}"
+  else
+    echo -e "Создаем папку сайта: ${GREEN}${site_name}${WHITE}"
+  fi
+  if [[ -n "$DocumentRoot" ]]; then
+    echo -e "DocumentRoot: ${GREEN}${DocumentRoot#/}${WHITE}"
+  fi
   if ! mkdir -p "$document_root_path"; then
     echo -e "Не удалось создать папку сайта: ${RED}${document_root_path}${WHITE}"
     return 1
@@ -389,7 +411,7 @@ function create_site_core() {
     fi
   fi
 
-  echo -e "Сайт ${GREEN}${site_name}${WHITE} создан."
+  echo -e "Сайт ${GREEN}$(format_site_name_label "$site_name")${WHITE} создан."
   return 0
 }
 
