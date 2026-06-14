@@ -81,7 +81,7 @@ k       Удалить базу данных
   vertical_menu "current" 2 0 5 "Нажмите Enter"
 
 4  Управление CRON
-  bash /root/rish/cron_users.sh
+  bash /root/rish/scripts/cron_users.sh
 
 + d /var/www/ & t d
 6  Пoлyчить/Oтoзвaть/Пpoдлить SSL cert.
@@ -94,7 +94,7 @@ f       Статус и перезапуск php-fpm
   bash /root/rish/php_restart.sh
 
 M       Статус и перезапуск MariaDB
-  bash /root/rish/mariadb_restart.sh
+  bash /root/rish/scripts/mariadb_restart.sh
 
 i       IP адрес сервера
 	clear

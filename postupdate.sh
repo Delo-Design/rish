@@ -93,6 +93,26 @@ if [[ -f /root/rish/apache_restart.sh ]]; then
     exit 1
   fi
 fi
+if [[ -f /root/rish/cron_users.sh ]]; then
+  if [[ -f /root/rish/scripts/cron_users.sh ]]; then
+    rm -f /root/rish/cron_users.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/cron_users.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
+if [[ -f /root/rish/mariadb_restart.sh ]]; then
+  if [[ -f /root/rish/scripts/mariadb_restart.sh ]]; then
+    rm -f /root/rish/mariadb_restart.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/mariadb_restart.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
 if [[ -f /root/rish/clonesite.sh ]]; then
   if [[ -f /root/rish/scripts/clonesite.sh ]]; then
     rm -f /root/rish/clonesite.sh
