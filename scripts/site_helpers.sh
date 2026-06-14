@@ -126,8 +126,26 @@ function fix_joomla_configuration() {
   sed -i "s|\$host.*$|\$host = 'localhost';|" "$config_file"
   echo -e "Хост базы данных установлен в: ${GREEN}localhost${WHITE}"
 
-  sed -i "s|\$live_site .*$|\$live_site = '';|" "$config_file"
-  echo -e "${YELLOW}live_site${WHITE} сброшен."
+  local live_site_line=""
+  local live_site_value=""
+
+  live_site_line="$(grep -m 1 '^[[:space:]]*\(public[[:space:]]\+\)\?\$live_site[[:space:]]*=' "$config_file" || true)"
+  if [[ -z "$live_site_line" ]]; then
+    echo -e "Строка ${YELLOW}live_site${WHITE} не найдена."
+  elif printf '%s\n' "$live_site_line" | grep -q "^[[:space:]]*\\(public[[:space:]]\\+\\)\\?\\\$live_site[[:space:]]*=[[:space:]]*''"; then
+    echo -e "${YELLOW}live_site${WHITE} пустой, сброс не требуется."
+  else
+    live_site_value="$(printf '%s\n' "$live_site_line" | sed -n "s/^[[:space:]]*\\(public[[:space:]]\\+\\)\\?\\\$live_site[[:space:]]*=[[:space:]]*'\\([^']*\\)'.*/\\2/p")"
+    if ! sed -i "s|\$live_site[[:space:]]*=.*$|\$live_site = '';|" "$config_file"; then
+      echo -e "Не удалось сбросить ${RED}live_site${WHITE}."
+      return 1
+    fi
+    if [[ -n "$live_site_value" ]]; then
+      echo -e "${YELLOW}live_site${WHITE} сброшен: ${GREEN}${live_site_value}${WHITE} -> пусто."
+    else
+      echo -e "${YELLOW}live_site${WHITE} сброшен."
+    fi
+  fi
 }
 
 function fix_site_configuration() {
