@@ -73,6 +73,36 @@ if [[ -f /root/rish/phpmyadmin_install.sh ]]; then
     exit 1
   fi
 fi
+if [[ -f /root/rish/create_swapfile.sh ]]; then
+  if [[ -f /root/rish/scripts/create_swapfile.sh ]]; then
+    rm -f /root/rish/create_swapfile.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/create_swapfile.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
+if [[ -f /root/rish/apache_restart.sh ]]; then
+  if [[ -f /root/rish/scripts/apache_restart.sh ]]; then
+    rm -f /root/rish/apache_restart.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/apache_restart.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
+if [[ -f /root/rish/clonesite.sh ]]; then
+  if [[ -f /root/rish/scripts/clonesite.sh ]]; then
+    rm -f /root/rish/clonesite.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/clonesite.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
 for archive in /root/rish/phpMyAdmin-*-all-languages.tar.gz; do
   if [[ -f "$archive" && -f "/root/rish/templates/$(basename "$archive")" ]]; then
     rm -f "$archive"
@@ -136,6 +166,12 @@ configure_httpd_tmpfiles_override() {
 STEP="Установка dnf-utils"
 if ! check_step "$STEP"; then
   Install dnf-utils
+  mark_step_completed "$STEP"
+fi
+
+STEP="Установка pv"
+if ! check_step "$STEP"; then
+  Install pv
   mark_step_completed "$STEP"
 fi
 
