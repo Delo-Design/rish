@@ -918,13 +918,16 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     [[ -n "$current_timezone" ]] || current_timezone="не удалось определить"
 
     echo -e "Выберите часовой пояс:"
-    vertical_menu "current" 2 0 45 "Москва (Europe/Moscow)" "Астана, Казахстан (Asia/Almaty)" "Оставить текущий (${current_timezone})"
+    vertical_menu "current" 2 0 45 "Москва (Europe/Moscow)" "Астана, Казахстан (Asia/Almaty)" "Киев (Europe/Kyiv)" "Оставить текущий (${current_timezone})"
     case "$?" in
       0)
         ln -sfn /usr/share/zoneinfo/Europe/Moscow /etc/localtime
         ;;
       1)
         ln -sfn /usr/share/zoneinfo/Asia/Almaty /etc/localtime
+        ;;
+      2)
+        ln -sfn /usr/share/zoneinfo/Europe/Kyiv /etc/localtime
         ;;
     esac
     Up
