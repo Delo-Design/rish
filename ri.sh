@@ -84,7 +84,7 @@ source php_multi_install.sh
 source php_helpers.sh
 source mariadb_install.sh
 source create_hotlist.sh
-source create_swapfile.sh
+source scripts/create_swapfile.sh
 
 if (( lines < 40 || columns < 140 )); then
   echo
@@ -720,6 +720,12 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         echo "logrotate.timer активен и включен."
         Down
     fi
+    mark_step_completed "$STEP"
+  fi
+
+  STEP="Установка pv"
+  if ! check_step "$STEP"; then
+    Install pv
     mark_step_completed "$STEP"
   fi
 

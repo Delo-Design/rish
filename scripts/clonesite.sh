@@ -15,6 +15,8 @@ CURSORUP="${CURSORUP:-$'\033[1A'}"
 ERASEUNTILLENDOFLINE="${ERASEUNTILLENDOFLINE:-$'\033[K'}"
 
 CLONE_TMP_DIR=""
+CLONE_USE_EXCLUDES=0
+CLONE_EXCLUDE_DIRS=()
 
 function cleanup_clone_tmp_dir() {
   if [[ -n "$CLONE_TMP_DIR" && -d "$CLONE_TMP_DIR" ]]; then
@@ -673,19 +675,29 @@ function offer_local_self_signed_ssl() {
   local site_name="$1"
 
   echo
-  echo -e "Создать самоподписанный ${GREEN}SSL${WHITE} сертификат для локального сайта ${GREEN}$(format_site_name_label "$site_name")${WHITE}?"
-  if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-    # shellcheck disable=SC1091
-    if ! source "${RISH_HOME}/certs.sh"; then
-      echo -e "Не удалось подключить скрипт: ${RED}${RISH_HOME}/certs.sh${WHITE}"
-      return 1
-    fi
+  # shellcheck disable=SC1091
+  if ! source "${RISH_HOME}/certs.sh"; then
+    echo -e "Не удалось подключить скрипт: ${RED}${RISH_HOME}/certs.sh${WHITE}"
+    return 1
+  fi
+
+  if self_signed_cert_exists_for_site "$site_name"; then
     if ! create_self_signed_cert_for_site "$site_name"; then
       echo -e "Клонирование сайта завершено, но самоподписанный SSL-сертификат ${RED}не создан${WHITE}."
       return 1
     fi
-  else
+    return 0
+  fi
+
+  echo -e "Создать самоподписанный ${GREEN}SSL${WHITE} сертификат для локального сайта ${GREEN}$(format_site_name_label "$site_name")${WHITE}?"
+  if ! vertical_menu "current" 2 0 5 "Да" "Нет"; then
     echo "Self-signed SSL не создан."
+    return 0
+  fi
+
+  if ! create_self_signed_cert_for_site "$site_name"; then
+    echo -e "Клонирование сайта завершено, но самоподписанный SSL-сертификат ${RED}не создан${WHITE}."
+    return 1
   fi
 }
 
@@ -782,6 +794,115 @@ function select_clone_php_mode() {
   fi
 }
 
+function normalize_clone_exclude_dir() {
+  local value="$1"
+
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  while [[ "$value" == ./* ]]; do
+    value="${value#./}"
+  done
+  while [[ "$value" == */ ]]; do
+    value="${value%/}"
+  done
+
+  if [[ -z "$value" ]]; then
+    return 1
+  fi
+  if [[ "$value" == /* || "$value" == "." || "$value" == ".." || "$value" == *"/../"* || "$value" == ../* || "$value" == */.. ]]; then
+    echo -e "Путь исключения ${RED}${value}${WHITE} некорректный. Укажите папку относительно site_root." >&2
+    return 2
+  fi
+  if [[ ! "$value" =~ ^[A-Za-z0-9._@+/-]+$ ]]; then
+    echo -e "Путь исключения ${RED}${value}${WHITE} содержит недопустимые символы." >&2
+    echo -e "Разрешены только буквы, цифры, ${YELLOW}.${WHITE}, ${YELLOW}_${WHITE}, ${YELLOW}-${WHITE}, ${YELLOW}+${WHITE}, ${YELLOW}@${WHITE} и ${YELLOW}/${WHITE}." >&2
+    return 2
+  fi
+
+  printf '%s' "$value"
+}
+
+function save_clone_archive_exclude() {
+  local exclude_input="$1"
+  local config_file="${RISH_HOME}/rish_config.sh"
+  local exclude_line
+
+  printf -v exclude_line 'ARCHIVE_EXCLUDE=%q' "$exclude_input"
+
+  if [[ -f "$config_file" ]] && grep -q "^ARCHIVE_EXCLUDE=" "$config_file"; then
+    sed -i "s|^ARCHIVE_EXCLUDE=.*|${exclude_line}|" "$config_file"
+  else
+    echo "$exclude_line" >> "$config_file"
+  fi
+}
+
+function select_clone_exclude_dirs() {
+  local default_exclude="${ARCHIVE_EXCLUDE:-}"
+  local exclude_input
+  local excl
+  local normalized
+  local -a exclude_arr=()
+  local normalized_input
+  local invalid_exclude
+
+  while true; do
+    echo -e "Типовые примеры исключений:"
+    echo -e "Для Joomla: ${YELLOW}administrator/cache,administrator/logs,cache,tmp${WHITE}"
+    echo -e "Для Joomla Yootheme: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,templates/yootheme/cache${WHITE}"
+    echo -e "Для Joomla Akeeba: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,administrator/components/com_akeeba/backup${WHITE}"
+    echo
+    echo -e "Введите папки, содержимое которых надо исключить из клонирования (через запятую):${YELLOW}"
+    read -r -e -i "$default_exclude" exclude_input
+    echo -e "${WHITE}"
+
+    CLONE_EXCLUDE_DIRS=()
+    invalid_exclude=0
+    local IFS=','
+    read -ra exclude_arr <<< "$exclude_input"
+    for excl in "${exclude_arr[@]}"; do
+      normalized="$(normalize_clone_exclude_dir "$excl")"
+      case "$?" in
+        0) CLONE_EXCLUDE_DIRS+=("$normalized") ;;
+        1) ;;
+        *)
+          CLONE_EXCLUDE_DIRS=()
+          invalid_exclude=1
+          break
+          ;;
+      esac
+    done
+
+    if [[ "$invalid_exclude" == "1" ]]; then
+      echo
+      continue
+    fi
+
+    if (( ${#CLONE_EXCLUDE_DIRS[@]} > 0 )); then
+      local IFS=','
+      normalized_input="${CLONE_EXCLUDE_DIRS[*]}"
+      save_clone_archive_exclude "$normalized_input"
+      return 0
+    fi
+
+    CLONE_USE_EXCLUDES=0
+    echo -e "Список исключений ${YELLOW}пустой${WHITE}. Клонирование продолжится без исключения папок."
+    return 0
+  done
+}
+
+function append_remote_args_from_array() {
+  local result_var="$1"
+  shift
+  local -n result_ref="$result_var"
+  local arg
+  local quoted
+
+  for arg in "$@"; do
+    quoted="$(remote_shell_quote "$arg")"
+    result_ref+=" ${quoted}"
+  done
+}
+
 function copy_site_files() {
   local host="$1"
   local remote_site_root="$2"
@@ -791,13 +912,32 @@ function copy_site_files() {
   local size_mb
   local remote_root_quoted
   local local_site_name
+  local remote_du_exclude_args=""
+  local remote_tar_exclude_args=""
+  local -a du_exclude_args=()
+  local -a tar_exclude_args=()
+  local excl
 
   echo
   local_site_name="$(basename -- "$local_site_root")"
   echo -e "Переносим файлы сайта в site_root: ${GREEN}${local_site_name}${WHITE}"
   remote_root_quoted="$(remote_shell_quote "$remote_site_root")"
 
-  size_bytes="$(ssh "$host" "du -sb ${remote_root_quoted} 2>/dev/null | awk '{print \$1}'")"
+  if [[ "${CLONE_USE_EXCLUDES:-0}" == "1" && ${#CLONE_EXCLUDE_DIRS[@]} -gt 0 ]]; then
+    echo -e "Содержимое этих папок не переносится:"
+    for excl in "${CLONE_EXCLUDE_DIRS[@]}"; do
+      echo -e " ${YELLOW}${excl}${WHITE}"
+      du_exclude_args+=("--exclude=${remote_site_root}/${excl}/*")
+      du_exclude_args+=("--exclude=${remote_site_root}/${excl}/.*")
+      tar_exclude_args+=("--exclude=./${excl}/*")
+      tar_exclude_args+=("--exclude=./${excl}/.*")
+    done
+    echo
+    append_remote_args_from_array remote_du_exclude_args "${du_exclude_args[@]}"
+    append_remote_args_from_array remote_tar_exclude_args "${tar_exclude_args[@]}"
+  fi
+
+  size_bytes="$(ssh "$host" "du -sb${remote_du_exclude_args} ${remote_root_quoted} 2>/dev/null | awk '{print \$1}'")"
   if [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
     size_mb=$(( (size_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
     echo -e "Размер исходного сайта: ${YELLOW}${size_mb} MB${WHITE}"
@@ -806,7 +946,7 @@ function copy_site_files() {
   fi
 
   if command -v pv >/dev/null 2>&1 && [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
-    if ! (set -o pipefail; ssh -C "$host" "tar -C ${remote_root_quoted} -cf - ." | pv -s "$size_bytes" | tar -C "$local_site_root" -xf -); then
+    if ! (set -o pipefail; ssh -C "$host" "tar -C ${remote_root_quoted}${remote_tar_exclude_args} -cf - ." | pv -s "$size_bytes" | tar -C "$local_site_root" -xf -); then
       echo -e "Ошибка при переносе файлов сайта tar-потоком."
       return 1
     fi
@@ -815,7 +955,7 @@ function copy_site_files() {
       echo -e "${YELLOW}pv не установлен${WHITE}, прогресс передачи не будет показан."
     fi
     echo "Перенос продолжается, дождитесь завершения."
-    if ! (set -o pipefail; ssh -C "$host" "tar -C ${remote_root_quoted} -cf - ." | tar -C "$local_site_root" -xf -); then
+    if ! (set -o pipefail; ssh -C "$host" "tar -C ${remote_root_quoted}${remote_tar_exclude_args} -cf - ." | tar -C "$local_site_root" -xf -); then
       echo -e "Ошибка при переносе файлов сайта tar-потоком."
       return 1
     fi
@@ -1123,7 +1263,7 @@ function clone_site_core() {
 }
 
 function clone_site_interactive() {
-  local only_database="$1"
+  local mode="$1"
   local proposed_site
   local target_php_label
   local target_php_full_version
@@ -1133,7 +1273,7 @@ function clone_site_interactive() {
     source "${RISH_HOME}/rish_config.sh"
   fi
 
-  if [[ -n "$only_database" ]]; then
+  if [[ "$mode" == "Mysql" ]]; then
     echo "Клонируем только базу данных."
   fi
 
@@ -1157,9 +1297,11 @@ function clone_site_interactive() {
   CLONE_TARGET_PREPARED=0
   CLONE_TARGET_CREATED=0
   CLONE_TARGET_CLEARED=0
+  CLONE_USE_EXCLUDES=0
+  CLONE_EXCLUDE_DIRS=()
 
   echo
-  if [[ -n "$only_database" ]]; then
+  if [[ "$mode" == "Mysql" ]]; then
     CLONE_COPY_FILES=0
     CLONE_COPY_DB=1
     CLONE_REQUIRE_DB=1
@@ -1169,6 +1311,11 @@ function clone_site_interactive() {
     print_clone_summary_pair "" "" "database"
     clone_site_core
     return $?
+  fi
+
+  if [[ "$mode" == "Exclude" ]]; then
+    CLONE_USE_EXCLUDES=1
+    select_clone_exclude_dirs || return 1
   fi
 
   clone_site_prepare_target || return 1
@@ -1210,7 +1357,7 @@ function clone_site_menu() {
 
   clear
   echo "Выберите сценарий клонирования:"
-  vertical_menu "current" 2 0 45 "Клонирование сайта" "Клонирование только базы данных сайта" "Выйти"
+  vertical_menu "current" 2 0 45 "Клонирование сайта" "Клонирование сайта с исключением выбранных папок" "Клонирование только базы данных сайта" "Выйти"
   choice=$?
   case "$choice" in
     0)
@@ -1218,6 +1365,10 @@ function clone_site_menu() {
       vertical_menu "current" 2 0 5 "Нажмите Enter"
       ;;
     1)
+      CloneSite "Exclude"
+      vertical_menu "current" 2 0 5 "Нажмите Enter"
+      ;;
+    2)
       CloneSite "Mysql"
       vertical_menu "current" 2 0 5 "Нажмите Enter"
       ;;

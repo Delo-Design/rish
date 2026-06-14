@@ -23,6 +23,15 @@ function collect_vhost_aliases() {
     }' "$vhost")
 }
 
+function self_signed_cert_exists_for_site() {
+  local site_name="$1"
+  local key_file="/etc/pki/tls/private/${site_name}.key"
+  local cert_file="/etc/pki/tls/certs/${site_name}.crt"
+  local ssl_conf="/etc/httpd/conf.d/${site_name}-ssl.conf"
+
+  [[ -f "$key_file" || -f "$cert_file" || -f "$ssl_conf" ]]
+}
+
 function create_self_signed_cert_for_site() {
   local site_name="$1"
   local vhost="/etc/httpd/conf.d/${site_name}.conf"

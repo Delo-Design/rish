@@ -88,7 +88,7 @@ k       Удалить базу данных
 	bash /root/rish/certs.sh %f
 
 r  Перезaпуск и стaтус серверa apache
-  bash /root/rish/apache_restart.sh
+  bash /root/rish/scripts/apache_restart.sh
 
 f       Статус и перезапуск php-fpm
   bash /root/rish/php_restart.sh
