@@ -12,73 +12,11 @@ shell_patterns=0
   bash /root/rish/change_php_version.sh "%f" "%d"
 
 + d /var/www/ & t d
-3       Сoздaть бaзy MySQL пo имени папки
-	GREEN='\033[0;32m'
-	RED='\033[0;31m'
-	LRED='\033[1;31m'
-	WHITE='\033[0m'
-	MYSQLPASS="2"
-	source /root/rish/windows.sh
-	clear
-	if [[ ! -z "`mariadb  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
-  then
-    echo -e "База с именем ${GREEN}%f${WHITE} ${RED}уже существует${WHITE}"
-    vertical_menu "current" 2 0 5 "Нажмите Enter"
-    exit
-  fi
-	r=%d
-	r=${r#/var/www/}
-	r=${r%/www*}
-	echo -e "Будет создана база MySQL с именем ${GREEN}%f${WHITE}."
-	echo -e "Права будут выданы пользователю ${GREEN}${r}${WHITE}"
-	if vertical_menu "current" 2 0 5 "Да" "Нет"
-	then
-    if mariadb -u root -p${MYSQLPASS} -e "CREATE DATABASE \`%f\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-    then
-        echo -e "База mysql с именем ${GREEN}%f${WHITE} создана"
-        mariadb -uroot -p${MYSQLPASS} -e "GRANT ALL PRIVILEGES ON \`%f\`.* TO '${r}'@'localhost';"
-      mariadb -uroot -p${MYSQLPASS} -e "FLUSH PRIVILEGES;"
-      echo -e "Права на базу выданы пользователю ${GREEN}${r}${WHITE}"
-    else
-       echo -e ${RED}"Произошла ошибка"${WHITE}
-    fi
-  else
-    echo -e "База не была создана."
-  fi
-  vertical_menu "current" 2 0 5 "Нажмите Enter"
-
-+ d /var/www/ & t d
 8  Удалить сайт
   bash /root/rish/scripts/delete_site.sh "%d" "%f"
 
-+ d /var/www/ & t d
-k       Удалить базу данных
-  GREEN='\033[0;32m'
-  RED='\033[0;31m'
-  LRED='\033[1;31m'
-  WHITE='\033[0m'
-  MYSQLPASS="2"
-  clear
-	source /root/rish/windows.sh
-  if [[ ! -z "`mariadb  -uroot -p${MYSQLPASS} -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='%f'" 2>&1`" ]]
-  then
-      echo -e "Вы хотите удалить базу данных ${LRED}%f${WHITE}?"
-      if vertical_menu "current" 2 0 5 "Нет" "Да"
-      then
-        echo "База данных не была удалена"
-        vertical_menu "current" 2 0 5 "Нажмите Enter"
-        exit 0
-      fi
-      if mariadb-admin -f -u root -p${MYSQLPASS} drop %f
-      then
-         echo -e "База данных ${GREEN}%f${WHITE} удалена"
-      else
-         echo -e "При удалении базы данных ${RED}%f${WHITE} произошли ${RED}ошибки${WHITE}"
-      fi
-  else
-     echo -e "У сайта ${RED}%f${WHITE} нет базы данных"
-  fi
-  vertical_menu "current" 2 0 5 "Нажмите Enter"
+3  Базы данных
+  bash /root/rish/scripts/database_manager.sh "%d" "%f"
 
 4  Управление CRON
   bash /root/rish/scripts/cron_users.sh

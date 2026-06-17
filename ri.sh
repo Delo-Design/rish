@@ -436,25 +436,6 @@ CreateUser() {
   fi
 }
 
-DeleteDatabase() {
-     echo -e "Вы хотите удалить базу данных ${LRED}${1}${WHITE}?"
-    if vertical_menu "current" 2 0 5 "Нет" "Да"
-    then
-      echo "База данных не была удалена"
-      return 1
-       elif (( $? == 255 ))
-       then
-      echo "База данных не была удалена"
-      return 1
-    fi
-    echo -e ${CURSORUP}${ERASEUNTILLENDOFLINE}
-    if mariadb-admin -f  drop ${1}
-    then
-       echo -e "База данных ${GREEN}${1}${WHITE} удалена"
-    else
-       echo -e "При удалении базы данных ${RED}${1}${WHITE} произошли ${RED}ошибки${WHITE}"
-    fi
-}
 DeleteUser() {
   # Если папка не пуста, то отказываться удалять пользователя
   if [[ -n $( ls -A /var/www/${1}/www ) ]]
@@ -1335,7 +1316,6 @@ else
   source $config_file
   options=("Создать пользователя"
     "Удалить пользователя"
-    "Удалить базу данных пользователя"
     "Установка новых версий PHP"
     "Запретить авторизацию по паролю по SSH"
     "Выйти")
@@ -1378,33 +1358,6 @@ else
       fi
       ;;
     2)
-      clear
-      # Проверим на предмет неудаленных баз данных
-      usrs=($(cat /etc/passwd | grep home | awk -F: '{ print $1}' | sort))
-      if ((${#usrs[@]} > 0)); then
-        echo "Выберите пользователя для удаления его базы данных"
-        vertical_menu "current" 2 0 30 "${usrs[@]}"
-        choice=$?
-        if ((choice < 255)); then
-          echo -e ${CURSORUP}"Выбран пользователь ${GREEN}${usrs[${choice}]}${WHITE}${ERASEUNTILLENDOFLINE}"
-          SiteuserMysqlPass=$(cat /home/${usrs[${choice}]}/.pass.txt | grep Database | awk '{ print $2}')
-          bases=($(mariadb -u${usrs[${choice}]} -p${SiteuserMysqlPass} --batch -e "SHOW DATABASES" | tail -n +2 | sed '/information_schema/d'))
-          if ((${#bases[@]} > 0)); then
-            echo -e "Выберите базу данных пользователя ${RED}"${usrs[${choice}]}"${WHITE} для удаления"
-            vertical_menu "current" 2 0 30 "${bases[@]}"
-            choice=$?
-            if ((${choice} < 255)); then
-              DeleteDatabase ${bases[${choice}]}
-            fi
-          else
-            echo "У пользователя нет баз данных"
-          fi
-        fi
-      else
-        echo "В системе нет пользователей"
-      fi
-      ;;
-    3)
       echo -e "Выбор и установка нужных версий ${GREEN}PHP${WHITE}"
       clear
       # Рисуем разделительную линию
@@ -1421,7 +1374,7 @@ else
       repl "─" $((${columns}))
       cursor_to $((${rim} + 2)) 1
       ;;
-    4)
+    3)
       echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
         echo -e -n "${CURSORUP}"

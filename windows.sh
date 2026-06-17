@@ -18,6 +18,7 @@ VERTICAL_MENU_LAST_HEIGHT=0
 VERTICAL_MENU_LAST_X=0
 VERTICAL_MENU_LAST_Y=0
 VERTICAL_MENU_LAST_RIGHT_X=0
+VERTICAL_MENU_LAST_VISIBLE_SELECTED=0
 
 vertical_menu_next_x() {
   local gap="${1:-1}"
@@ -307,6 +308,8 @@ function vertical_menu {
   local previous_int_trap
   local previous_term_trap
   local previous_hup_trap
+  local selected
+  local previous_selected
   size=$(stty size)
   lines=${size% *}
   columns=${size#* }
@@ -351,6 +354,17 @@ function vertical_menu {
   if ((height > max_visible_height)); then
     height=$max_visible_height
   fi
+
+  if [[ ! "$default_selected_index" =~ ^[0-9]+$ ]] || ((default_selected_index >= ${#menu_items[@]})); then
+    default_selected_index=0
+  fi
+  if ((default_selected_index >= height)); then
+    shift_y=$((default_selected_index - height + 1))
+    selected=$((height - 1))
+  else
+    selected=${default_selected_index}
+  fi
+  previous_selected=${selected}
 
   #find the width of the window
   for el in "${menu_items[@]}"; do
@@ -407,8 +421,6 @@ function vertical_menu {
   VERTICAL_MENU_LAST_Y=${top_y}
   VERTICAL_MENU_LAST_RIGHT_X=$((left_x + VERTICAL_MENU_LAST_OUTER_WIDTH - 1))
 
-  local selected=${default_selected_index}
-  local previous_selected=${default_selected_index}
   while true; do
     # print options by overwriting the last lines
 
@@ -469,6 +481,8 @@ function vertical_menu {
       ;;
     esac
   done
+
+  VERTICAL_MENU_LAST_VISIBLE_SELECTED=${selected}
 
   if ((is_current_mode == 1)); then
     printf "\n"
