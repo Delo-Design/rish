@@ -10,6 +10,48 @@ YELLOW='\033[0;33m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
 
+function normalize_archive_exclude_dir() {
+  local value="$1"
+
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  while [[ "$value" == ./* ]]; do
+    value="${value#./}"
+  done
+  while [[ "$value" == */ ]]; do
+    value="${value%/}"
+  done
+
+  if [[ -z "$value" ]]; then
+    return 1
+  fi
+  if [[ "$value" == /* || "$value" == "." || "$value" == ".." || "$value" == *"/../"* || "$value" == ../* || "$value" == */.. ]]; then
+    echo -e "Путь исключения ${RED}${value}${WHITE} некорректный. Укажите папку относительно архивируемой папки." >&2
+    return 2
+  fi
+  if [[ ! "$value" =~ ^[A-Za-z0-9._@+/-]+$ ]]; then
+    echo -e "Путь исключения ${RED}${value}${WHITE} содержит недопустимые символы." >&2
+    echo -e "Разрешены только буквы, цифры, ${YELLOW}.${WHITE}, ${YELLOW}_${WHITE}, ${YELLOW}-${WHITE}, ${YELLOW}+${WHITE}, ${YELLOW}@${WHITE} и ${YELLOW}/${WHITE}." >&2
+    return 2
+  fi
+
+  printf '%s' "$value"
+}
+
+function save_archive_exclude() {
+  local exclude_input="$1"
+  local config_file="/root/rish/rish_config.sh"
+  local exclude_line
+
+  printf -v exclude_line 'ARCHIVE_EXCLUDE=%q' "$exclude_input"
+
+  if [[ -f "$config_file" ]] && grep -q "^ARCHIVE_EXCLUDE=" "$config_file"; then
+    sed -i "s|^ARCHIVE_EXCLUDE=.*|${exclude_line}|" "$config_file"
+  else
+    echo "$exclude_line" >> "$config_file"
+  fi
+}
+
 function archive() {
   local path="$1"
   local folder="$2"
@@ -102,6 +144,9 @@ function archive() {
   local base_name="${folder}_${dt}"
   local exclude_input
   local excl
+  local normalized
+  local normalized_input
+  local invalid_exclude
 
   case "$action" in
     archive_site_and_db)
@@ -116,28 +161,45 @@ function archive() {
       ;;
     archive_site_with_exclude)
       local default_exclude="${ARCHIVE_EXCLUDE:-}"
-      echo -e "Типовые примеры исключений:"
-      echo -e "Для Joomla: ${YELLOW}administrator/cache,administrator/logs,cache,tmp${WHITE}"
-      echo -e "Для Joomla Yootheme: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,templates/yootheme/cache${WHITE}"
-      echo -e "Для Joomla Akeeba: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,administrator/components/com_akeeba/backup${WHITE}"
-      echo
-      echo -e "Введите папки для исключения (через запятую):${YELLOW}"
-      read -r  -e -i "$default_exclude" exclude_input
-      echo -e "${WHITE}"
-
-      # Сохраняем в rish_config.sh
-      if grep -q "^ARCHIVE_EXCLUDE=" /root/rish/rish_config.sh; then
-        sed -i "s|^ARCHIVE_EXCLUDE=.*|ARCHIVE_EXCLUDE=\"${exclude_input}\"|" /root/rish/rish_config.sh
-      else
-        echo "ARCHIVE_EXCLUDE=\"${exclude_input}\"" >> /root/rish/rish_config.sh
-      fi
-
-      local IFS=',' exclude_arr=()
-      read -ra exclude_arr <<< "$exclude_input"
       local exclude_args=()
-      for excl in "${exclude_arr[@]}"; do
-        excl=$(echo "$excl" | xargs)
-        [[ -n "$excl" ]] && exclude_args+=("--exclude=$folder/${excl}/*")
+      while true; do
+        echo -e "Типовые примеры исключений:"
+        echo -e "Для Joomla: ${YELLOW}administrator/cache,administrator/logs,cache,tmp${WHITE}"
+        echo -e "Для Joomla Yootheme: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,templates/yootheme/cache${WHITE}"
+        echo -e "Для Joomla Akeeba: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,administrator/components/com_akeeba/backup${WHITE}"
+        echo
+        echo -e "Введите папки для исключения (через запятую):${YELLOW}"
+        read -r  -e -i "$default_exclude" exclude_input
+        echo -e "${WHITE}"
+
+        local IFS=',' exclude_arr=()
+        read -ra exclude_arr <<< "$exclude_input"
+        exclude_args=()
+        local normalized_exclude_arr=()
+        invalid_exclude=0
+        for excl in "${exclude_arr[@]}"; do
+          normalized="$(normalize_archive_exclude_dir "$excl")"
+          case "$?" in
+            0)
+              normalized_exclude_arr+=("$normalized")
+              exclude_args+=("--exclude=$folder/${normalized}/*")
+              ;;
+            1) ;;
+            *)
+              invalid_exclude=1
+              break
+              ;;
+          esac
+        done
+        if [[ "$invalid_exclude" == "1" ]]; then
+          echo
+          continue
+        fi
+
+        local IFS=','
+        normalized_input="${normalized_exclude_arr[*]}"
+        save_archive_exclude "$normalized_input"
+        break
       done
       archive_site "$fullpath" "$base_name" "${exclude_args[@]}"
       archive_db "$folder" "$base_name"
@@ -145,28 +207,45 @@ function archive() {
 
     archive_folder_with_exclude)
       local default_exclude="${ARCHIVE_EXCLUDE:-}"
-      echo -e "Типовые примеры исключений:"
-      echo -e "Для Joomla: ${YELLOW}administrator/cache,administrator/logs,cache,tmp${WHITE}"
-      echo -e "Для Joomla Yootheme: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,templates/yootheme/cache${WHITE}"
-      echo -e "Для Joomla Akeeba: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,administrator/components/com_akeeba/backup${WHITE}"
-      echo
-      echo -e "Введите папки для исключения (через запятую):${YELLOW}"
-      read -r -e -i "$default_exclude" exclude_input
-      echo -e "${WHITE}"
-
-      # Сохраняем в rish_config.sh
-      if grep -q "^ARCHIVE_EXCLUDE=" /root/rish/rish_config.sh; then
-        sed -i "s|^ARCHIVE_EXCLUDE=.*|ARCHIVE_EXCLUDE=\"${exclude_input}\"|" /root/rish/rish_config.sh
-      else
-        echo "ARCHIVE_EXCLUDE=\"${exclude_input}\"" >> /root/rish/rish_config.sh
-      fi
-
-      local IFS=',' exclude_arr=()
-      read -ra exclude_arr <<< "$exclude_input"
       local exclude_args=()
-      for excl in "${exclude_arr[@]}"; do
-        excl=$(echo "$excl" | xargs)
-        [[ -n "$excl" ]] && exclude_args+=("--exclude=$folder/${excl}/*")
+      while true; do
+        echo -e "Типовые примеры исключений:"
+        echo -e "Для Joomla: ${YELLOW}administrator/cache,administrator/logs,cache,tmp${WHITE}"
+        echo -e "Для Joomla Yootheme: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,templates/yootheme/cache${WHITE}"
+        echo -e "Для Joomla Akeeba: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,administrator/components/com_akeeba/backup${WHITE}"
+        echo
+        echo -e "Введите папки для исключения (через запятую):${YELLOW}"
+        read -r -e -i "$default_exclude" exclude_input
+        echo -e "${WHITE}"
+
+        local IFS=',' exclude_arr=()
+        read -ra exclude_arr <<< "$exclude_input"
+        exclude_args=()
+        local normalized_exclude_arr=()
+        invalid_exclude=0
+        for excl in "${exclude_arr[@]}"; do
+          normalized="$(normalize_archive_exclude_dir "$excl")"
+          case "$?" in
+            0)
+              normalized_exclude_arr+=("$normalized")
+              exclude_args+=("--exclude=$folder/${normalized}/*")
+              ;;
+            1) ;;
+            *)
+              invalid_exclude=1
+              break
+              ;;
+          esac
+        done
+        if [[ "$invalid_exclude" == "1" ]]; then
+          echo
+          continue
+        fi
+
+        local IFS=','
+        normalized_input="${normalized_exclude_arr[*]}"
+        save_archive_exclude "$normalized_input"
+        break
       done
       archive_site "$fullpath" "$base_name" "${exclude_args[@]}"
       ;;
