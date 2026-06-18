@@ -310,9 +310,6 @@ detect_context() {
     DEFAULT_USER="${BASH_REMATCH[1]}"
   fi
 
-  if validate_site_name "$name"; then
-    DEFAULT_DB_NAME="$name"
-  fi
 }
 
 select_system_user() {
@@ -506,7 +503,7 @@ database_actions_menu() {
   while true; do
     action_menu_y=$((LAST_DATABASE_SELECTED_ROW - 1))
     draw_database_action_connector
-    vertical_menu "$action_menu_y" "$LAST_DATABASE_MENU_ACTION_X" 0 5 "Размер базы: ${size_label}" "Удалить базу данных" "Назад"
+    vertical_menu "$action_menu_y" "$LAST_DATABASE_MENU_ACTION_X" 0 5 "Инфо о базе: ${size_label}" "Удалить базу данных" "Назад"
     choice=$?
 
     case "$choice" in
