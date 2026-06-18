@@ -294,20 +294,26 @@ detect_context() {
   local directory="$CALL_DIRECTORY"
   local name="$CALL_NAME"
   local candidate_path
+  local site_user
 
   directory="${directory%/}"
   candidate_path="${directory}/${name}"
 
-  if [[ "$directory" =~ ^/var/www/([^/]+)/www$ ]] && [[ -d "$candidate_path" ]] && validate_site_name "$name"; then
-    DEFAULT_USER="${BASH_REMATCH[1]}"
-    DEFAULT_SITE_NAME="$name"
-    DEFAULT_SITE_PATH="$candidate_path"
-    DEFAULT_DB_NAME="$name"
-    return
+  if [[ "$directory" =~ ^/var/www/([^/]+)/www$ ]]; then
+    site_user="${BASH_REMATCH[1]}"
+
+    if [[ -d "$candidate_path" ]] && validate_site_name "$name"; then
+      DEFAULT_USER="$site_user"
+      DEFAULT_SITE_NAME="$name"
+      DEFAULT_SITE_PATH="$candidate_path"
+      DEFAULT_DB_NAME="$name"
+      return
+    fi
   fi
 
   if [[ "$directory" =~ ^/var/www/([^/]+)(/|$) ]]; then
-    DEFAULT_USER="${BASH_REMATCH[1]}"
+    site_user="${BASH_REMATCH[1]}"
+    DEFAULT_USER="$site_user"
   fi
 
 }
