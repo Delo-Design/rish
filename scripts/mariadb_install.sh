@@ -8,8 +8,9 @@ mariadb_install() {
   Up
   echo -e "Производим настройку безопасности ${GREEN}mysql_secure_installation${WHITE}"
   Down
-  sed -i '/character-set-server=utf8/d' /etc/my.cnf.d/server.cnf
-  sed -i "s/^\[mysqld\]/\[mysqld\]\ncharacter-set-server=utf8/" /etc/my.cnf.d/server.cnf
+  sed -i '/character-set-server=/d' /etc/my.cnf.d/server.cnf
+  sed -i '/collation-server=/d' /etc/my.cnf.d/server.cnf
+  sed -i "s/^\[mysqld\]/\[mysqld\]\ncharacter-set-server=utf8mb4\ncollation-server=utf8mb4_unicode_ci/" /etc/my.cnf.d/server.cnf
 
   mariadb-secure-installation <<EOF
 
