@@ -123,6 +123,18 @@ get_database_size_label() {
   printf '%s MB' "$size_mb"
 }
 
+get_database_server_version() {
+  local version
+
+  version="$(mariadb -N -B -e "SELECT VERSION();" 2>/dev/null)"
+  if [[ -z "$version" ]]; then
+    printf '%s' "неизвестно"
+    return
+  fi
+
+  printf '%s' "$version"
+}
+
 show_database_info() {
   local db_name="$1"
   local db_name_sql
@@ -159,6 +171,7 @@ show_database_info() {
 
   clear
   echo -e "База данных: ${GREEN}${db_name}${WHITE}"
+  echo -e "Версия MariaDB: ${GREEN}$(get_database_server_version)${WHITE}"
   echo -e "Пользователь с доступом: ${YELLOW}$(get_database_grantees "$db_name")${WHITE}"
   echo -e "Размер базы: ${GREEN}${total_mb:-неизвестно} MB${WHITE}"
   echo -e "Таблиц: ${GREEN}${table_count:-0}${WHITE}"
@@ -539,6 +552,7 @@ database_manager_menu() {
   while true; do
     clear
     echo -e "Управление базами данных ${GREEN}RISH${WHITE}"
+    echo -e "Версия MariaDB: ${GREEN}$(get_database_server_version)${WHITE}"
     if [[ -n "$DEFAULT_USER" ]]; then
       echo -e "Пользователь по умолчанию: ${GREEN}${DEFAULT_USER}${WHITE}"
     fi
