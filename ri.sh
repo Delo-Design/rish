@@ -562,11 +562,14 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       echo -e "${VIOLET}\nБыла установлена кодировка UTF-8 для консоли.${WHITE}${RED} Надо перезагрузить сервер.${WHITE} "
       tet=$(pwd)
       echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
+      echo -e "Или войдите на сервер и нажмите стрелку ${GREEN}↑${WHITE} два раза: команда ${GREEN}/root/rish/ri.sh${WHITE} уже будет в истории команд."
       Down
       echo "Перезагрузить сервер?"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
         echo "Перезагрузка сервера начата..."
+        echo "/root/rish/ri.sh" >> /root/.bash_history
         reboot
+        exit 0
       else
         RemoveRim
         echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}"
@@ -590,10 +593,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         tet=$(pwd)
         Down
         echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
+        echo -e "Или войдите на сервер и нажмите стрелку ${GREEN}↑${WHITE} два раза: команда ${GREEN}/root/rish/ri.sh${WHITE} уже будет в истории команд."
         echo "Перезагрузить сервер?"
         if vertical_menu "current" 2 0 5 "Да" "Нет"; then
           echo "Перезагрузка сервера начата..."
+          echo "/root/rish/ri.sh" >> /root/.bash_history
           reboot
+          exit 0
         else
           RemoveRim
           echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}"
