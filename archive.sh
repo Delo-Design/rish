@@ -52,6 +52,128 @@ function save_archive_exclude() {
   fi
 }
 
+function select_archive_exclude_dirs() {
+  local folder="$1"
+  local default_exclude="${ARCHIVE_EXCLUDE:-}"
+  local exclude_input
+  local excl
+  local normalized
+  local normalized_input
+  local invalid_exclude
+  local exclude_arr=()
+  local normalized_exclude_arr=()
+
+  while true; do
+    echo -e "Типовые примеры исключений:"
+    echo -e "Для Joomla: ${YELLOW}administrator/cache,administrator/logs,cache,tmp${WHITE}"
+    echo -e "Для Joomla Yootheme: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,templates/yootheme/cache${WHITE}"
+    echo -e "Для Joomla Akeeba: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,administrator/components/com_akeeba/backup${WHITE}"
+    echo
+    echo -e "Введите папки для исключения (через запятую):${YELLOW}"
+    read -r -e -i "$default_exclude" exclude_input
+    echo -e "${WHITE}"
+
+    local IFS=','
+    read -ra exclude_arr <<< "$exclude_input"
+    ARCHIVE_EXCLUDE_ARGS=()
+    normalized_exclude_arr=()
+    invalid_exclude=0
+    for excl in "${exclude_arr[@]}"; do
+      normalized="$(normalize_archive_exclude_dir "$excl")"
+      case "$?" in
+        0)
+          normalized_exclude_arr+=("$normalized")
+          ARCHIVE_EXCLUDE_ARGS+=("--exclude=$folder/${normalized}/*")
+          ;;
+        1) ;;
+        *)
+          invalid_exclude=1
+          break
+          ;;
+      esac
+    done
+    if [[ "$invalid_exclude" == "1" ]]; then
+      echo
+      continue
+    fi
+
+    normalized_input="${normalized_exclude_arr[*]}"
+    ARCHIVE_EXCLUDE="$normalized_input"
+    save_archive_exclude "$normalized_input"
+    return 0
+  done
+}
+
+function print_archive_exclude_preview() {
+  local folder_path="$1"
+  shift
+  local folder
+  local parent_path
+  local arg
+  local clean_path
+  local folder_size_mb
+  local disk_free
+  local du_exclude=()
+
+  folder="$(basename "$folder_path")"
+  parent_path="$(dirname "$folder_path")"
+
+  for arg in "$@"; do
+    if [[ "$arg" =~ --exclude=.+ ]]; then
+      du_exclude+=("--exclude=${arg#--exclude=}")
+    fi
+  done
+
+  folder_size_mb=$(du --apparent-size --dereference -sm "${du_exclude[@]}" "$folder_path" | cut -f1)
+  disk_free="$(df -h -P "$parent_path" | awk 'NR==2 {print $4}')"
+
+  if [[ "$#" -gt 0 ]]; then
+    echo -e "За исключением папок:"
+    for arg in "$@"; do
+      if [[ "$arg" =~ --exclude=.+ ]]; then
+        clean_path="${arg#--exclude=}"
+        clean_path="${clean_path%/*}"
+        clean_path="${clean_path#*/}"
+        echo -e " ${YELLOW}${clean_path}${WHITE}"
+      fi
+    done
+    echo
+  fi
+
+  echo -e "Предполагаемый размер папки ${GREEN}${folder}${WHITE}: ${YELLOW}${folder_size_mb} MB${WHITE}"
+  if [[ -n "$disk_free" ]]; then
+    echo -e "Свободное место на диске: ${YELLOW}${disk_free}${WHITE}"
+  else
+    echo -e "Свободное место на диске: ${YELLOW}определить не удалось${WHITE}"
+  fi
+  echo
+}
+
+function confirm_archive_with_exclude() {
+  local folder_path="$1"
+  local folder="$2"
+  local choice
+
+  while true; do
+    select_archive_exclude_dirs "$folder" || return 1
+    print_archive_exclude_preview "$folder_path" "${ARCHIVE_EXCLUDE_ARGS[@]}"
+
+    vertical_menu "current" 1 0 30 "Начать архивацию" "Изменить исключаемые папки" "Выйти"
+    choice=$?
+    case "$choice" in
+      0) return 0 ;;
+      1)
+        echo
+        continue
+        ;;
+      *)
+        echo -e "Операция ${YELLOW}отменена${WHITE} пользователем."
+        return 1
+        ;;
+    esac
+  done
+}
+
 function archive() {
   local path="$1"
   local folder="$2"
@@ -142,11 +264,7 @@ function archive() {
   local dt
   dt=$(date "+%Y-%m-%d_%H-%M")
   local base_name="${folder}_${dt}"
-  local exclude_input
-  local excl
-  local normalized
-  local normalized_input
-  local invalid_exclude
+  ARCHIVE_EXCLUDE_ARGS=()
 
   case "$action" in
     archive_site_and_db)
@@ -160,94 +278,14 @@ function archive() {
       archive_db "$folder" "$base_name"
       ;;
     archive_site_with_exclude)
-      local default_exclude="${ARCHIVE_EXCLUDE:-}"
-      local exclude_args=()
-      while true; do
-        echo -e "Типовые примеры исключений:"
-        echo -e "Для Joomla: ${YELLOW}administrator/cache,administrator/logs,cache,tmp${WHITE}"
-        echo -e "Для Joomla Yootheme: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,templates/yootheme/cache${WHITE}"
-        echo -e "Для Joomla Akeeba: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,administrator/components/com_akeeba/backup${WHITE}"
-        echo
-        echo -e "Введите папки для исключения (через запятую):${YELLOW}"
-        read -r  -e -i "$default_exclude" exclude_input
-        echo -e "${WHITE}"
-
-        local IFS=',' exclude_arr=()
-        read -ra exclude_arr <<< "$exclude_input"
-        exclude_args=()
-        local normalized_exclude_arr=()
-        invalid_exclude=0
-        for excl in "${exclude_arr[@]}"; do
-          normalized="$(normalize_archive_exclude_dir "$excl")"
-          case "$?" in
-            0)
-              normalized_exclude_arr+=("$normalized")
-              exclude_args+=("--exclude=$folder/${normalized}/*")
-              ;;
-            1) ;;
-            *)
-              invalid_exclude=1
-              break
-              ;;
-          esac
-        done
-        if [[ "$invalid_exclude" == "1" ]]; then
-          echo
-          continue
-        fi
-
-        local IFS=','
-        normalized_input="${normalized_exclude_arr[*]}"
-        save_archive_exclude "$normalized_input"
-        break
-      done
-      archive_site "$fullpath" "$base_name" "${exclude_args[@]}"
+      confirm_archive_with_exclude "$fullpath" "$folder" || return 1
+      archive_site "$fullpath" "$base_name" "${ARCHIVE_EXCLUDE_ARGS[@]}"
       archive_db "$folder" "$base_name"
       ;;
 
     archive_folder_with_exclude)
-      local default_exclude="${ARCHIVE_EXCLUDE:-}"
-      local exclude_args=()
-      while true; do
-        echo -e "Типовые примеры исключений:"
-        echo -e "Для Joomla: ${YELLOW}administrator/cache,administrator/logs,cache,tmp${WHITE}"
-        echo -e "Для Joomla Yootheme: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,templates/yootheme/cache${WHITE}"
-        echo -e "Для Joomla Akeeba: ${YELLOW}administrator/cache,administrator/logs,cache,tmp,administrator/components/com_akeeba/backup${WHITE}"
-        echo
-        echo -e "Введите папки для исключения (через запятую):${YELLOW}"
-        read -r -e -i "$default_exclude" exclude_input
-        echo -e "${WHITE}"
-
-        local IFS=',' exclude_arr=()
-        read -ra exclude_arr <<< "$exclude_input"
-        exclude_args=()
-        local normalized_exclude_arr=()
-        invalid_exclude=0
-        for excl in "${exclude_arr[@]}"; do
-          normalized="$(normalize_archive_exclude_dir "$excl")"
-          case "$?" in
-            0)
-              normalized_exclude_arr+=("$normalized")
-              exclude_args+=("--exclude=$folder/${normalized}/*")
-              ;;
-            1) ;;
-            *)
-              invalid_exclude=1
-              break
-              ;;
-          esac
-        done
-        if [[ "$invalid_exclude" == "1" ]]; then
-          echo
-          continue
-        fi
-
-        local IFS=','
-        normalized_input="${normalized_exclude_arr[*]}"
-        save_archive_exclude "$normalized_input"
-        break
-      done
-      archive_site "$fullpath" "$base_name" "${exclude_args[@]}"
+      confirm_archive_with_exclude "$fullpath" "$folder" || return 1
+      archive_site "$fullpath" "$base_name" "${ARCHIVE_EXCLUDE_ARGS[@]}"
       ;;
   esac
 
@@ -259,8 +297,10 @@ function archive_site() {
   shift 2
   local arg
   local extra_args=("$@")
-  local parent_path="$(dirname "$folder_path")"
-  local folder="$(basename "$folder_path")"
+  local parent_path
+  local folder
+  parent_path="$(dirname "$folder_path")"
+  folder="$(basename "$folder_path")"
   local archive_path="${parent_path}/${archive_name}.tar.gz"
 
   # Формируем исключения для du
@@ -326,7 +366,8 @@ function archive_site() {
     0)
       echo -e "Архив ${GREEN}${archive_name}${WHITE} успешно создан."
       # Вывод размера конечного архива
-      local archive_size_mb=$(du -sm "$archive_path" | cut -f1)
+      local archive_size_mb
+      archive_size_mb=$(du -sm "$archive_path" | cut -f1)
       echo -e "Размер архива: ${YELLOW}${archive_size_mb} MB${WHITE}"
       ;;
     1)
@@ -381,8 +422,10 @@ function archive_db() {
 
 function archive_file() {
   local filepath="$1"
-  local filename="$(basename "$filepath")"
-  local dt=$(date "+%Y-%m-%d_%H-%M")
+  local filename
+  local dt
+  filename="$(basename "$filepath")"
+  dt=$(date "+%Y-%m-%d_%H-%M")
 
   # Отделим имя и расширение
   local name="${filename%.*}"
@@ -591,10 +634,11 @@ function restore_folder() {
 function restore_site() {
   local file="$1"
   local site_guess="$2"
-  local site_path="$(dirname "$file")"
+  local site_path
   local skip_create=0
   local f
   local conf_file=""
+  site_path="$(dirname "$file")"
   if [[ "$file" != *.tar.gz ]]; then
     echo -e "Файл ${RED}$(basename "$file")${WHITE} не является архивом tar.gz."
     echo -e "Восстановление ${YELLOW}отменено${WHITE}."
@@ -736,7 +780,8 @@ function restore_db_core() {
 
   # Проверка на размещение в /var/www/<user>/www
   local user_dir=""
-  local filepath="$(realpath "$file")"
+  local filepath
+  filepath="$(realpath "$file")"
   if [[ "$filepath" =~ ^/var/www/([^/]+)/www/ ]]; then
     user_dir="${BASH_REMATCH[1]}"
   else
@@ -759,7 +804,8 @@ function restore_db_core() {
   echo -e "Восстанавливаем базу данных ${GREEN}${custom_db}${WHITE} для пользователя ${YELLOW}${user_dir}${WHITE}..."
 
   # Проверка существования базы
-  local check=$(mariadb -N -e "SHOW DATABASES LIKE '${custom_db}'" 2>/dev/null)
+  local check
+  check=$(mariadb -N -e "SHOW DATABASES LIKE '${custom_db}'" 2>/dev/null)
 
   if [[ "$check" != "$custom_db" ]]; then
     echo -e "База данных ${YELLOW}${custom_db}${WHITE} не существует. Создать?"
@@ -815,7 +861,8 @@ function restore_db_core() {
 function restore_zip_folder() {
   local file="$1"
   local folder_guess="$2"
-  local filename="$(basename "$file")"
+  local filename
+  filename="$(basename "$file")"
 
   echo -e "Введите имя папки для извлечения: ${YELLOW}"
   read -e -i "$folder_guess" folder
@@ -859,7 +906,8 @@ function restore_zip_folder() {
 
 function extract() {
   local file="$1"
-  local filename="$(basename "$file")"
+  local filename
+  filename="$(basename "$file")"
   local ext="${filename##*.}"
   local base="${filename%.*}"
 
