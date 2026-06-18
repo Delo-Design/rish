@@ -83,6 +83,26 @@ if [[ -f /root/rish/create_swapfile.sh ]]; then
     exit 1
   fi
 fi
+if [[ -f /root/rish/mariadb_install.sh ]]; then
+  if [[ -f /root/rish/scripts/mariadb_install.sh ]]; then
+    rm -f /root/rish/mariadb_install.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/mariadb_install.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
+if [[ -f /root/rish/mariadb_repo_setup.sh ]]; then
+  if [[ -f /root/rish/scripts/mariadb_repo_setup.sh ]]; then
+    rm -f /root/rish/mariadb_repo_setup.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/mariadb_repo_setup.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
 if [[ -f /root/rish/apache_restart.sh ]]; then
   if [[ -f /root/rish/scripts/apache_restart.sh ]]; then
     rm -f /root/rish/apache_restart.sh

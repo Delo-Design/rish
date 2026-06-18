@@ -82,7 +82,7 @@ source windows.sh
 source checkip.sh
 source php_multi_install.sh
 source php_helpers.sh
-source mariadb_install.sh
+source scripts/mariadb_install.sh
 source create_hotlist.sh
 source scripts/create_swapfile.sh
 
@@ -1057,7 +1057,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
       echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
 
-      if ! bash /root/rish/mariadb_repo_setup.sh --mariadb-server-version="${Maria_Version}" --skip-maxscale
+      if ! bash /root/rish/scripts/mariadb_repo_setup.sh --mariadb-server-version="${Maria_Version}" --skip-maxscale
       then
         if ((Maria_Version_Custom)); then
           echo -e "${RED}Указанная версия MariaDB недоступна.${WHITE} Выберите другую версию."
