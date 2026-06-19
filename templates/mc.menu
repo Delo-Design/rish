@@ -60,7 +60,7 @@ O  Oбнoвлeниe/прoверкa RISH {VER}
   bash /root/rish/update.sh
 
 Z  Статистика сайтов сервера
-    source /root/rish/checkip.sh
+    source /root/rish/scripts/checkip.sh
     source /root/rish/windows.sh
     CheckIP
 

@@ -79,7 +79,6 @@ export RISH_HOME=${_script_dir}
 cd ${RISH_HOME} || exit
 
 source windows.sh
-source checkip.sh
 source php_multi_install.sh
 source php_helpers.sh
 source scripts/mariadb_install.sh
