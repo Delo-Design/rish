@@ -93,6 +93,16 @@ if [[ -f /root/rish/checkip.sh ]]; then
     exit 1
   fi
 fi
+if [[ -f /root/rish/php_restart.sh ]]; then
+  if [[ -f /root/rish/scripts/php_restart.sh ]]; then
+    rm -f /root/rish/php_restart.sh
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/scripts/php_restart.sh не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
 if [[ -f /root/rish/mariadb_install.sh ]]; then
   if [[ -f /root/rish/scripts/mariadb_install.sh ]]; then
     rm -f /root/rish/mariadb_install.sh

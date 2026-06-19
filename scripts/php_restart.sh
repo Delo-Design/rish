@@ -74,6 +74,8 @@ php_restart() {
       menu_items+=("Проверить статус $version-php-fpm")
     done
 
+    menu_items+=("Выйти")
+
     # Вывод всех пунктов меню для проверки
     vertical_menu "center" "center" 0 10 "${menu_items[@]}"
     choice=$?
@@ -111,6 +113,9 @@ php_restart() {
       continue
     fi
     length=${#versions[@]}
+    if ((choice == length * 2 + 2)); then
+      return
+    fi
     if ((choice < length + 2)); then
       # Пункты меню для перезапуска
       version=${versions[${choice} - 2]}

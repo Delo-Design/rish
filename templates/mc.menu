@@ -25,7 +25,7 @@ r  Перезaпуск и стaтус серверa apache
   bash /root/rish/scripts/apache_restart.sh
 
 f       Статус и перезапуск php-fpm
-  bash /root/rish/php_restart.sh
+  bash /root/rish/scripts/php_restart.sh
 
 M       Статус и перезапуск MariaDB
   bash /root/rish/scripts/mariadb_restart.sh
