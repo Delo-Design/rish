@@ -1,0 +1,24 @@
+{
+  "extensions": [
+    {
+      "match": "element",
+      "value": "com_jce",
+      "label": "JCE"
+    },
+    {
+      "match": "element",
+      "value": "pkg_jce",
+      "label": "JCE"
+    },
+    {
+      "match": "element_contains",
+      "value": "jce",
+      "label": "JCE"
+    },
+    {
+      "match": "name_contains",
+      "value": "JCE",
+      "label": "JCE"
+    }
+  ]
+}

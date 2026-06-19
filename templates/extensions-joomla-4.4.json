@@ -1,0 +1,1853 @@
+{
+  "baseline": "4.4",
+  "source_version": "4.4.14",
+  "source_url": "https://raw.githubusercontent.com/joomla/joomla-cms/4.4.14/installation/sql/mysql/base.sql",
+  "key_fields": [
+    "type",
+    "folder",
+    "element",
+    "client_id"
+  ],
+  "extensions": [
+    {
+      "key": "component||com_actionlogs|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_actionlogs",
+      "client_id": 1,
+      "name": "com_actionlogs"
+    },
+    {
+      "key": "component||com_admin|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_admin",
+      "client_id": 1,
+      "name": "com_admin"
+    },
+    {
+      "key": "component||com_ajax|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_ajax",
+      "client_id": 1,
+      "name": "com_ajax"
+    },
+    {
+      "key": "component||com_associations|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_associations",
+      "client_id": 1,
+      "name": "com_associations"
+    },
+    {
+      "key": "component||com_banners|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_banners",
+      "client_id": 1,
+      "name": "com_banners"
+    },
+    {
+      "key": "component||com_cache|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_cache",
+      "client_id": 1,
+      "name": "com_cache"
+    },
+    {
+      "key": "component||com_categories|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_categories",
+      "client_id": 1,
+      "name": "com_categories"
+    },
+    {
+      "key": "component||com_checkin|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_checkin",
+      "client_id": 1,
+      "name": "com_checkin"
+    },
+    {
+      "key": "component||com_config|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_config",
+      "client_id": 1,
+      "name": "com_config"
+    },
+    {
+      "key": "component||com_contact|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_contact",
+      "client_id": 1,
+      "name": "com_contact"
+    },
+    {
+      "key": "component||com_content|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_content",
+      "client_id": 1,
+      "name": "com_content"
+    },
+    {
+      "key": "component||com_contenthistory|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_contenthistory",
+      "client_id": 1,
+      "name": "com_contenthistory"
+    },
+    {
+      "key": "component||com_cpanel|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_cpanel",
+      "client_id": 1,
+      "name": "com_cpanel"
+    },
+    {
+      "key": "component||com_fields|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_fields",
+      "client_id": 1,
+      "name": "com_fields"
+    },
+    {
+      "key": "component||com_finder|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_finder",
+      "client_id": 1,
+      "name": "com_finder"
+    },
+    {
+      "key": "component||com_guidedtours|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_guidedtours",
+      "client_id": 1,
+      "name": "com_guidedtours"
+    },
+    {
+      "key": "component||com_installer|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_installer",
+      "client_id": 1,
+      "name": "com_installer"
+    },
+    {
+      "key": "component||com_joomlaupdate|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_joomlaupdate",
+      "client_id": 1,
+      "name": "com_joomlaupdate"
+    },
+    {
+      "key": "component||com_languages|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_languages",
+      "client_id": 1,
+      "name": "com_languages"
+    },
+    {
+      "key": "component||com_login|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_login",
+      "client_id": 1,
+      "name": "com_login"
+    },
+    {
+      "key": "component||com_mails|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_mails",
+      "client_id": 1,
+      "name": "com_mails"
+    },
+    {
+      "key": "component||com_media|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_media",
+      "client_id": 1,
+      "name": "com_media"
+    },
+    {
+      "key": "component||com_menus|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_menus",
+      "client_id": 1,
+      "name": "com_menus"
+    },
+    {
+      "key": "component||com_messages|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_messages",
+      "client_id": 1,
+      "name": "com_messages"
+    },
+    {
+      "key": "component||com_modules|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_modules",
+      "client_id": 1,
+      "name": "com_modules"
+    },
+    {
+      "key": "component||com_newsfeeds|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_newsfeeds",
+      "client_id": 1,
+      "name": "com_newsfeeds"
+    },
+    {
+      "key": "component||com_plugins|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_plugins",
+      "client_id": 1,
+      "name": "com_plugins"
+    },
+    {
+      "key": "component||com_postinstall|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_postinstall",
+      "client_id": 1,
+      "name": "com_postinstall"
+    },
+    {
+      "key": "component||com_privacy|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_privacy",
+      "client_id": 1,
+      "name": "com_privacy"
+    },
+    {
+      "key": "component||com_redirect|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_redirect",
+      "client_id": 1,
+      "name": "com_redirect"
+    },
+    {
+      "key": "component||com_scheduler|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_scheduler",
+      "client_id": 1,
+      "name": "com_scheduler"
+    },
+    {
+      "key": "component||com_tags|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_tags",
+      "client_id": 1,
+      "name": "com_tags"
+    },
+    {
+      "key": "component||com_templates|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_templates",
+      "client_id": 1,
+      "name": "com_templates"
+    },
+    {
+      "key": "component||com_users|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_users",
+      "client_id": 1,
+      "name": "com_users"
+    },
+    {
+      "key": "component||com_workflow|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_workflow",
+      "client_id": 1,
+      "name": "com_workflow"
+    },
+    {
+      "key": "component||com_wrapper|1",
+      "type": "component",
+      "folder": "",
+      "element": "com_wrapper",
+      "client_id": 1,
+      "name": "com_wrapper"
+    },
+    {
+      "key": "file||joomla|0",
+      "type": "file",
+      "folder": "",
+      "element": "joomla",
+      "client_id": 0,
+      "name": "files_joomla"
+    },
+    {
+      "key": "library||joomla|0",
+      "type": "library",
+      "folder": "",
+      "element": "joomla",
+      "client_id": 0,
+      "name": "Joomla! Platform"
+    },
+    {
+      "key": "library||phpass|0",
+      "type": "library",
+      "folder": "",
+      "element": "phpass",
+      "client_id": 0,
+      "name": "PHPass"
+    },
+    {
+      "key": "module||mod_articles_archive|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_articles_archive",
+      "client_id": 0,
+      "name": "mod_articles_archive"
+    },
+    {
+      "key": "module||mod_articles_categories|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_articles_categories",
+      "client_id": 0,
+      "name": "mod_articles_categories"
+    },
+    {
+      "key": "module||mod_articles_category|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_articles_category",
+      "client_id": 0,
+      "name": "mod_articles_category"
+    },
+    {
+      "key": "module||mod_articles_latest|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_articles_latest",
+      "client_id": 0,
+      "name": "mod_articles_latest"
+    },
+    {
+      "key": "module||mod_articles_news|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_articles_news",
+      "client_id": 0,
+      "name": "mod_articles_news"
+    },
+    {
+      "key": "module||mod_articles_popular|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_articles_popular",
+      "client_id": 0,
+      "name": "mod_articles_popular"
+    },
+    {
+      "key": "module||mod_banners|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_banners",
+      "client_id": 0,
+      "name": "mod_banners"
+    },
+    {
+      "key": "module||mod_breadcrumbs|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_breadcrumbs",
+      "client_id": 0,
+      "name": "mod_breadcrumbs"
+    },
+    {
+      "key": "module||mod_custom|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_custom",
+      "client_id": 0,
+      "name": "mod_custom"
+    },
+    {
+      "key": "module||mod_custom|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_custom",
+      "client_id": 1,
+      "name": "mod_custom"
+    },
+    {
+      "key": "module||mod_feed|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_feed",
+      "client_id": 0,
+      "name": "mod_feed"
+    },
+    {
+      "key": "module||mod_feed|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_feed",
+      "client_id": 1,
+      "name": "mod_feed"
+    },
+    {
+      "key": "module||mod_finder|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_finder",
+      "client_id": 0,
+      "name": "mod_finder"
+    },
+    {
+      "key": "module||mod_footer|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_footer",
+      "client_id": 0,
+      "name": "mod_footer"
+    },
+    {
+      "key": "module||mod_frontend|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_frontend",
+      "client_id": 1,
+      "name": "mod_frontend"
+    },
+    {
+      "key": "module||mod_guidedtours|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_guidedtours",
+      "client_id": 1,
+      "name": "mod_guidedtours"
+    },
+    {
+      "key": "module||mod_languages|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_languages",
+      "client_id": 0,
+      "name": "mod_languages"
+    },
+    {
+      "key": "module||mod_latest|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_latest",
+      "client_id": 1,
+      "name": "mod_latest"
+    },
+    {
+      "key": "module||mod_latestactions|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_latestactions",
+      "client_id": 1,
+      "name": "mod_latestactions"
+    },
+    {
+      "key": "module||mod_logged|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_logged",
+      "client_id": 1,
+      "name": "mod_logged"
+    },
+    {
+      "key": "module||mod_login|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_login",
+      "client_id": 0,
+      "name": "mod_login"
+    },
+    {
+      "key": "module||mod_login|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_login",
+      "client_id": 1,
+      "name": "mod_login"
+    },
+    {
+      "key": "module||mod_loginsupport|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_loginsupport",
+      "client_id": 1,
+      "name": "mod_loginsupport"
+    },
+    {
+      "key": "module||mod_menu|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_menu",
+      "client_id": 0,
+      "name": "mod_menu"
+    },
+    {
+      "key": "module||mod_menu|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_menu",
+      "client_id": 1,
+      "name": "mod_menu"
+    },
+    {
+      "key": "module||mod_messages|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_messages",
+      "client_id": 1,
+      "name": "mod_messages"
+    },
+    {
+      "key": "module||mod_multilangstatus|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_multilangstatus",
+      "client_id": 1,
+      "name": "mod_multilangstatus"
+    },
+    {
+      "key": "module||mod_popular|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_popular",
+      "client_id": 1,
+      "name": "mod_popular"
+    },
+    {
+      "key": "module||mod_post_installation_messages|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_post_installation_messages",
+      "client_id": 1,
+      "name": "mod_post_installation_messages"
+    },
+    {
+      "key": "module||mod_privacy_dashboard|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_privacy_dashboard",
+      "client_id": 1,
+      "name": "mod_privacy_dashboard"
+    },
+    {
+      "key": "module||mod_privacy_status|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_privacy_status",
+      "client_id": 1,
+      "name": "mod_privacy_status"
+    },
+    {
+      "key": "module||mod_quickicon|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_quickicon",
+      "client_id": 1,
+      "name": "mod_quickicon"
+    },
+    {
+      "key": "module||mod_random_image|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_random_image",
+      "client_id": 0,
+      "name": "mod_random_image"
+    },
+    {
+      "key": "module||mod_related_items|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_related_items",
+      "client_id": 0,
+      "name": "mod_related_items"
+    },
+    {
+      "key": "module||mod_sampledata|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_sampledata",
+      "client_id": 1,
+      "name": "mod_sampledata"
+    },
+    {
+      "key": "module||mod_stats_admin|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_stats_admin",
+      "client_id": 1,
+      "name": "mod_stats_admin"
+    },
+    {
+      "key": "module||mod_stats|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_stats",
+      "client_id": 0,
+      "name": "mod_stats"
+    },
+    {
+      "key": "module||mod_submenu|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_submenu",
+      "client_id": 1,
+      "name": "mod_submenu"
+    },
+    {
+      "key": "module||mod_syndicate|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_syndicate",
+      "client_id": 0,
+      "name": "mod_syndicate"
+    },
+    {
+      "key": "module||mod_tags_popular|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_tags_popular",
+      "client_id": 0,
+      "name": "mod_tags_popular"
+    },
+    {
+      "key": "module||mod_tags_similar|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_tags_similar",
+      "client_id": 0,
+      "name": "mod_tags_similar"
+    },
+    {
+      "key": "module||mod_title|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_title",
+      "client_id": 1,
+      "name": "mod_title"
+    },
+    {
+      "key": "module||mod_toolbar|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_toolbar",
+      "client_id": 1,
+      "name": "mod_toolbar"
+    },
+    {
+      "key": "module||mod_user|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_user",
+      "client_id": 1,
+      "name": "mod_user"
+    },
+    {
+      "key": "module||mod_users_latest|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_users_latest",
+      "client_id": 0,
+      "name": "mod_users_latest"
+    },
+    {
+      "key": "module||mod_version|1",
+      "type": "module",
+      "folder": "",
+      "element": "mod_version",
+      "client_id": 1,
+      "name": "mod_version"
+    },
+    {
+      "key": "module||mod_whosonline|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_whosonline",
+      "client_id": 0,
+      "name": "mod_whosonline"
+    },
+    {
+      "key": "module||mod_wrapper|0",
+      "type": "module",
+      "folder": "",
+      "element": "mod_wrapper",
+      "client_id": 0,
+      "name": "mod_wrapper"
+    },
+    {
+      "key": "package||pkg_en-GB|0",
+      "type": "package",
+      "folder": "",
+      "element": "pkg_en-GB",
+      "client_id": 0,
+      "name": "English (en-GB) Language Pack"
+    },
+    {
+      "key": "plugin|actionlog|joomla|0",
+      "type": "plugin",
+      "folder": "actionlog",
+      "element": "joomla",
+      "client_id": 0,
+      "name": "plg_actionlog_joomla"
+    },
+    {
+      "key": "plugin|api-authentication|basic|0",
+      "type": "plugin",
+      "folder": "api-authentication",
+      "element": "basic",
+      "client_id": 0,
+      "name": "plg_api-authentication_basic"
+    },
+    {
+      "key": "plugin|api-authentication|token|0",
+      "type": "plugin",
+      "folder": "api-authentication",
+      "element": "token",
+      "client_id": 0,
+      "name": "plg_api-authentication_token"
+    },
+    {
+      "key": "plugin|authentication|cookie|0",
+      "type": "plugin",
+      "folder": "authentication",
+      "element": "cookie",
+      "client_id": 0,
+      "name": "plg_authentication_cookie"
+    },
+    {
+      "key": "plugin|authentication|joomla|0",
+      "type": "plugin",
+      "folder": "authentication",
+      "element": "joomla",
+      "client_id": 0,
+      "name": "plg_authentication_joomla"
+    },
+    {
+      "key": "plugin|authentication|ldap|0",
+      "type": "plugin",
+      "folder": "authentication",
+      "element": "ldap",
+      "client_id": 0,
+      "name": "plg_authentication_ldap"
+    },
+    {
+      "key": "plugin|behaviour|compat|0",
+      "type": "plugin",
+      "folder": "behaviour",
+      "element": "compat",
+      "client_id": 0,
+      "name": "plg_behaviour_compat"
+    },
+    {
+      "key": "plugin|behaviour|taggable|0",
+      "type": "plugin",
+      "folder": "behaviour",
+      "element": "taggable",
+      "client_id": 0,
+      "name": "plg_behaviour_taggable"
+    },
+    {
+      "key": "plugin|behaviour|versionable|0",
+      "type": "plugin",
+      "folder": "behaviour",
+      "element": "versionable",
+      "client_id": 0,
+      "name": "plg_behaviour_versionable"
+    },
+    {
+      "key": "plugin|captcha|recaptcha_invisible|0",
+      "type": "plugin",
+      "folder": "captcha",
+      "element": "recaptcha_invisible",
+      "client_id": 0,
+      "name": "plg_captcha_recaptcha_invisible"
+    },
+    {
+      "key": "plugin|captcha|recaptcha|0",
+      "type": "plugin",
+      "folder": "captcha",
+      "element": "recaptcha",
+      "client_id": 0,
+      "name": "plg_captcha_recaptcha"
+    },
+    {
+      "key": "plugin|content|confirmconsent|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "confirmconsent",
+      "client_id": 0,
+      "name": "plg_content_confirmconsent"
+    },
+    {
+      "key": "plugin|content|contact|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "contact",
+      "client_id": 0,
+      "name": "plg_content_contact"
+    },
+    {
+      "key": "plugin|content|emailcloak|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "emailcloak",
+      "client_id": 0,
+      "name": "plg_content_emailcloak"
+    },
+    {
+      "key": "plugin|content|fields|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "fields",
+      "client_id": 0,
+      "name": "plg_content_fields"
+    },
+    {
+      "key": "plugin|content|finder|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "finder",
+      "client_id": 0,
+      "name": "plg_content_finder"
+    },
+    {
+      "key": "plugin|content|joomla|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "joomla",
+      "client_id": 0,
+      "name": "plg_content_joomla"
+    },
+    {
+      "key": "plugin|content|loadmodule|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "loadmodule",
+      "client_id": 0,
+      "name": "plg_content_loadmodule"
+    },
+    {
+      "key": "plugin|content|pagebreak|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "pagebreak",
+      "client_id": 0,
+      "name": "plg_content_pagebreak"
+    },
+    {
+      "key": "plugin|content|pagenavigation|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "pagenavigation",
+      "client_id": 0,
+      "name": "plg_content_pagenavigation"
+    },
+    {
+      "key": "plugin|content|vote|0",
+      "type": "plugin",
+      "folder": "content",
+      "element": "vote",
+      "client_id": 0,
+      "name": "plg_content_vote"
+    },
+    {
+      "key": "plugin|editors-xtd|article|0",
+      "type": "plugin",
+      "folder": "editors-xtd",
+      "element": "article",
+      "client_id": 0,
+      "name": "plg_editors-xtd_article"
+    },
+    {
+      "key": "plugin|editors-xtd|contact|0",
+      "type": "plugin",
+      "folder": "editors-xtd",
+      "element": "contact",
+      "client_id": 0,
+      "name": "plg_editors-xtd_contact"
+    },
+    {
+      "key": "plugin|editors-xtd|fields|0",
+      "type": "plugin",
+      "folder": "editors-xtd",
+      "element": "fields",
+      "client_id": 0,
+      "name": "plg_editors-xtd_fields"
+    },
+    {
+      "key": "plugin|editors-xtd|image|0",
+      "type": "plugin",
+      "folder": "editors-xtd",
+      "element": "image",
+      "client_id": 0,
+      "name": "plg_editors-xtd_image"
+    },
+    {
+      "key": "plugin|editors-xtd|menu|0",
+      "type": "plugin",
+      "folder": "editors-xtd",
+      "element": "menu",
+      "client_id": 0,
+      "name": "plg_editors-xtd_menu"
+    },
+    {
+      "key": "plugin|editors-xtd|module|0",
+      "type": "plugin",
+      "folder": "editors-xtd",
+      "element": "module",
+      "client_id": 0,
+      "name": "plg_editors-xtd_module"
+    },
+    {
+      "key": "plugin|editors-xtd|pagebreak|0",
+      "type": "plugin",
+      "folder": "editors-xtd",
+      "element": "pagebreak",
+      "client_id": 0,
+      "name": "plg_editors-xtd_pagebreak"
+    },
+    {
+      "key": "plugin|editors-xtd|readmore|0",
+      "type": "plugin",
+      "folder": "editors-xtd",
+      "element": "readmore",
+      "client_id": 0,
+      "name": "plg_editors-xtd_readmore"
+    },
+    {
+      "key": "plugin|editors|codemirror|0",
+      "type": "plugin",
+      "folder": "editors",
+      "element": "codemirror",
+      "client_id": 0,
+      "name": "plg_editors_codemirror"
+    },
+    {
+      "key": "plugin|editors|none|0",
+      "type": "plugin",
+      "folder": "editors",
+      "element": "none",
+      "client_id": 0,
+      "name": "plg_editors_none"
+    },
+    {
+      "key": "plugin|editors|tinymce|0",
+      "type": "plugin",
+      "folder": "editors",
+      "element": "tinymce",
+      "client_id": 0,
+      "name": "plg_editors_tinymce"
+    },
+    {
+      "key": "plugin|extension|finder|0",
+      "type": "plugin",
+      "folder": "extension",
+      "element": "finder",
+      "client_id": 0,
+      "name": "plg_extension_finder"
+    },
+    {
+      "key": "plugin|extension|joomla|0",
+      "type": "plugin",
+      "folder": "extension",
+      "element": "joomla",
+      "client_id": 0,
+      "name": "plg_extension_joomla"
+    },
+    {
+      "key": "plugin|extension|namespacemap|0",
+      "type": "plugin",
+      "folder": "extension",
+      "element": "namespacemap",
+      "client_id": 0,
+      "name": "plg_extension_namespacemap"
+    },
+    {
+      "key": "plugin|fields|calendar|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "calendar",
+      "client_id": 0,
+      "name": "plg_fields_calendar"
+    },
+    {
+      "key": "plugin|fields|checkboxes|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "checkboxes",
+      "client_id": 0,
+      "name": "plg_fields_checkboxes"
+    },
+    {
+      "key": "plugin|fields|color|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "color",
+      "client_id": 0,
+      "name": "plg_fields_color"
+    },
+    {
+      "key": "plugin|fields|editor|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "editor",
+      "client_id": 0,
+      "name": "plg_fields_editor"
+    },
+    {
+      "key": "plugin|fields|imagelist|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "imagelist",
+      "client_id": 0,
+      "name": "plg_fields_imagelist"
+    },
+    {
+      "key": "plugin|fields|integer|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "integer",
+      "client_id": 0,
+      "name": "plg_fields_integer"
+    },
+    {
+      "key": "plugin|fields|list|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "list",
+      "client_id": 0,
+      "name": "plg_fields_list"
+    },
+    {
+      "key": "plugin|fields|media|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "media",
+      "client_id": 0,
+      "name": "plg_fields_media"
+    },
+    {
+      "key": "plugin|fields|radio|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "radio",
+      "client_id": 0,
+      "name": "plg_fields_radio"
+    },
+    {
+      "key": "plugin|fields|sql|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "sql",
+      "client_id": 0,
+      "name": "plg_fields_sql"
+    },
+    {
+      "key": "plugin|fields|subform|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "subform",
+      "client_id": 0,
+      "name": "plg_fields_subform"
+    },
+    {
+      "key": "plugin|fields|text|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "text",
+      "client_id": 0,
+      "name": "plg_fields_text"
+    },
+    {
+      "key": "plugin|fields|textarea|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "textarea",
+      "client_id": 0,
+      "name": "plg_fields_textarea"
+    },
+    {
+      "key": "plugin|fields|url|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "url",
+      "client_id": 0,
+      "name": "plg_fields_url"
+    },
+    {
+      "key": "plugin|fields|user|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "user",
+      "client_id": 0,
+      "name": "plg_fields_user"
+    },
+    {
+      "key": "plugin|fields|usergrouplist|0",
+      "type": "plugin",
+      "folder": "fields",
+      "element": "usergrouplist",
+      "client_id": 0,
+      "name": "plg_fields_usergrouplist"
+    },
+    {
+      "key": "plugin|filesystem|local|0",
+      "type": "plugin",
+      "folder": "filesystem",
+      "element": "local",
+      "client_id": 0,
+      "name": "plg_filesystem_local"
+    },
+    {
+      "key": "plugin|finder|categories|0",
+      "type": "plugin",
+      "folder": "finder",
+      "element": "categories",
+      "client_id": 0,
+      "name": "plg_finder_categories"
+    },
+    {
+      "key": "plugin|finder|contacts|0",
+      "type": "plugin",
+      "folder": "finder",
+      "element": "contacts",
+      "client_id": 0,
+      "name": "plg_finder_contacts"
+    },
+    {
+      "key": "plugin|finder|content|0",
+      "type": "plugin",
+      "folder": "finder",
+      "element": "content",
+      "client_id": 0,
+      "name": "plg_finder_content"
+    },
+    {
+      "key": "plugin|finder|newsfeeds|0",
+      "type": "plugin",
+      "folder": "finder",
+      "element": "newsfeeds",
+      "client_id": 0,
+      "name": "plg_finder_newsfeeds"
+    },
+    {
+      "key": "plugin|finder|tags|0",
+      "type": "plugin",
+      "folder": "finder",
+      "element": "tags",
+      "client_id": 0,
+      "name": "plg_finder_tags"
+    },
+    {
+      "key": "plugin|installer|folderinstaller|0",
+      "type": "plugin",
+      "folder": "installer",
+      "element": "folderinstaller",
+      "client_id": 0,
+      "name": "plg_installer_folderinstaller"
+    },
+    {
+      "key": "plugin|installer|override|0",
+      "type": "plugin",
+      "folder": "installer",
+      "element": "override",
+      "client_id": 0,
+      "name": "plg_installer_override"
+    },
+    {
+      "key": "plugin|installer|packageinstaller|0",
+      "type": "plugin",
+      "folder": "installer",
+      "element": "packageinstaller",
+      "client_id": 0,
+      "name": "plg_installer_packageinstaller"
+    },
+    {
+      "key": "plugin|installer|urlinstaller|0",
+      "type": "plugin",
+      "folder": "installer",
+      "element": "urlinstaller",
+      "client_id": 0,
+      "name": "plg_installer_urlinstaller"
+    },
+    {
+      "key": "plugin|installer|webinstaller|0",
+      "type": "plugin",
+      "folder": "installer",
+      "element": "webinstaller",
+      "client_id": 0,
+      "name": "plg_installer_webinstaller"
+    },
+    {
+      "key": "plugin|media-action|crop|0",
+      "type": "plugin",
+      "folder": "media-action",
+      "element": "crop",
+      "client_id": 0,
+      "name": "plg_media-action_crop"
+    },
+    {
+      "key": "plugin|media-action|resize|0",
+      "type": "plugin",
+      "folder": "media-action",
+      "element": "resize",
+      "client_id": 0,
+      "name": "plg_media-action_resize"
+    },
+    {
+      "key": "plugin|media-action|rotate|0",
+      "type": "plugin",
+      "folder": "media-action",
+      "element": "rotate",
+      "client_id": 0,
+      "name": "plg_media-action_rotate"
+    },
+    {
+      "key": "plugin|multifactorauth|email|0",
+      "type": "plugin",
+      "folder": "multifactorauth",
+      "element": "email",
+      "client_id": 0,
+      "name": "plg_multifactorauth_email"
+    },
+    {
+      "key": "plugin|multifactorauth|fixed|0",
+      "type": "plugin",
+      "folder": "multifactorauth",
+      "element": "fixed",
+      "client_id": 0,
+      "name": "plg_multifactorauth_fixed"
+    },
+    {
+      "key": "plugin|multifactorauth|totp|0",
+      "type": "plugin",
+      "folder": "multifactorauth",
+      "element": "totp",
+      "client_id": 0,
+      "name": "plg_multifactorauth_totp"
+    },
+    {
+      "key": "plugin|multifactorauth|webauthn|0",
+      "type": "plugin",
+      "folder": "multifactorauth",
+      "element": "webauthn",
+      "client_id": 0,
+      "name": "plg_multifactorauth_webauthn"
+    },
+    {
+      "key": "plugin|multifactorauth|yubikey|0",
+      "type": "plugin",
+      "folder": "multifactorauth",
+      "element": "yubikey",
+      "client_id": 0,
+      "name": "plg_multifactorauth_yubikey"
+    },
+    {
+      "key": "plugin|privacy|actionlogs|0",
+      "type": "plugin",
+      "folder": "privacy",
+      "element": "actionlogs",
+      "client_id": 0,
+      "name": "plg_privacy_actionlogs"
+    },
+    {
+      "key": "plugin|privacy|consents|0",
+      "type": "plugin",
+      "folder": "privacy",
+      "element": "consents",
+      "client_id": 0,
+      "name": "plg_privacy_consents"
+    },
+    {
+      "key": "plugin|privacy|contact|0",
+      "type": "plugin",
+      "folder": "privacy",
+      "element": "contact",
+      "client_id": 0,
+      "name": "plg_privacy_contact"
+    },
+    {
+      "key": "plugin|privacy|content|0",
+      "type": "plugin",
+      "folder": "privacy",
+      "element": "content",
+      "client_id": 0,
+      "name": "plg_privacy_content"
+    },
+    {
+      "key": "plugin|privacy|message|0",
+      "type": "plugin",
+      "folder": "privacy",
+      "element": "message",
+      "client_id": 0,
+      "name": "plg_privacy_message"
+    },
+    {
+      "key": "plugin|privacy|user|0",
+      "type": "plugin",
+      "folder": "privacy",
+      "element": "user",
+      "client_id": 0,
+      "name": "plg_privacy_user"
+    },
+    {
+      "key": "plugin|quickicon|downloadkey|0",
+      "type": "plugin",
+      "folder": "quickicon",
+      "element": "downloadkey",
+      "client_id": 0,
+      "name": "plg_quickicon_downloadkey"
+    },
+    {
+      "key": "plugin|quickicon|eos|0",
+      "type": "plugin",
+      "folder": "quickicon",
+      "element": "eos",
+      "client_id": 0,
+      "name": "plg_quickicon_eos"
+    },
+    {
+      "key": "plugin|quickicon|extensionupdate|0",
+      "type": "plugin",
+      "folder": "quickicon",
+      "element": "extensionupdate",
+      "client_id": 0,
+      "name": "plg_quickicon_extensionupdate"
+    },
+    {
+      "key": "plugin|quickicon|joomlaupdate|0",
+      "type": "plugin",
+      "folder": "quickicon",
+      "element": "joomlaupdate",
+      "client_id": 0,
+      "name": "plg_quickicon_joomlaupdate"
+    },
+    {
+      "key": "plugin|quickicon|overridecheck|0",
+      "type": "plugin",
+      "folder": "quickicon",
+      "element": "overridecheck",
+      "client_id": 0,
+      "name": "plg_quickicon_overridecheck"
+    },
+    {
+      "key": "plugin|quickicon|phpversioncheck|0",
+      "type": "plugin",
+      "folder": "quickicon",
+      "element": "phpversioncheck",
+      "client_id": 0,
+      "name": "plg_quickicon_phpversioncheck"
+    },
+    {
+      "key": "plugin|quickicon|privacycheck|0",
+      "type": "plugin",
+      "folder": "quickicon",
+      "element": "privacycheck",
+      "client_id": 0,
+      "name": "plg_quickicon_privacycheck"
+    },
+    {
+      "key": "plugin|sampledata|blog|0",
+      "type": "plugin",
+      "folder": "sampledata",
+      "element": "blog",
+      "client_id": 0,
+      "name": "plg_sampledata_blog"
+    },
+    {
+      "key": "plugin|sampledata|multilang|0",
+      "type": "plugin",
+      "folder": "sampledata",
+      "element": "multilang",
+      "client_id": 0,
+      "name": "plg_sampledata_multilang"
+    },
+    {
+      "key": "plugin|system|accessibility|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "accessibility",
+      "client_id": 0,
+      "name": "plg_system_accessibility"
+    },
+    {
+      "key": "plugin|system|actionlogs|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "actionlogs",
+      "client_id": 0,
+      "name": "plg_system_actionlogs"
+    },
+    {
+      "key": "plugin|system|cache|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "cache",
+      "client_id": 0,
+      "name": "plg_system_cache"
+    },
+    {
+      "key": "plugin|system|debug|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "debug",
+      "client_id": 0,
+      "name": "plg_system_debug"
+    },
+    {
+      "key": "plugin|system|fields|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "fields",
+      "client_id": 0,
+      "name": "plg_system_fields"
+    },
+    {
+      "key": "plugin|system|guidedtours|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "guidedtours",
+      "client_id": 0,
+      "name": "plg_system_guidedtours"
+    },
+    {
+      "key": "plugin|system|highlight|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "highlight",
+      "client_id": 0,
+      "name": "plg_system_highlight"
+    },
+    {
+      "key": "plugin|system|httpheaders|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "httpheaders",
+      "client_id": 0,
+      "name": "plg_system_httpheaders"
+    },
+    {
+      "key": "plugin|system|jooa11y|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "jooa11y",
+      "client_id": 0,
+      "name": "plg_system_jooa11y"
+    },
+    {
+      "key": "plugin|system|languagecode|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "languagecode",
+      "client_id": 0,
+      "name": "plg_system_languagecode"
+    },
+    {
+      "key": "plugin|system|languagefilter|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "languagefilter",
+      "client_id": 0,
+      "name": "plg_system_languagefilter"
+    },
+    {
+      "key": "plugin|system|log|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "log",
+      "client_id": 0,
+      "name": "plg_system_log"
+    },
+    {
+      "key": "plugin|system|logout|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "logout",
+      "client_id": 0,
+      "name": "plg_system_logout"
+    },
+    {
+      "key": "plugin|system|logrotation|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "logrotation",
+      "client_id": 0,
+      "name": "plg_system_logrotation"
+    },
+    {
+      "key": "plugin|system|privacyconsent|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "privacyconsent",
+      "client_id": 0,
+      "name": "plg_system_privacyconsent"
+    },
+    {
+      "key": "plugin|system|redirect|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "redirect",
+      "client_id": 0,
+      "name": "plg_system_redirect"
+    },
+    {
+      "key": "plugin|system|remember|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "remember",
+      "client_id": 0,
+      "name": "plg_system_remember"
+    },
+    {
+      "key": "plugin|system|schedulerunner|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "schedulerunner",
+      "client_id": 0,
+      "name": "plg_system_schedulerunner"
+    },
+    {
+      "key": "plugin|system|sef|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "sef",
+      "client_id": 0,
+      "name": "plg_system_sef"
+    },
+    {
+      "key": "plugin|system|sessiongc|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "sessiongc",
+      "client_id": 0,
+      "name": "plg_system_sessiongc"
+    },
+    {
+      "key": "plugin|system|shortcut|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "shortcut",
+      "client_id": 0,
+      "name": "plg_system_shortcut"
+    },
+    {
+      "key": "plugin|system|skipto|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "skipto",
+      "client_id": 0,
+      "name": "plg_system_skipto"
+    },
+    {
+      "key": "plugin|system|stats|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "stats",
+      "client_id": 0,
+      "name": "plg_system_stats"
+    },
+    {
+      "key": "plugin|system|tasknotification|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "tasknotification",
+      "client_id": 0,
+      "name": "plg_system_tasknotification"
+    },
+    {
+      "key": "plugin|system|updatenotification|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "updatenotification",
+      "client_id": 0,
+      "name": "plg_system_updatenotification"
+    },
+    {
+      "key": "plugin|system|webauthn|0",
+      "type": "plugin",
+      "folder": "system",
+      "element": "webauthn",
+      "client_id": 0,
+      "name": "plg_system_webauthn"
+    },
+    {
+      "key": "plugin|task|checkfiles|0",
+      "type": "plugin",
+      "folder": "task",
+      "element": "checkfiles",
+      "client_id": 0,
+      "name": "plg_task_checkfiles"
+    },
+    {
+      "key": "plugin|task|demotasks|0",
+      "type": "plugin",
+      "folder": "task",
+      "element": "demotasks",
+      "client_id": 0,
+      "name": "plg_task_demotasks"
+    },
+    {
+      "key": "plugin|task|requests|0",
+      "type": "plugin",
+      "folder": "task",
+      "element": "requests",
+      "client_id": 0,
+      "name": "plg_task_requests"
+    },
+    {
+      "key": "plugin|task|sitestatus|0",
+      "type": "plugin",
+      "folder": "task",
+      "element": "sitestatus",
+      "client_id": 0,
+      "name": "plg_task_sitestatus"
+    },
+    {
+      "key": "plugin|user|contactcreator|0",
+      "type": "plugin",
+      "folder": "user",
+      "element": "contactcreator",
+      "client_id": 0,
+      "name": "plg_user_contactcreator"
+    },
+    {
+      "key": "plugin|user|joomla|0",
+      "type": "plugin",
+      "folder": "user",
+      "element": "joomla",
+      "client_id": 0,
+      "name": "plg_user_joomla"
+    },
+    {
+      "key": "plugin|user|profile|0",
+      "type": "plugin",
+      "folder": "user",
+      "element": "profile",
+      "client_id": 0,
+      "name": "plg_user_profile"
+    },
+    {
+      "key": "plugin|user|terms|0",
+      "type": "plugin",
+      "folder": "user",
+      "element": "terms",
+      "client_id": 0,
+      "name": "plg_user_terms"
+    },
+    {
+      "key": "plugin|user|token|0",
+      "type": "plugin",
+      "folder": "user",
+      "element": "token",
+      "client_id": 0,
+      "name": "plg_user_token"
+    },
+    {
+      "key": "plugin|webservices|banners|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "banners",
+      "client_id": 0,
+      "name": "plg_webservices_banners"
+    },
+    {
+      "key": "plugin|webservices|config|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "config",
+      "client_id": 0,
+      "name": "plg_webservices_config"
+    },
+    {
+      "key": "plugin|webservices|contact|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "contact",
+      "client_id": 0,
+      "name": "plg_webservices_contact"
+    },
+    {
+      "key": "plugin|webservices|content|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "content",
+      "client_id": 0,
+      "name": "plg_webservices_content"
+    },
+    {
+      "key": "plugin|webservices|installer|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "installer",
+      "client_id": 0,
+      "name": "plg_webservices_installer"
+    },
+    {
+      "key": "plugin|webservices|languages|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "languages",
+      "client_id": 0,
+      "name": "plg_webservices_languages"
+    },
+    {
+      "key": "plugin|webservices|media|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "media",
+      "client_id": 0,
+      "name": "plg_webservices_media"
+    },
+    {
+      "key": "plugin|webservices|menus|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "menus",
+      "client_id": 0,
+      "name": "plg_webservices_menus"
+    },
+    {
+      "key": "plugin|webservices|messages|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "messages",
+      "client_id": 0,
+      "name": "plg_webservices_messages"
+    },
+    {
+      "key": "plugin|webservices|modules|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "modules",
+      "client_id": 0,
+      "name": "plg_webservices_modules"
+    },
+    {
+      "key": "plugin|webservices|newsfeeds|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "newsfeeds",
+      "client_id": 0,
+      "name": "plg_webservices_newsfeeds"
+    },
+    {
+      "key": "plugin|webservices|plugins|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "plugins",
+      "client_id": 0,
+      "name": "plg_webservices_plugins"
+    },
+    {
+      "key": "plugin|webservices|privacy|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "privacy",
+      "client_id": 0,
+      "name": "plg_webservices_privacy"
+    },
+    {
+      "key": "plugin|webservices|redirect|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "redirect",
+      "client_id": 0,
+      "name": "plg_webservices_redirect"
+    },
+    {
+      "key": "plugin|webservices|tags|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "tags",
+      "client_id": 0,
+      "name": "plg_webservices_tags"
+    },
+    {
+      "key": "plugin|webservices|templates|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "templates",
+      "client_id": 0,
+      "name": "plg_webservices_templates"
+    },
+    {
+      "key": "plugin|webservices|users|0",
+      "type": "plugin",
+      "folder": "webservices",
+      "element": "users",
+      "client_id": 0,
+      "name": "plg_webservices_users"
+    },
+    {
+      "key": "plugin|workflow|featuring|0",
+      "type": "plugin",
+      "folder": "workflow",
+      "element": "featuring",
+      "client_id": 0,
+      "name": "plg_workflow_featuring"
+    },
+    {
+      "key": "plugin|workflow|notification|0",
+      "type": "plugin",
+      "folder": "workflow",
+      "element": "notification",
+      "client_id": 0,
+      "name": "plg_workflow_notification"
+    },
+    {
+      "key": "plugin|workflow|publishing|0",
+      "type": "plugin",
+      "folder": "workflow",
+      "element": "publishing",
+      "client_id": 0,
+      "name": "plg_workflow_publishing"
+    },
+    {
+      "key": "template||atum|1",
+      "type": "template",
+      "folder": "",
+      "element": "atum",
+      "client_id": 1,
+      "name": "atum"
+    },
+    {
+      "key": "template||cassiopeia|0",
+      "type": "template",
+      "folder": "",
+      "element": "cassiopeia",
+      "client_id": 0,
+      "name": "cassiopeia"
+    }
+  ]
+}

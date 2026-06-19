@@ -819,6 +819,10 @@ install_phpmyadmin() {
   bash /root/rish/scripts/phpmyadmin_install.sh "$folder" "$directory"
 }
 
+audit_joomla_extensions() {
+  bash /root/rish/scripts/joomla_extensions_audit.sh "$site_path" "$site_name" "$joomla_version"
+}
+
 dir_is_phpmyadmin() {
   local target="$1"
 
@@ -972,6 +976,8 @@ if [[ -f "${site_path}/configuration.php" &&
   -f "${site_path}/cli/joomla.php" ]]; then
   menu_items+=("Обновление Joomla")
   menu_actions+=("update_joomla")
+  menu_items+=("Проверить расширения Joomla")
+  menu_actions+=("audit_joomla_extensions")
 fi
 if [[ -f "${site_path}/configuration.php" ]]; then
   menu_items+=("Настроить Joomla configuration.php")

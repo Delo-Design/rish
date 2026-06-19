@@ -43,7 +43,7 @@ i       IP адрес сервера
 	read
 
 + d /var/www/ & t d
-j  Установка/управление CMS/PMA
+5  Установка/управление CMS/PMA
   bash /root/rish/scripts/cms_install.sh "%d" "%f"
 
 + d /var/www/ & t d

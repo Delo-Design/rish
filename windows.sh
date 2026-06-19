@@ -10,6 +10,7 @@ mouse_tracking_on()   { printf "%s" "${ESC}[?1000h${ESC}[?1006h"; }
 mouse_tracking_off()  { printf "%s" "${ESC}[?1006l${ESC}[?1000l"; }
 
 VERTICAL_MENU_LAST_WHEEL_MS=0
+VERTICAL_MENU_MOUSE_TRACKING_ENABLED=1
 
 # Метаданные последнего отрисованного меню (обновляются в vertical_menu)
 VERTICAL_MENU_LAST_WIDTH=0
@@ -78,7 +79,9 @@ vertical_menu_handle_signal() {
   if [[ -n "$stty_state" ]]; then
     stty -echo
   fi
-  mouse_tracking_on
+  if ((VERTICAL_MENU_MOUSE_TRACKING_ENABLED)); then
+    mouse_tracking_on
+  fi
   cursor_blink_off
 }
 
@@ -284,6 +287,8 @@ function vertical_menu {
   #	width = число. Если строка будет больше этого числа - то ширина будет расширена до него
   # если среди пунктов меню встречается слово default со знаком =, то это значит установка пункта меню по умолчанию
   # этот пункт меню будет выбранным при выводе меню
+  # если среди аргументов встречается слово nomouse, то меню не включает mouse tracking
+  # это оставляет колесо мыши для прокрутки терминального scrollback
   # vertical_menu y x height width  "default=2" "First Item" "Second Item" "Third Item"
   local MaxWindowWidth
   local left_x
@@ -310,6 +315,8 @@ function vertical_menu {
   local previous_hup_trap
   local selected
   local previous_selected
+  local mouse_tracking_enabled=1
+  local previous_mouse_tracking_enabled=$VERTICAL_MENU_MOUSE_TRACKING_ENABLED
   size=$(stty size)
   lines=${size% *}
   columns=${size#* }
@@ -320,6 +327,8 @@ function vertical_menu {
   for arg in "$@"; do
     if [[ $arg == default=* ]]; then
       default_selected_index=${arg#default=}
+    elif [[ $arg == "nomouse" ]]; then
+      mouse_tracking_enabled=0
     else
       new_menu_items+=("$arg")
     fi
@@ -409,7 +418,10 @@ function vertical_menu {
   previous_term_trap="$(trap -p TERM)"
   previous_hup_trap="$(trap -p HUP)"
   vertical_menu_install_traps
-  mouse_tracking_on
+  VERTICAL_MENU_MOUSE_TRACKING_ENABLED=$mouse_tracking_enabled
+  if ((VERTICAL_MENU_MOUSE_TRACKING_ENABLED)); then
+    mouse_tracking_on
+  fi
   cursor_blink_off
   refresh_window ${top_y} ${left_x} ${height} ${MaxWindowWidth} ${shift_y} "${menu_items[@]}"
 
@@ -488,6 +500,7 @@ function vertical_menu {
     printf "\n"
   fi
   vertical_menu_cleanup
+  VERTICAL_MENU_MOUSE_TRACKING_ENABLED=$previous_mouse_tracking_enabled
   vertical_menu_restore_traps
   if ((is_current_mode == 1)); then
     if [[ ${ms[0]} == "current" ]]; then
