@@ -4,16 +4,12 @@ shell_patterns=0
   bash /root/rish/archive.sh "%f" "%d"
 
 + d /var/www/ & t d
-2  Создать сайт
-  bash /root/rish/create_site.sh "%f" "%d"
+2  Создать/Удалить сайт
+  bash /root/rish/scripts/site_manager.sh "%f" "%d"
 
 + d /var/www/ & t d
 7       Сменить версию PHP для сайта
   bash /root/rish/change_php_version.sh "%f" "%d"
-
-+ d /var/www/ & t d
-8  Удалить сайт
-  bash /root/rish/scripts/delete_site.sh "%d" "%f"
 
 3  Базы данных
   bash /root/rish/scripts/database_manager.sh "%d" "%f"

@@ -14,7 +14,13 @@ ERASEUNTILLENDOFLINE='\033[K'
 function validate_site_name() {
   local name="$1"
 
-  echo "$name" | grep -Eq '^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+  echo "$name" | grep -Eq '^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$' || return 1
+
+  if [[ "$name" =~ (^|\.)xn-- ]]; then
+    idn2 -d "$name" >/dev/null 2>&1 || return 1
+  fi
+
+  return 0
 }
 
 function format_site_name_label() {
@@ -144,11 +150,7 @@ function check_site() {
     fi
 
     # Подтверждение создания
-    if [[ "$site_name" =~ ^xn-- ]]; then
-      echo -e "Имя сайта: ${GREEN}${site_name}${WHITE} (${GREEN}$(idn2 -d "$site_name")${WHITE})"
-    else
-      echo -e "Имя сайта: ${GREEN}${site_name}${WHITE}"
-    fi
+    echo -e "Имя сайта: ${GREEN}$(format_site_name_label "$site_name")${WHITE}"
 
     vertical_menu "current" 2 0 50 "Да" "Выйти" "Ввести другое имя"
     choice=$?
@@ -421,15 +423,18 @@ function create_site() {
   local php_mode
   local ret
   local username
+  local decoded_name
   username=$(echo "$path" | cut -d'/' -f4)
   echo -e "Создание сайта (vhost) для пользователя ${GREEN}${username}${WHITE}"
   check_site "$1" "$2"
   ret=$?
   if ((ret == 0)); then
     echo -e -n "Создаем сайт (vhost) ${GREEN}${site_name}"
-    if [[ "$site_name" =~ (xn\-\-) ]]
-    then
-     echo -e -n " ($(idn2 -d "$site_name"))"
+    if [[ "$site_name" =~ (xn\-\-) ]]; then
+      decoded_name="$(idn2 -d "$site_name" 2>/dev/null)"
+      if [[ -n "$decoded_name" && "$decoded_name" != "$site_name" ]]; then
+        echo -e -n " (${decoded_name})"
+      fi
     fi
     echo -e "${WHITE}"
     mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)

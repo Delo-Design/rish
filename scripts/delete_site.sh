@@ -16,12 +16,20 @@ fail() {
 
 site_display_name() {
   local name="$1"
+  local decoded_name
 
   if [[ "$name" =~ (xn\-\-) ]]; then
-    printf '%s (%s)' "$name" "$(idn2 -d "$name")"
+    decoded_name="$(idn2 -d "$name" 2>/dev/null)"
+    if [[ -n "$decoded_name" && "$decoded_name" != "$name" ]]; then
+      printf '%s (%s)' "$name" "$decoded_name"
+      return 0
+    fi
   else
     printf '%s' "$name"
+    return 0
   fi
+
+  printf '%s' "$name"
 }
 
 directory="$1"
@@ -37,6 +45,9 @@ user_name="${BASH_REMATCH[1]}"
 
 if [[ ! "$site_name" =~ ^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
   fail "Имя выбранной папки ${YELLOW}${site_name}${WHITE} не является корректным именем сайта. Удаление прервано."
+fi
+if [[ "$site_name" =~ (^|\.)xn-- ]] && ! idn2 -d "$site_name" >/dev/null 2>&1; then
+  fail "Имя выбранной папки ${YELLOW}${site_name}${WHITE} содержит некорректный punycode. Удаление прервано."
 fi
 site_label="$(site_display_name "$site_name")"
 
