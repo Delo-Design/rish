@@ -16,8 +16,12 @@ site_path=""
 site_name="${folder}"
 site_cms=""
 joomla_version=""
+site_is_joomla=0
+site_has_joomla_cli=0
+site_supports_joomla_user_cli=0
 site_phpmyadmin_path=""
 site_phpmyadmin_version=""
+joomla_users_full_list_limit=200
 
 wait_for_enter() {
   vertical_menu "current" 2 0 5 "Нажмите Enter"
@@ -405,6 +409,227 @@ update_joomla() {
 
   echo -e "${GREEN}Обновление Joomla завершено.${WHITE}"
   wait_for_enter
+}
+
+joomla_config_value() {
+  local name="$1"
+  local config_file="${site_path}/configuration.php"
+
+  sed -nE "s/^[[:space:]]*(public[[:space:]]+)?\\\$${name}[[:space:]]*=[[:space:]]*'([^']*)'.*/\\2/p" "$config_file" | head -n 1
+}
+
+joomla_user_count() {
+  local db_name
+  local db_prefix
+
+  db_name=$(joomla_config_value "db")
+  db_prefix=$(joomla_config_value "dbprefix")
+
+  if [[ -z "$db_name" || -z "$db_prefix" ]]; then
+    return 1
+  fi
+  if ! [[ "$db_prefix" =~ ^[A-Za-z0-9_]+$ ]]; then
+    return 1
+  fi
+
+  mariadb "$db_name" -NBe "SELECT COUNT(*) FROM \`${db_prefix}users\`;" 2>/dev/null
+}
+
+run_joomla_user_command() {
+  local user="$1"
+  shift
+
+  (
+    cd "$site_path" &&
+      runuser -u "$user" -- "$php_bin" cli/joomla.php "$@"
+  )
+}
+
+shell_quote_command() {
+  local quoted=()
+  local arg
+
+  for arg in "$@"; do
+    printf -v arg '%q' "$arg"
+    quoted+=("$arg")
+  done
+  printf '%s' "${quoted[*]}"
+}
+
+show_joomla_users() {
+  local user="$1"
+  local user_count="$2"
+  local cr
+
+  if [[ ! "$user_count" =~ ^[0-9]+$ || "$user_count" -gt "$joomla_users_full_list_limit" ]]; then
+    if [[ "$user_count" =~ ^[0-9]+$ ]]; then
+      echo -e "На сайте ${YELLOW}${user_count}${WHITE} пользователей."
+    else
+      echo -e "Количество пользователей ${YELLOW}не удалось определить${WHITE}."
+    fi
+    echo -e "Полный вывод может быть очень большим. Показать весь список?"
+    vertical_menu "current" 2 0 5 "Нет" "Да"
+    cr=$?
+    if (( cr != 1 )); then
+      echo "Вывод полного списка отменен."
+      wait_for_enter
+      return
+    fi
+  fi
+
+  run_joomla_user_command "$user" user:list
+  wait_for_enter
+}
+
+show_joomla_users_head() {
+  local user="$1"
+  local label="$2"
+  local line_limit="$3"
+  local cr
+
+  (
+    cd "$site_path" &&
+      runuser -u "$user" -- "$php_bin" cli/joomla.php user:list | head -n "$line_limit"
+  )
+  cr=$?
+  if (( cr != 0 )); then
+    echo -e "Команда ${RED}user:list${WHITE} завершилась с ошибкой."
+  else
+    echo -e "Показано начало списка: ${GREEN}${label}${WHITE}."
+  fi
+  wait_for_enter
+}
+
+show_joomla_super_users() {
+  local user="$1"
+  local cr
+
+  (
+    set -o pipefail
+    cd "$site_path" &&
+      runuser -u "$user" -- "$php_bin" cli/joomla.php user:list | grep -i -- "Super Users"
+  )
+  cr=$?
+  if (( cr == 1 )); then
+    echo -e "Пользователи группы ${YELLOW}Super Users${WHITE} не найдены в выводе user:list."
+  elif (( cr != 0 )); then
+    echo -e "Команда ${RED}user:list${WHITE} завершилась с ошибкой."
+  fi
+  wait_for_enter
+}
+
+filter_joomla_users() {
+  local user="$1"
+  local pattern
+  local cr
+
+  echo -e "Введите строку для фильтра user:list через ${GREEN}grep -i${WHITE} (пустая строка для выхода): ${GREEN}"
+  read -r -e pattern
+  echo -e -n "${WHITE}"
+  if [[ -z "$pattern" ]]; then
+    echo "Фильтр отменен."
+    wait_for_enter
+    return
+  fi
+
+  (
+    set -o pipefail
+    cd "$site_path" &&
+      runuser -u "$user" -- "$php_bin" cli/joomla.php user:list | grep -i -- "$pattern"
+  )
+  cr=$?
+  if (( cr == 1 )); then
+    echo -e "Совпадений по строке ${YELLOW}${pattern}${WHITE} не найдено."
+  elif (( cr != 0 )); then
+    echo -e "Команда ${RED}user:list${WHITE} завершилась с ошибкой."
+  fi
+  wait_for_enter
+}
+
+manage_joomla_users() {
+  local user
+  local user_count
+  local choice
+  local -a menu_items
+  local -a menu_actions
+
+  if ! user=$(get_site_user "$directory"); then
+    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    wait_for_enter
+    return
+  fi
+
+  while true; do
+    clear
+    echo -e "Управление пользователями Joomla для сайта: ${GREEN}${site_name}${WHITE}"
+    echo -e "DocumentRoot сайта: ${GREEN}${site_path}${WHITE}"
+    if user_count=$(joomla_user_count); then
+      echo -e "Пользователей Joomla: ${GREEN}${user_count}${WHITE}"
+      if [[ "$user_count" =~ ^[0-9]+$ && "$user_count" -gt "$joomla_users_full_list_limit" ]]; then
+        echo -e "Полный список больше ${YELLOW}${joomla_users_full_list_limit}${WHITE}; перед выводом будет запрошено подтверждение."
+      fi
+    else
+      user_count=""
+      echo -e "Пользователей Joomla: ${YELLOW}не удалось определить${WHITE}"
+    fi
+    echo
+    echo "Выберите действие:"
+
+    menu_items=("Показать всех пользователей (user:list)")
+    menu_actions=("show_users")
+    if [[ "$user_count" =~ ^[0-9]+$ && "$user_count" -gt 500 ]]; then
+      menu_items+=("Показать первые 200 пользователей" "Показать первые 1000 пользователей")
+      menu_actions+=("show_head_200" "show_head_1000")
+    fi
+    menu_items+=(
+      "Показать Super User пользователей (user:list)"
+      "Показать отфильтрованный список пользователей"
+      "Добавить пользователя (user:add)"
+      "Сбросить пароль (user:reset-password)"
+      "Удалить пользователя (user:delete)"
+      "Добавить пользователя в группу (user:addtogroup)"
+      "Удалить пользователя из группы (user:removefromgroup)"
+      "Выйти"
+    )
+    menu_actions+=(
+      "show_super_users"
+      "filter_users"
+      "user:add"
+      "user:reset-password"
+      "user:delete"
+      "user:addtogroup"
+      "user:removefromgroup"
+      "back"
+    )
+
+    vertical_menu "current" 2 0 45 "${menu_items[@]}"
+    choice=$?
+    if (( choice == 255 )) || [[ "${menu_actions[${choice}]}" == "back" ]]; then
+      return
+    fi
+
+    case "${menu_actions[${choice}]}" in
+      show_users)
+        show_joomla_users "$user" "$user_count"
+        ;;
+      show_head_200)
+        show_joomla_users_head "$user" "первые 200 пользователей" 220
+        ;;
+      show_head_1000)
+        show_joomla_users_head "$user" "первые 1000 пользователей" 1020
+        ;;
+      show_super_users)
+        show_joomla_super_users "$user"
+        ;;
+      filter_users)
+        filter_joomla_users "$user"
+        ;;
+      user:*)
+        run_joomla_user_command "$user" "${menu_actions[${choice}]}"
+        wait_for_enter
+        ;;
+    esac
+  done
 }
 
 install_opencart() {
@@ -823,6 +1048,43 @@ audit_joomla_extensions() {
   bash /root/rish/scripts/joomla_extensions_audit.sh "$site_path" "$site_name" "$joomla_version"
 }
 
+run_manual_joomla_cli_command() {
+  local user
+  local command_line
+  local full_command
+  local -a command_args
+
+  if ! user=$(get_site_user "$directory"); then
+    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    wait_for_enter
+    return
+  fi
+
+  run_joomla_user_command "$user" list
+
+  while true; do
+    echo
+    echo 'Введите CLI команду Joomla без "php cli/joomla.php".'
+    echo -e "Например, для вывода списка пользователей введите: ${GREEN}user:list${WHITE}"
+    echo "Аргументы с пробелами в кавычках не поддерживаются."
+    echo
+    echo -e "Пустая строка - выход. Команда: ${GREEN}"
+    read -r -e command_line
+    echo -e -n "${WHITE}"
+    if [[ -z "$command_line" ]]; then
+      return
+    fi
+
+    read -r -a command_args <<< "$command_line"
+    full_command="cd $(shell_quote_command "$site_path") && $(shell_quote_command runuser -u "$user" -- "$php_bin" cli/joomla.php "${command_args[@]}")"
+    echo
+    run_joomla_user_command "$user" "${command_args[@]}"
+    echo
+    echo "Команда:"
+    echo "$full_command"
+  done
+}
+
 dir_is_phpmyadmin() {
   local target="$1"
 
@@ -936,8 +1198,8 @@ fi
 
 php_bin=$(get_site_php_bin)
 if [[ -f "${site_path}/configuration.php" &&
-  -f "${site_path}/administrator/manifests/files/joomla.xml" &&
-  -f "${site_path}/cli/joomla.php" ]]; then
+  -f "${site_path}/administrator/manifests/files/joomla.xml" ]]; then
+  site_is_joomla=1
   joomla_version=$(
     sed -nE 's@.*<version>[[:space:]]*([0-9]+(\.[0-9]+)+)[[:space:]]*</version>.*@\1@p' \
       "${site_path}/administrator/manifests/files/joomla.xml" |
@@ -947,6 +1209,12 @@ if [[ -f "${site_path}/configuration.php" &&
     site_cms="Joomla ${joomla_version}"
   else
     site_cms="Joomla"
+  fi
+  if [[ -f "${site_path}/cli/joomla.php" ]]; then
+    site_has_joomla_cli=1
+  fi
+  if [[ "$joomla_version" =~ ^[56]\. ]]; then
+    site_supports_joomla_user_cli=1
   fi
 fi
 if [[ -n "$php_bin" ]]; then
@@ -971,13 +1239,19 @@ echo
 echo "Выберите действие:"
 menu_items=()
 menu_actions=()
-if [[ -f "${site_path}/configuration.php" &&
-  -f "${site_path}/administrator/manifests/files/joomla.xml" &&
-  -f "${site_path}/cli/joomla.php" ]]; then
-  menu_items+=("Обновление Joomla")
-  menu_actions+=("update_joomla")
+if (( site_is_joomla == 1 )); then
   menu_items+=("Проверить расширения Joomla")
   menu_actions+=("audit_joomla_extensions")
+  if (( site_has_joomla_cli == 1 )); then
+    menu_items+=("Обновление Joomla")
+    menu_actions+=("update_joomla")
+    if (( site_supports_joomla_user_cli == 1 )); then
+      menu_items+=("Управление пользователями Joomla")
+      menu_actions+=("manage_joomla_users")
+    fi
+    menu_items+=("Выполнить CLI команду Joomla")
+    menu_actions+=("run_manual_joomla_cli_command")
+  fi
 fi
 if [[ -f "${site_path}/configuration.php" ]]; then
   menu_items+=("Настроить Joomla configuration.php")
