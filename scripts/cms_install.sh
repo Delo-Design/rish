@@ -113,7 +113,7 @@ install_joomla() {
   local -a language_packages
 
   if ! releases_json=$(curl -fsSL https://api.github.com/repos/joomla/joomla-cms/releases); then
-    echo -e "${RED}Не удалось получить список версий Joomla.${WHITE}"
+    echo -e "Не удалось получить список версий ${RED}Joomla${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -123,7 +123,7 @@ install_joomla() {
       grep -Eo 'https?://[^ ]+Stable-Full_Package.tar.gz'
   )
   if (( ${#downloads[@]} == 0 )); then
-    echo -e "${RED}Не найдены доступные для скачивания версии Joomla.${WHITE}"
+    echo -e "Не найдены доступные для скачивания версии ${RED}Joomla${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -142,7 +142,7 @@ install_joomla() {
   joomla_version=$( echo "${joomlas[${choice}]}" | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
   joomla_full_version=$( echo "${joomlas[${choice}]}" | sed -n 's@^[^0-9]*\([0-9]\+\.[0-9]\+\.[0-9]\+\).*@\1@p' )
   if [[ -z "$joomla_full_version" ]]; then
-    echo -e "${RED}Не удалось определить версию выбранного архива Joomla.${WHITE}"
+    echo -e "Не удалось определить версию выбранного архива ${RED}Joomla${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -150,13 +150,13 @@ install_joomla() {
   archive_name="${joomlas[${choice}]}"
 
   if [[ -z "$php_bin" ]]; then
-    echo -e "${RED}Установка Joomla невозможна: не определен PHP сайта.${WHITE}"
+    echo -e "Установка ${RED}Joomla${WHITE} невозможна: не определен PHP сайта."
     wait_for_enter
     exit 1
   fi
 
   if ! user=$(get_site_user "$directory"); then
-    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
     wait_for_enter
     exit 1
   fi
@@ -214,7 +214,7 @@ install_joomla() {
 
   echo -e "Скачиваем Joomla ${GREEN}${joomla_full_version}${WHITE}..."
   if ! archive_path=$(mktemp "/tmp/rish-${archive_name}.XXXXXX"); then
-    echo -e "${RED}Не удалось создать временный файл для архива Joomla.${WHITE}"
+    echo -e "Не удалось создать временный файл для архива ${RED}Joomla${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -228,7 +228,7 @@ install_joomla() {
 
   if compgen -G "${site_path}.rish-install.*" > /dev/null; then
     rm -f -- "$archive_path"
-    echo -e "${RED}Найдены временные папки предыдущей установки.${WHITE}"
+    echo -e "Найдены ${RED}временные папки${WHITE} предыдущей установки."
     echo "Удалите их вручную после проверки содержимого:"
     echo "${site_path}.rish-install.*"
     wait_for_enter
@@ -239,7 +239,7 @@ install_joomla() {
     ! tar xzf "$archive_path" -C "$staging_path"; then
     rm -f -- "$archive_path"
     rm -rf -- "$staging_path"
-    echo -e "${RED}Не удалось распаковать архив Joomla.${WHITE}"
+    echo -e "Не удалось распаковать архив ${RED}Joomla${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -249,7 +249,7 @@ install_joomla() {
     ! mv "${staging_path}/htaccess.txt" "${staging_path}/.htaccess" ||
     ! chown -R "${user}:${user}" "$staging_path"; then
     rm -rf -- "$staging_path"
-    echo -e "${RED}Не удалось подготовить файлы Joomla.${WHITE}"
+    echo -e "Не удалось подготовить файлы ${RED}Joomla${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -281,7 +281,7 @@ install_joomla() {
   if ! rm -rf -- "$site_path" ||
     ! mv -- "$staging_path" "$site_path"; then
     rm -rf -- "$staging_path"
-    echo -e "${RED}Не удалось заменить файлы сайта.${WHITE}"
+    echo -e "Не удалось заменить ${RED}файлы сайта${WHITE}."
     echo "База данных уже была пересоздана."
     wait_for_enter
     exit 1
@@ -304,20 +304,20 @@ install_joomla() {
       --db-name="$folder" \
       --db-encryption="0"
   ) || {
-    echo -e "${RED}Установка Joomla завершилась с ошибкой.${WHITE}"
+    echo -e "Установка Joomla завершилась с ${RED}ошибкой${WHITE}."
     wait_for_enter
     exit 1
   }
 
   echo
-  echo -e "${GREEN}Установка Joomla завершена.${WHITE}"
+  echo -e "Установка Joomla ${GREEN}завершена${WHITE}."
   echo
   echo "Установить русскую локализацию?"
   vertical_menu "current" 2 0 5 "Да" "Нет"
   cr=$?
   if (( cr == 0 )); then
     if ! localisation_json=$(curl -fsSL https://api.github.com/repos/JPathRu/localisation/releases); then
-      echo -e "${RED}Не удалось получить список пакетов русской локализации.${WHITE}"
+      echo -e "Не удалось получить список пакетов ${RED}русской локализации${WHITE}."
       echo "Основная установка Joomla завершена успешно."
       wait_for_enter
       return
@@ -347,12 +347,12 @@ install_joomla() {
       echo -e "Будет установлен пакет локализации: ${GREEN}${language_package_url##*/}${WHITE}"
       runuser -u "$user" -- "$php_bin" "${site_path}/cli/joomla.php" extension:install \
         --url="$language_package_url" || {
-          echo -e "${RED}Не удалось установить русскую локализацию.${WHITE}"
+          echo -e "Не удалось установить ${RED}русскую локализацию${WHITE}."
           echo "Основная установка Joomla завершена успешно."
           wait_for_enter
           return
         }
-      echo -e "${GREEN}Русская локализация установлена.${WHITE}"
+      echo -e "Русская локализация ${GREEN}установлена${WHITE}."
     else
       echo -e "Не найден пакет русской локализации для Joomla ${RED}${joomla_version}${WHITE}."
     fi
@@ -365,7 +365,7 @@ update_joomla() {
   local cr
 
   if ! user=$(get_site_user "$directory"); then
-    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
     wait_for_enter
     exit 1
   fi
@@ -407,7 +407,7 @@ update_joomla() {
     return
   fi
 
-  echo -e "${GREEN}Обновление Joomla завершено.${WHITE}"
+  echo -e "Обновление Joomla ${GREEN}завершено${WHITE}."
   wait_for_enter
 }
 
@@ -554,7 +554,7 @@ manage_joomla_users() {
   local -a menu_actions
 
   if ! user=$(get_site_user "$directory"); then
-    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
     wait_for_enter
     return
   fi
@@ -643,6 +643,10 @@ install_opencart() {
   local staging_path
   local upload_path
   local releases_json
+  local livestore_tags_json
+  local livestore_tag
+  local livestore_version
+  local livestore_url
   local site_url="http://${site_name}"
   local user
   local cr
@@ -651,26 +655,55 @@ install_opencart() {
   local admin_email
   local admin_password
 
-  if ! releases_json=$(curl -fsSL https://api.github.com/repos/opencart/opencart/releases); then
-    echo -e "${RED}Не удалось получить список версий OpenCart.${WHITE}"
-    wait_for_enter
-    exit 1
+  if releases_json=$(curl -fsSL https://api.github.com/repos/opencart/opencart/releases); then
+    mapfile -t downloads < <(
+      printf '%s\n' "$releases_json" |
+        grep browser_download_url |
+        grep -Eo 'https?://[^ "]+/opencart-[34](\.[0-9]+)+\.zip'
+    )
+  else
+    echo -e "Не удалось получить список версий ${YELLOW}OpenCart${WHITE}."
   fi
-  mapfile -t downloads < <(
-    printf '%s\n' "$releases_json" |
-      grep browser_download_url |
-      grep -Eo 'https?://[^ "]+/opencart-[34](\.[0-9]+)+\.zip'
+  mapfile -t opencarts < <(
+    printf '%s\n' "${downloads[@]}" |
+      awk -F"/" 'NF {print $NF}'
   )
+  if livestore_tags_json=$(curl -fsSL https://api.github.com/repos/19th19th/LiveStore/tags); then
+    while IFS=$'\t' read -r livestore_tag livestore_url; do
+      livestore_version="${livestore_tag#v}"
+      [[ "$livestore_version" =~ ^[0-9]+(\.[0-9]+)+$ ]] || continue
+      [[ -n "$livestore_url" ]] || continue
+
+      downloads=("$livestore_url" "${downloads[@]}")
+      opencarts=("livestore-${livestore_version}.zip" "${opencarts[@]}")
+      break
+    done < <(
+      printf '%s\n' "$livestore_tags_json" |
+        awk '
+          /"name":/ {
+            name = $0
+            sub(/^.*"name": *"/, "", name)
+            sub(/".*$/, "", name)
+          }
+          /"zipball_url":/ {
+            url = $0
+            sub(/^.*"zipball_url": *"/, "", url)
+            sub(/".*$/, "", url)
+            if (name != "" && url != "") {
+              print name "\t" url
+            }
+          }
+        '
+    )
+  else
+    echo -e "Не удалось получить список версий ${YELLOW}LiveStore${WHITE}."
+  fi
   if (( ${#downloads[@]} == 0 )); then
-    echo -e "${RED}Не найдены доступные для скачивания версии OpenCart.${WHITE}"
+    echo -e "Не найдены доступные для скачивания версии ${RED}OpenCart${WHITE}."
     wait_for_enter
     exit 1
   fi
   echo "Выберите версию OpenCart для скачивания:"
-  mapfile -t opencarts < <(
-    printf '%s\n' "${downloads[@]}" |
-      awk -F"/" '{print $NF}'
-  )
   vertical_menu "current" 2 0 30 "${opencarts[@]}"
   choice=$?
   if (( choice == 255 )); then
@@ -679,9 +712,9 @@ install_opencart() {
     exit
   fi
   archive_name="${opencarts[${choice}]}"
-  opencart_version=$( echo "$archive_name" | sed -n 's/^opencart-\([0-9.]\+\)\.zip$/\1/p' )
+  opencart_version=$( echo "$archive_name" | sed -n 's/^\(opencart\|livestore\)-\([0-9.]\+\)\.zip$/\2/p' )
   if [[ -z "$opencart_version" ]]; then
-    echo -e "${RED}Не удалось определить версию выбранного архива OpenCart.${WHITE}"
+    echo -e "Не удалось определить версию выбранного архива ${RED}OpenCart${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -692,7 +725,7 @@ install_opencart() {
   fi
 
   if ! user=$(get_site_user "$directory"); then
-    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
     wait_for_enter
     exit 1
   fi
@@ -738,11 +771,14 @@ install_opencart() {
 
   echo -e "Скачиваем OpenCart ${GREEN}${opencart_version}${WHITE}..."
   if ! archive_path=$(mktemp "/tmp/rish-${archive_name}.XXXXXX"); then
-    echo -e "${RED}Не удалось создать временный файл для архива OpenCart.${WHITE}"
+    echo -e "Не удалось создать временный файл для архива ${RED}OpenCart${WHITE}."
     wait_for_enter
     exit 1
   fi
   if ! wget -q --show-progress --progress=bar:force:noscroll \
+    --timeout=20 \
+    --tries=2 \
+    --waitretry=2 \
     -O "$archive_path" "${downloads[${choice}]}"; then
     rm -f -- "$archive_path"
     echo -e "Не удалось скачать OpenCart ${RED}${opencart_version}${WHITE}."
@@ -753,7 +789,7 @@ install_opencart() {
   if compgen -G "${site_path}.rish-install.*" > /dev/null ||
     compgen -G "${site_path}.rish-package.*" > /dev/null; then
     rm -f -- "$archive_path"
-    echo -e "${RED}Найдены временные папки предыдущей установки.${WHITE}"
+    echo -e "Найдены ${RED}временные папки${WHITE} предыдущей установки."
     echo "Удалите их вручную после проверки содержимого:"
     echo "${site_path}.rish-install.*"
     echo "${site_path}.rish-package.*"
@@ -766,7 +802,7 @@ install_opencart() {
     ! unzip -q "$archive_path" -d "$package_path"; then
     rm -f -- "$archive_path"
     rm -rf -- "$package_path" "$staging_path"
-    echo -e "${RED}Не удалось распаковать архив OpenCart.${WHITE}"
+    echo -e "Не удалось распаковать архив ${RED}OpenCart${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -777,12 +813,41 @@ install_opencart() {
     upload_path=$(find "$package_path" -mindepth 1 -maxdepth 3 -type d -name upload -print -quit)
   fi
   if [[ -z "$upload_path" || ! -f "${upload_path}/install/cli_install.php" ]] ||
-    ! cp -a "${upload_path}/." "$staging_path" ||
-    ! cp "${staging_path}/config-dist.php" "${staging_path}/config.php" ||
-    ! cp "${staging_path}/admin/config-dist.php" "${staging_path}/admin/config.php" ||
-    ! chown -R "${user}:${user}" "$staging_path"; then
+    ! cp -a "${upload_path}/." "$staging_path"; then
     rm -rf -- "$package_path" "$staging_path"
-    echo -e "${RED}Не удалось подготовить файлы OpenCart.${WHITE}"
+    echo -e "Не удалось подготовить файлы ${RED}OpenCart${WHITE}."
+    wait_for_enter
+    exit 1
+  fi
+  if [[ -f "${staging_path}/config-dist.php" ]]; then
+    if ! cp "${staging_path}/config-dist.php" "${staging_path}/config.php"; then
+      rm -rf -- "$package_path" "$staging_path"
+      echo -e "Не удалось подготовить ${RED}config.php${WHITE} для OpenCart."
+      wait_for_enter
+      exit 1
+    fi
+  elif [[ ! -f "${staging_path}/config.php" ]]; then
+    rm -rf -- "$package_path" "$staging_path"
+    echo -e "Не найден ${RED}config.php${WHITE} для OpenCart."
+    wait_for_enter
+    exit 1
+  fi
+  if [[ -f "${staging_path}/admin/config-dist.php" ]]; then
+    if ! cp "${staging_path}/admin/config-dist.php" "${staging_path}/admin/config.php"; then
+      rm -rf -- "$package_path" "$staging_path"
+      echo -e "Не удалось подготовить ${RED}admin/config.php${WHITE} для OpenCart."
+      wait_for_enter
+      exit 1
+    fi
+  elif [[ ! -f "${staging_path}/admin/config.php" ]]; then
+    rm -rf -- "$package_path" "$staging_path"
+    echo -e "Не найден ${RED}admin/config.php${WHITE} для OpenCart."
+    wait_for_enter
+    exit 1
+  fi
+  if ! chown -R "${user}:${user}" "$staging_path"; then
+    rm -rf -- "$package_path" "$staging_path"
+    echo -e "Не удалось подготовить файлы ${RED}OpenCart${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -815,7 +880,7 @@ install_opencart() {
   if ! rm -rf -- "$site_path" ||
     ! mv -- "$staging_path" "$site_path"; then
     rm -rf -- "$staging_path"
-    echo -e "${RED}Не удалось заменить файлы сайта.${WHITE}"
+    echo -e "Не удалось заменить ${RED}файлы сайта${WHITE}."
     echo "База данных уже была пересоздана."
     wait_for_enter
     exit 1
@@ -834,18 +899,18 @@ install_opencart() {
         --db_password "$db_password" \
         --db_database "$folder"
   ); then
-    echo -e "${RED}Установка OpenCart завершилась с ошибкой.${WHITE}"
+    echo -e "Установка OpenCart завершилась с ${RED}ошибкой${WHITE}."
     wait_for_enter
     exit 1
   fi
   if ! rm -rf -- "${site_path}/install"; then
-    echo -e "${RED}OpenCart установлен, но не удалось удалить папку install.${WHITE}"
+    echo -e "OpenCart установлен, но не удалось удалить папку ${RED}install${WHITE}."
     wait_for_enter
     exit 1
   fi
 
   echo
-  echo -e "${GREEN}Установка OpenCart завершена.${WHITE}"
+  echo -e "Установка OpenCart ${GREEN}завершена${WHITE}."
   wait_for_enter
 }
 
@@ -864,7 +929,7 @@ install_wordpress() {
   if [[ ! -f "$wp_cli" ]]; then
     echo "WP-CLI не найден. Скачиваем официальный установщик..."
     if ! wp_cli_tmp=$(mktemp /tmp/rish-wp-cli.XXXXXX); then
-      echo -e "${RED}Не удалось создать временный файл для WP-CLI.${WHITE}"
+      echo -e "Не удалось создать временный файл для ${RED}WP-CLI${WHITE}."
       wait_for_enter
       exit 1
     fi
@@ -872,13 +937,13 @@ install_wordpress() {
       https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
       -o "$wp_cli_tmp"; then
       rm -f -- "$wp_cli_tmp"
-      echo -e "${RED}Не удалось скачать WP-CLI.${WHITE}"
+      echo -e "Не удалось скачать ${RED}WP-CLI${WHITE}."
       wait_for_enter
       exit 1
     fi
     if ! "$php_bin" "$wp_cli_tmp" --info > /dev/null; then
       rm -f -- "$wp_cli_tmp"
-      echo -e "${RED}Скачанный WP-CLI не прошел проверку.${WHITE}"
+      echo -e "Скачанный ${RED}WP-CLI${WHITE} не прошел проверку."
       wait_for_enter
       exit 1
     fi
@@ -889,7 +954,7 @@ install_wordpress() {
       exit 1
     fi
     rm -f -- "$wp_cli_tmp"
-    echo -e "${GREEN}WP-CLI установлен.${WHITE}"
+    echo -e "WP-CLI ${GREEN}установлен${WHITE}."
   elif ! "$php_bin" "$wp_cli" --info > /dev/null; then
     echo -e "Установленный WP-CLI не работает с ${RED}${php_bin}${WHITE}."
     wait_for_enter
@@ -902,7 +967,7 @@ install_wordpress() {
   fi
 
   if ! user=$(get_site_user "$directory"); then
-    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
     wait_for_enter
     exit 1
   fi
@@ -946,7 +1011,7 @@ install_wordpress() {
   fi
 
   if compgen -G "${site_path}.rish-install.*" > /dev/null; then
-    echo -e "${RED}Найдены временные папки предыдущей установки.${WHITE}"
+    echo -e "Найдены ${RED}временные папки${WHITE} предыдущей установки."
     echo "Удалите их вручную после проверки содержимого:"
     echo "${site_path}.rish-install.*"
     wait_for_enter
@@ -956,7 +1021,7 @@ install_wordpress() {
     ! chmod 755 "$wordpress_download_path" ||
     ! chown "${user}:${user}" "$wordpress_download_path"; then
     rm -rf -- "$wordpress_download_path"
-    echo -e "${RED}Не удалось подготовить временную папку для WordPress.${WHITE}"
+    echo -e "Не удалось подготовить временную папку для ${RED}WordPress${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -965,7 +1030,7 @@ install_wordpress() {
   if ! runuser -u "$user" -- "$php_bin" "$wp_cli" core download \
     --path="$wordpress_download_path"; then
     rm -rf -- "$wordpress_download_path"
-    echo -e "${RED}Не удалось скачать WordPress.${WHITE}"
+    echo -e "Не удалось скачать ${RED}WordPress${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -997,7 +1062,7 @@ install_wordpress() {
   if ! rm -rf -- "$site_path" ||
     ! mv -- "$wordpress_download_path" "$site_path"; then
     rm -rf -- "$wordpress_download_path"
-    echo -e "${RED}Не удалось заменить файлы сайта.${WHITE}"
+    echo -e "Не удалось заменить ${RED}файлы сайта${WHITE}."
     echo "База данных уже была пересоздана."
     wait_for_enter
     exit 1
@@ -1009,7 +1074,7 @@ install_wordpress() {
     --dbuser="$user" \
     --dbpass="$db_password" \
     --dbhost=localhost; then
-    echo -e "${RED}Не удалось создать wp-config.php.${WHITE}"
+    echo -e "Не удалось создать ${RED}wp-config.php${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -1021,21 +1086,21 @@ install_wordpress() {
     --admin_password="$admin_password" \
     --admin_email="$admin_email" \
     --skip-email; then
-    echo -e "${RED}Установка WordPress завершилась с ошибкой.${WHITE}"
+    echo -e "Установка WordPress завершилась с ${RED}ошибкой${WHITE}."
     wait_for_enter
     exit 1
   fi
   if ! runuser -u "$user" -- "$php_bin" "$wp_cli" language core install ru_RU \
     --path="$site_path" \
     --activate; then
-    echo -e "${RED}Не удалось включить русский язык WordPress.${WHITE}"
+    echo -e "Не удалось включить русский язык ${RED}WordPress${WHITE}."
     echo "Основная установка WordPress завершена успешно."
     wait_for_enter
     return
   fi
 
   echo
-  echo -e "${GREEN}Установка WordPress завершена.${WHITE}"
+  echo -e "Установка WordPress ${GREEN}завершена${WHITE}."
   echo -e "Будет использована учетная запись ${GREEN}${admin_email}${WHITE}"
   wait_for_enter
 }
@@ -1055,7 +1120,7 @@ run_manual_joomla_cli_command() {
   local -a command_args
 
   if ! user=$(get_site_user "$directory"); then
-    echo -e "${RED}Неверно выбран каталог для сайта.${WHITE}"
+    echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
     wait_for_enter
     return
   fi
