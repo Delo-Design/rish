@@ -10,7 +10,7 @@ SSH панель конфигурации и установки web сервер
 
 Официальный сайт RISH https://rish.su
 
-Протестировано на AlmaLinux 8,9,10 (CentOS 8), Rocky Linux и Fedora
+Протестировано на AlmaLinux 8,9,10 (CentOS 8) и Rocky Linux
 
 * http/2
 * gzip and brotli компрессия
@@ -37,4 +37,3 @@ SSH панель конфигурации и установки web сервер
 Возможно, что в минимальной установке CentOS будет отсутствовать команда curl и ее понадобится установить отдельно:
 
     yum install curl
-
