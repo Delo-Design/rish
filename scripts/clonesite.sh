@@ -48,8 +48,9 @@ function add_clone_server() {
   done
 
   echo
-  echo "Теперь нужно выбрать локальное имя SSH host."
-  read -r -e -p " " server_name
+  echo "Придумайте короткое имя для подключения к этому серверу."
+  echo "Имя должно быть из латинских букв и цифр; можно использовать точку или дефис."
+  read -r -e -p "Имя SSH-подключения: " server_name
   while true; do
     if [[ -z "$server_name" ]]; then
       echo -e -n "${WHITE}${CURSORUP}${ERASEUNTILLENDOFLINE}"
