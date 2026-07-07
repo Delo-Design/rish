@@ -202,6 +202,49 @@ Install() {
     Down
 }
 
+CheckRebootRequired() {
+  local reboot_status
+
+  echo -n "Проверяем необходимость перезагрузки сервера... "
+  if ! command -v needs-restarting >/dev/null 2>&1; then
+    echo -e "${YELLOW}needs-restarting не найден${WHITE}"
+    return 0
+  fi
+
+  needs-restarting -r >/dev/null 2>&1
+  reboot_status=$?
+
+  case "$reboot_status" in
+    0)
+      echo -e "${GREEN}перезагрузка не требуется${WHITE}"
+      return 0
+      ;;
+    1)
+      echo -e "${YELLOW}требуется перезагрузка${WHITE}"
+      tet=$(pwd)
+      echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
+      echo -e "Или войдите на сервер и нажмите стрелку ${GREEN}↑${WHITE} два раза: команда ${GREEN}/root/rish/ri.sh${WHITE} уже будет в истории команд."
+      Down
+      echo "Перезагрузить сервер?"
+      if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+        echo "Перезагрузка сервера начата..."
+        echo "/root/rish/ri.sh" >> /root/.bash_history
+        reboot
+        exit 0
+      else
+        RemoveRim
+        echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}"
+        echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
+        exit 0
+      fi
+      ;;
+    *)
+      echo -e "${YELLOW}не удалось проверить${WHITE}"
+      return 0
+      ;;
+  esac
+}
+
 configure_httpd_tmpfiles_override() {
   local vendor_conf="/usr/lib/tmpfiles.d/httpd.conf"
   local override_conf="/etc/tmpfiles.d/httpd.conf"
@@ -513,12 +556,20 @@ df -h -P -l -x tmpfs -x devtmpfs
 echo ""
 
 if ! grep -q "MYSQLPASS" ~/.bashrc; then
+  STEP="Установка dnf-utils"
+  if ! check_step "$STEP"; then
+    Install dnf-utils
+    mark_step_completed "$STEP"
+  fi
+
   STEP="Проверка обновлений сервера выполнена"
   if ! check_step "$STEP"; then
     echo -n "Проверяем обновления сервера... "
-    if dnf check-update >/dev/null; then
+    dnf check-update >/dev/null
+    check_update_status=$?
+    if ((check_update_status == 0)); then
       echo "Сервер не требует обновления"
-    else
+    elif ((check_update_status == 100)); then
       Down
       echo ""
       echo 'Обновляем сервер? '
@@ -534,10 +585,21 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         echo
         echo -e "Идет обновление сервера..."${ERASEUNTILLENDOFLINE}
         Down
-        dnf update -y
+        if ! dnf update -y; then
+          RemoveRim
+          echo -e "${RED}Обновить сервер не удалось.${WHITE}"
+          echo "Повторите установку после исправления ошибки обновления."
+          exit 1
+        fi
       fi
       Up
+    else
+      RemoveRim
+      echo -e "${RED}Не удалось проверить обновления сервера.${WHITE}"
+      echo "Повторите установку после исправления ошибки проверки обновлений."
+      exit 1
     fi
+    CheckRebootRequired
     mark_step_completed "$STEP"
   fi
   STEP="Установка языковых пакетов"
@@ -928,12 +990,6 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка dnf-utils"
-  if ! check_step "$STEP"; then
-    Install dnf-utils
-    mark_step_completed "$STEP"
-  fi
-
   STEP="Установка jq и rclone"
   if ! check_step "$STEP"; then
     Install jq
@@ -1301,6 +1357,12 @@ EOF
   STEP="Обновление hotlist"
   if ! check_step "$STEP"; then
     # Для совместимости с postupdate
+    mark_step_completed "$STEP"
+  fi
+
+  STEP="Финальная проверка необходимости перезагрузки сервера"
+  if ! check_step "$STEP"; then
+    CheckRebootRequired
     mark_step_completed "$STEP"
   fi
 
