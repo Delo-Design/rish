@@ -507,7 +507,44 @@ show_joomla_super_users() {
   (
     set -o pipefail
     cd "$site_path" &&
-      runuser -u "$user" -- "$php_bin" cli/joomla.php user:list | grep -i -- "Super Users"
+      runuser -u "$user" -- "$php_bin" cli/joomla.php user:list |
+        awk '
+          function print_header() {
+            if (header_printed) {
+              return
+            }
+            for (i = 1; i <= header_count; i++) {
+              print header[i]
+            }
+            header_printed = 1
+          }
+
+          /^[[:space:]]*[0-9]+[[:space:]]/ {
+            in_data = 1
+            if (tolower($0) ~ /super users/) {
+              print_header()
+              print
+              found = 1
+            }
+            next
+          }
+
+          !in_data {
+            header[++header_count] = $0
+            next
+          }
+
+          found && $0 ~ /^[[:space:]-]+$/ {
+            footer = $0
+          }
+
+          END {
+            if (found && footer) {
+              print footer
+            }
+            exit found ? 0 : 1
+          }
+        '
   )
   cr=$?
   if (( cr == 1 )); then
