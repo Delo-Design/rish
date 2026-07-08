@@ -17,6 +17,10 @@ wait_for_enter() {
   vertical_menu "current" 2 0 5 nomouse "Нажмите Enter"
 }
 
+wait_for_audit_action() {
+  vertical_menu "current" 2 0 25 nomouse "Нажмите Enter" "Отфильтровать по строке"
+}
+
 fail() {
   echo -e "$1"
   wait_for_enter
@@ -113,6 +117,95 @@ print_row() {
   printf ' │ '
   print_text_cell "$date" 19 0
   printf ' │ %b │\n' "$status"
+}
+
+print_audit_rows() {
+  local filter="${1:-}"
+  local filter_lower="${filter,,}"
+  local row
+  local group
+  local element
+  local name
+  local version
+  local date
+  local status
+  local highlight
+  local searchable
+
+  display_found=0
+  display_unwanted_found=0
+
+  echo "$TABLE_TOP"
+  print_row "#" "Type" "Element" "Name" "Version" "Date" "S"
+  echo "$TABLE_HEADER"
+  for row in "${AUDIT_ROWS[@]}"; do
+    IFS=$'\037' read -r group element name version date status highlight searchable <<< "$row"
+    if [[ -n "$filter_lower" && "${searchable,,}" != *"$filter_lower"* ]]; then
+      continue
+    fi
+    display_found=$((display_found + 1))
+    ((highlight)) && display_unwanted_found=1
+    print_row "$display_found" "$group" "$element" "$name" "$version" "$date" "$status" "$highlight"
+  done
+  echo "$TABLE_BOTTOM"
+}
+
+print_audit_footer() {
+  local filter="${1:-}"
+
+  if ((display_unwanted_found)); then
+    echo
+    echo -e "${YELLOW}Жёлтым${WHITE} выделены расширения из списка нежелательных."
+  fi
+
+  if ((display_found == 0)); then
+    if [[ -n "$filter" ]]; then
+      echo -e "Совпадений по строке ${YELLOW}${filter}${WHITE} не найдено."
+    else
+      echo -e "${GREEN}Нестандартные расширения не найдены.${WHITE}"
+    fi
+  elif [[ -n "$filter" ]]; then
+    echo
+    echo -e "Найдено совпадений: ${YELLOW}${display_found}${WHITE}"
+  else
+    echo
+    echo -e "Найдено нестандартных расширений: ${YELLOW}${display_found}${WHITE}"
+  fi
+}
+
+filter_audit_rows() {
+  local pattern
+
+  echo -e "Введите строку для фильтра расширений (пустая строка для выхода): ${GREEN}"
+  read -r -e pattern
+  echo -e -n "${WHITE}"
+  if [[ -z "$pattern" ]]; then
+    echo "Фильтр отменен."
+    return
+  fi
+
+  echo
+  echo -e "Фильтр расширений по строке: ${GREEN}${pattern}${WHITE}"
+  echo
+  print_audit_rows "$pattern"
+  print_audit_footer "$pattern"
+}
+
+audit_action_menu() {
+  local choice
+
+  while true; do
+    wait_for_audit_action
+    choice=$?
+    case "$choice" in
+      0 | 255)
+        return
+        ;;
+      1)
+        filter_audit_rows
+        ;;
+    esac
+  done
 }
 
 print_text_cell() {
@@ -276,11 +369,7 @@ echo -e "Эталон для проверки: ${GREEN}Joomla ${BASELINE_VERSION
 echo -e "Status: ${GREEN}✓${WHITE} enabled, ${RED}×${WHITE} disabled"
 echo
 
-found=0
-unwanted_found=0
-echo "$TABLE_TOP"
-print_row "#" "Type" "Element" "Name" "Version" "Date" "S"
-echo "$TABLE_HEADER"
+AUDIT_ROWS=()
 for row in "${EXTENSION_ROWS[@]}"; do
   IFS=$'\037' read -r key type folder element client_id name enabled manifest_cache <<< "$row"
   [[ -n "$key" ]] || continue
@@ -298,23 +387,12 @@ for row in "${EXTENSION_ROWS[@]}"; do
   highlight=0
   if is_unwanted_extension "$element" "$name"; then
     highlight=1
-    unwanted_found=1
   fi
-  found=$((found + 1))
-  print_row "$found" "$group" "$element" "$name" "$version" "$date" "$status" "$highlight"
+  searchable="${group} ${element} ${name} ${version} ${date}"
+  AUDIT_ROWS+=("${group}"$'\037'"${element}"$'\037'"${name}"$'\037'"${version}"$'\037'"${date}"$'\037'"${status}"$'\037'"${highlight}"$'\037'"${searchable}")
 done
-echo "$TABLE_BOTTOM"
 
-if ((unwanted_found)); then
-  echo
-  echo -e "${YELLOW}Жёлтым${WHITE} выделены расширения из списка нежелательных."
-fi
+print_audit_rows
+print_audit_footer
 
-if ((found == 0)); then
-  echo -e "${GREEN}Нестандартные расширения не найдены.${WHITE}"
-else
-  echo
-  echo -e "Найдено нестандартных расширений: ${YELLOW}${found}${WHITE}"
-fi
-
-wait_for_enter
+audit_action_menu
