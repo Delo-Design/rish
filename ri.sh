@@ -779,7 +779,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   STEP="Установка httpd mod_ssl"
   if ! check_step "$STEP"; then
-    Install httpd mod_ssl
+    Install httpd mod_ssl mod_http2
     Up
     httpd -v
     echo

@@ -10,6 +10,8 @@ YELLOW='\033[0;33m'
 source "${RISH_HOME}/windows.sh"
 source "${RISH_HOME}/php_helpers.sh"
 
+PACKAGE_UPDATES_INSTALLED=0
+
 PrintPackageUpdates() {
   local update_line
   local package_name
@@ -38,6 +40,8 @@ CheckPackageUpdates() {
   local check_output
   local check_output_file
   local status
+
+  PACKAGE_UPDATES_INSTALLED=0
 
   if [[ "${#packages[@]}" -eq 0 ]]; then
     echo -e "${YELLOW}Не найдены установленные пакеты для проверки: ${title}.${WHITE}"
@@ -86,12 +90,43 @@ CheckPackageUpdates() {
   echo
   echo "Устанавливаем обновления..."
   if dnf update -y "${packages[@]}"; then
+    PACKAGE_UPDATES_INSTALLED=1
     echo
-    echo -e "${GREEN}Обновление завершено.${WHITE}"
+    echo -e "Обновление ${GREEN}завершено${WHITE}."
     echo "Запускаем проверку и восстановление настроек RISH."
-    bash "${RISH_HOME}/rish_check.sh" fix
+    if ! bash "${RISH_HOME}/rish_check.sh" fix; then
+      echo -e "Проверка и восстановление настроек RISH завершились с ${YELLOW}ошибкой${WHITE}."
+    fi
+    return 0
   else
-    echo -e "${RED}Обновление завершилось с ошибкой.${WHITE}"
+    echo -e "Обновление завершилось с ${RED}ошибкой${WHITE}."
+    return 1
+  fi
+}
+
+PromptApacheRestart() {
+  echo
+  echo -e "Обновления ${GREEN}Apache${WHITE} установлены."
+  echo "Для применения обновлений может потребоваться перезапуск Apache."
+  echo "Перезапустить Apache сейчас?"
+  vertical_menu "current" 2 0 5 "Да" "Нет"
+  if [[ "$?" -ne 0 ]]; then
+    echo -e "Apache не перезапущен. ${YELLOW}Рекомендуется${WHITE} сделать это позже."
+    return 0
+  fi
+
+  echo
+  echo -e "Проверяем конфигурацию Apache: ${GREEN}apachectl configtest${WHITE}"
+  if ! apachectl configtest; then
+    echo -e "Конфигурация Apache содержит ${RED}ошибки${WHITE}. Перезапуск отменен."
+    return 1
+  fi
+
+  echo -e "Перезапускаем Apache: ${GREEN}systemctl restart httpd${WHITE}"
+  if systemctl restart httpd; then
+    echo -e "Apache ${GREEN}перезапущен${WHITE}."
+  else
+    echo -e "Не удалось перезапустить ${RED}Apache${WHITE}."
     return 1
   fi
 }
@@ -115,7 +150,10 @@ CheckPhpUpdates() {
 }
 
 CheckApacheUpdates() {
-  CheckPackageUpdates "Проверка обновлений Apache" "httpd*" "mod_ssl"
+  CheckPackageUpdates "Проверка обновлений Apache" "httpd*" "mod_ssl" "mod_http2" || return 1
+  if [[ "$PACKAGE_UPDATES_INSTALLED" -eq 1 ]]; then
+    PromptApacheRestart || return 1
+  fi
 }
 
 case "${1:-}" in
