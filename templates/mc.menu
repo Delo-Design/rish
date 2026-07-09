@@ -14,6 +14,10 @@ shell_patterns=0
 3  Базы данных
   bash /root/rish/scripts/database_manager.sh "%d" "%f"
 
++ d /var/www/ & t d & x /root/rish/dns
+d  DNS
+  bash /root/rish/scripts/dns/dns.sh menu-from-mc "%d" "%f"
+
 4  Управление CRON
   bash /root/rish/scripts/cron_users.sh
 

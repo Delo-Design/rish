@@ -1385,6 +1385,7 @@ else
     "Удалить пользователя"
     "Установка новых версий PHP"
     "Запретить авторизацию по паролю по SSH"
+    "Включить/отключить управление DNS"
     "Выйти")
   Down
   echo
@@ -1460,6 +1461,17 @@ else
         echo -e "${CURSORUP}Файл /etc/ssh/sshd_config ${VIOLET}не изменен${WHITE}.${ERASEUNTILLENDOFLINE}"
         echo -e
       fi
+      ;;
+    4)
+      if [[ -d /root/rish/dns ]]; then
+        echo -e "Управление ${GREEN}DNS${WHITE} уже включено."
+      else
+        mkdir -p /root/rish/dns
+        echo -e "Управление ${GREEN}DNS${WHITE} включено."
+        echo -e "Пункт ${GREEN}DNS${WHITE} появится в меню MC для каталогов сайтов."
+      fi
+      echo -e "Для отключения удалите каталог ${YELLOW}/root/rish/dns${WHITE}."
+      vertical_menu "current" 2 0 5 "Нажмите Enter"
       ;;
     *)
       RemoveRim
