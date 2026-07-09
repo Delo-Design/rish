@@ -2,9 +2,117 @@
 
 CLOUDNS_API_BASE="${CLOUDNS_API_BASE:-https://api.cloudns.net}"
 
+cloudns_config_has_credentials() {
+  local config_file="$1"
+
+  [[ -f "$config_file" ]] || return 1
+  (
+    source "$config_file" >/dev/null 2>&1 || exit 1
+    [[ "${DNS_PROVIDER:-}" == "cloudns" ]] || exit 1
+    [[ -n "${CLOUDNS_AUTH_PASSWORD:-}" ]] || exit 1
+    [[ -n "${CLOUDNS_AUTH_ID:-}" || -n "${CLOUDNS_SUB_AUTH_ID:-}" || -n "${CLOUDNS_SUB_AUTH_USER:-}" ]] || exit 1
+  )
+}
+
+cloudns_find_saved_credentials_configs() {
+  local current_domain="$1"
+  local menu_limit=248
+  local truncated=0
+  local domain_dir
+  local domain_name
+  local saved_config
+  local active_config
+
+  CLOUDNS_SAVED_CREDENTIAL_DOMAINS=()
+  CLOUDNS_SAVED_CREDENTIAL_FILES=()
+  CLOUDNS_SAVED_CREDENTIALS_TRUNCATED=0
+
+  for domain_dir in "${DNS_RUNTIME_DIR}/domains/"*; do
+    [[ -d "$domain_dir" ]] || continue
+    domain_name="${domain_dir##*/}"
+    [[ "$domain_name" != "$current_domain" ]] || continue
+    if ((${#CLOUDNS_SAVED_CREDENTIAL_DOMAINS[@]} >= menu_limit)); then
+      truncated=1
+      continue
+    fi
+
+    saved_config="${domain_dir}/cloudns.sh"
+    active_config="${domain_dir}/config.sh"
+    if cloudns_config_has_credentials "$saved_config"; then
+      CLOUDNS_SAVED_CREDENTIAL_DOMAINS+=("$domain_name")
+      CLOUDNS_SAVED_CREDENTIAL_FILES+=("$saved_config")
+    elif cloudns_config_has_credentials "$active_config"; then
+      CLOUDNS_SAVED_CREDENTIAL_DOMAINS+=("$domain_name")
+      CLOUDNS_SAVED_CREDENTIAL_FILES+=("$active_config")
+    fi
+  done
+  CLOUDNS_SAVED_CREDENTIALS_TRUNCATED="$truncated"
+}
+
+cloudns_load_credentials_from_config() {
+  local config_file="$1"
+  local config_output
+
+  config_output="$(
+    (
+      source "$config_file" >/dev/null 2>&1 || exit 1
+      [[ "${DNS_PROVIDER:-}" == "cloudns" ]] || exit 1
+      [[ -n "${CLOUDNS_AUTH_PASSWORD:-}" ]] || exit 1
+      [[ -n "${CLOUDNS_AUTH_ID:-}" || -n "${CLOUDNS_SUB_AUTH_ID:-}" || -n "${CLOUDNS_SUB_AUTH_USER:-}" ]] || exit 1
+      printf 'CLOUDNS_SOURCE_AUTH_ID=%q\n' "${CLOUDNS_AUTH_ID:-}"
+      printf 'CLOUDNS_SOURCE_SUB_AUTH_ID=%q\n' "${CLOUDNS_SUB_AUTH_ID:-}"
+      printf 'CLOUDNS_SOURCE_SUB_AUTH_USER=%q\n' "${CLOUDNS_SUB_AUTH_USER:-}"
+      printf 'CLOUDNS_SOURCE_AUTH_PASSWORD=%q\n' "$CLOUDNS_AUTH_PASSWORD"
+    )
+  )" || return 1
+
+  eval "$config_output"
+  CLOUDNS_AUTH_ID="$CLOUDNS_SOURCE_AUTH_ID"
+  CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SOURCE_SUB_AUTH_ID"
+  CLOUDNS_SUB_AUTH_USER="$CLOUDNS_SOURCE_SUB_AUTH_USER"
+  CLOUDNS_AUTH_PASSWORD="$CLOUDNS_SOURCE_AUTH_PASSWORD"
+}
+
+cloudns_choose_saved_credentials() {
+  local domain="$1"
+  local selected_index
+  local config_index
+  local -a labels
+
+  cloudns_find_saved_credentials_configs "$domain"
+  ((${#CLOUDNS_SAVED_CREDENTIAL_DOMAINS[@]} > 0)) || return 2
+  if ((CLOUDNS_SAVED_CREDENTIALS_TRUNCATED)); then
+    echo "Показаны первые 248 доменов с доступами ClouDNS."
+  fi
+
+  labels=("Ввести вручную")
+  for domain in "${CLOUDNS_SAVED_CREDENTIAL_DOMAINS[@]}"; do
+    labels+=("Скопировать доступы из ${domain}")
+  done
+  labels+=("Отмена")
+
+  echo "Выберите способ настройки доступа ClouDNS:"
+  vertical_menu "current" 2 0 52 "${labels[@]}"
+  selected_index=$?
+  if ((selected_index == 255 || selected_index >= ${#labels[@]})); then
+    return 130
+  fi
+  if ((selected_index == 0)); then
+    return 2
+  fi
+  if ((selected_index == ${#labels[@]} - 1)); then
+    return 130
+  fi
+
+  config_index=$((selected_index - 1))
+  cloudns_load_credentials_from_config "${CLOUDNS_SAVED_CREDENTIAL_FILES[$config_index]}" || return 1
+  echo -e "Доступы ClouDNS скопированы из ${GREEN}${CLOUDNS_SAVED_CREDENTIAL_DOMAINS[$config_index]}${WHITE}."
+}
+
 provider_setup_config() {
   local domain="$1"
   local auth_mode
+  local credentials_status
   local server_ip
 
   server_ip="$(server_ipv4)"
@@ -15,47 +123,63 @@ provider_setup_config() {
   fi
   echo
 
-  echo "Выберите тип API-доступа ClouDNS:"
-  vertical_menu "current" 2 0 36 "Пользователь API (auth-id)" "Sub-user API (sub-auth-id)" "Sub-user API (sub-auth-user)" "Отмена"
-  auth_mode=$?
-  case "$auth_mode" in
+  cloudns_choose_saved_credentials "$domain"
+  credentials_status=$?
+  case "$credentials_status" in
     0)
-      rish_read_input CLOUDNS_AUTH_ID "auth-id (Enter - отмена): "
-      [[ -n "$CLOUDNS_AUTH_ID" ]] || {
-        echo "Подключение отменено."
-        return 1
-      }
-      CLOUDNS_SUB_AUTH_ID=""
-      CLOUDNS_SUB_AUTH_USER=""
-      ;;
-    1)
-      rish_read_input CLOUDNS_SUB_AUTH_ID "sub-auth-id (Enter - отмена): "
-      [[ -n "$CLOUDNS_SUB_AUTH_ID" ]] || {
-        echo "Подключение отменено."
-        return 1
-      }
-      CLOUDNS_AUTH_ID=""
-      CLOUDNS_SUB_AUTH_USER=""
       ;;
     2)
-      rish_read_input CLOUDNS_SUB_AUTH_USER "sub-auth-user (Enter - отмена): "
-      [[ -n "$CLOUDNS_SUB_AUTH_USER" ]] || {
+      echo "Выберите тип API-доступа ClouDNS:"
+      vertical_menu "current" 2 0 36 "Пользователь API (auth-id)" "Sub-user API (sub-auth-id)" "Sub-user API (sub-auth-user)" "Отмена"
+      auth_mode=$?
+      case "$auth_mode" in
+        0)
+          rish_read_input CLOUDNS_AUTH_ID "auth-id (Enter - отмена): "
+          [[ -n "$CLOUDNS_AUTH_ID" ]] || {
+            echo "Подключение отменено."
+            return 1
+          }
+          CLOUDNS_SUB_AUTH_ID=""
+          CLOUDNS_SUB_AUTH_USER=""
+          ;;
+        1)
+          rish_read_input CLOUDNS_SUB_AUTH_ID "sub-auth-id (Enter - отмена): "
+          [[ -n "$CLOUDNS_SUB_AUTH_ID" ]] || {
+            echo "Подключение отменено."
+            return 1
+          }
+          CLOUDNS_AUTH_ID=""
+          CLOUDNS_SUB_AUTH_USER=""
+          ;;
+        2)
+          rish_read_input CLOUDNS_SUB_AUTH_USER "sub-auth-user (Enter - отмена): "
+          [[ -n "$CLOUDNS_SUB_AUTH_USER" ]] || {
+            echo "Подключение отменено."
+            return 1
+          }
+          CLOUDNS_AUTH_ID=""
+          CLOUDNS_SUB_AUTH_ID=""
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+
+      rish_read_visible_secret CLOUDNS_AUTH_PASSWORD "Пароль API (Enter - отмена): "
+      [[ -n "$CLOUDNS_AUTH_PASSWORD" ]] || {
         echo "Подключение отменено."
         return 1
       }
-      CLOUDNS_AUTH_ID=""
-      CLOUDNS_SUB_AUTH_ID=""
+      ;;
+    130)
+      echo "Подключение отменено."
+      return 1
       ;;
     *)
+      echo "Не удалось скопировать сохраненные доступы ClouDNS." >&2
       return 1
       ;;
   esac
-
-  rish_read_visible_secret CLOUDNS_AUTH_PASSWORD "Пароль API (Enter - отмена): "
-  [[ -n "$CLOUDNS_AUTH_PASSWORD" ]] || {
-    echo "Подключение отменено."
-    return 1
-  }
 
   DNS_ZONE_NAME="${domain%.}"
 }

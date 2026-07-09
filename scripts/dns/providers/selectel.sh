@@ -6,27 +6,151 @@ SELECTEL_TOKEN="${SELECTEL_TOKEN:-}"
 SELECTEL_TOKEN_EXPIRES_EPOCH="${SELECTEL_TOKEN_EXPIRES_EPOCH:-0}"
 SELECTEL_TOKEN_REFRESH_MARGIN="${SELECTEL_TOKEN_REFRESH_MARGIN:-60}"
 
+selectel_config_has_credentials() {
+  local config_file="$1"
+
+  [[ -f "$config_file" ]] || return 1
+  (
+    source "$config_file" >/dev/null 2>&1 || exit 1
+    [[ "${DNS_PROVIDER:-}" == "selectel" ]] || exit 1
+    [[ -n "${SELECTEL_USERNAME:-}" ]] || exit 1
+    [[ -n "${SELECTEL_PASSWORD:-}" ]] || exit 1
+    [[ -n "${SELECTEL_ACCOUNT_ID:-}" ]] || exit 1
+  )
+}
+
+selectel_find_saved_credentials_configs() {
+  local current_domain="$1"
+  local menu_limit=248
+  local truncated=0
+  local domain_dir
+  local domain_name
+  local saved_config
+  local active_config
+
+  SELECTEL_SAVED_CREDENTIAL_DOMAINS=()
+  SELECTEL_SAVED_CREDENTIAL_FILES=()
+  SELECTEL_SAVED_CREDENTIALS_TRUNCATED=0
+
+  for domain_dir in "${DNS_RUNTIME_DIR}/domains/"*; do
+    [[ -d "$domain_dir" ]] || continue
+    domain_name="${domain_dir##*/}"
+    [[ "$domain_name" != "$current_domain" ]] || continue
+    if ((${#SELECTEL_SAVED_CREDENTIAL_DOMAINS[@]} >= menu_limit)); then
+      truncated=1
+      continue
+    fi
+
+    saved_config="${domain_dir}/selectel.sh"
+    active_config="${domain_dir}/config.sh"
+    if selectel_config_has_credentials "$saved_config"; then
+      SELECTEL_SAVED_CREDENTIAL_DOMAINS+=("$domain_name")
+      SELECTEL_SAVED_CREDENTIAL_FILES+=("$saved_config")
+    elif selectel_config_has_credentials "$active_config"; then
+      SELECTEL_SAVED_CREDENTIAL_DOMAINS+=("$domain_name")
+      SELECTEL_SAVED_CREDENTIAL_FILES+=("$active_config")
+    fi
+  done
+  SELECTEL_SAVED_CREDENTIALS_TRUNCATED="$truncated"
+}
+
+selectel_load_credentials_from_config() {
+  local config_file="$1"
+  local config_output
+
+  config_output="$(
+    (
+      source "$config_file" >/dev/null 2>&1 || exit 1
+      [[ "${DNS_PROVIDER:-}" == "selectel" ]] || exit 1
+      [[ -n "${SELECTEL_USERNAME:-}" ]] || exit 1
+      [[ -n "${SELECTEL_PASSWORD:-}" ]] || exit 1
+      [[ -n "${SELECTEL_ACCOUNT_ID:-}" ]] || exit 1
+      printf 'SELECTEL_SOURCE_USERNAME=%q\n' "$SELECTEL_USERNAME"
+      printf 'SELECTEL_SOURCE_PASSWORD=%q\n' "$SELECTEL_PASSWORD"
+      printf 'SELECTEL_SOURCE_ACCOUNT_ID=%q\n' "$SELECTEL_ACCOUNT_ID"
+    )
+  )" || return 1
+
+  eval "$config_output"
+  SELECTEL_USERNAME="$SELECTEL_SOURCE_USERNAME"
+  SELECTEL_PASSWORD="$SELECTEL_SOURCE_PASSWORD"
+  SELECTEL_ACCOUNT_ID="$SELECTEL_SOURCE_ACCOUNT_ID"
+}
+
+selectel_choose_saved_credentials() {
+  local domain="$1"
+  local selected_index
+  local config_index
+  local -a labels
+
+  selectel_find_saved_credentials_configs "$domain"
+  ((${#SELECTEL_SAVED_CREDENTIAL_DOMAINS[@]} > 0)) || return 2
+  if ((SELECTEL_SAVED_CREDENTIALS_TRUNCATED)); then
+    echo "Показаны первые 248 доменов с доступами Selectel."
+  fi
+
+  labels=("Ввести вручную")
+  for domain in "${SELECTEL_SAVED_CREDENTIAL_DOMAINS[@]}"; do
+    labels+=("Скопировать доступы из ${domain}")
+  done
+  labels+=("Отмена")
+
+  echo "Выберите способ настройки доступа Selectel:"
+  vertical_menu "current" 2 0 52 "${labels[@]}"
+  selected_index=$?
+  if ((selected_index == 255 || selected_index >= ${#labels[@]})); then
+    return 130
+  fi
+  if ((selected_index == 0)); then
+    return 2
+  fi
+  if ((selected_index == ${#labels[@]} - 1)); then
+    return 130
+  fi
+
+  config_index=$((selected_index - 1))
+  selectel_load_credentials_from_config "${SELECTEL_SAVED_CREDENTIAL_FILES[$config_index]}" || return 1
+  echo -e "Доступы Selectel скопированы из ${GREEN}${SELECTEL_SAVED_CREDENTIAL_DOMAINS[$config_index]}${WHITE}."
+}
+
 provider_setup_config() {
   local domain="$1"
   local select_status
+  local credentials_status
 
   DNS_PROVIDER_ERROR=""
 
-  rish_read_input SELECTEL_USERNAME "Сервисный пользователь (Enter - отмена): "
-  [[ -n "$SELECTEL_USERNAME" ]] || {
-    echo "Подключение отменено."
-    return 1
-  }
-  rish_read_visible_secret SELECTEL_PASSWORD "Пароль (Enter - отмена): "
-  [[ -n "$SELECTEL_PASSWORD" ]] || {
-    echo "Подключение отменено."
-    return 1
-  }
-  rish_read_input SELECTEL_ACCOUNT_ID "Account ID (Enter - отмена): "
-  [[ -n "$SELECTEL_ACCOUNT_ID" ]] || {
-    echo "Подключение отменено."
-    return 1
-  }
+  selectel_choose_saved_credentials "$domain"
+  credentials_status=$?
+  case "$credentials_status" in
+    0)
+      ;;
+    2)
+      rish_read_input SELECTEL_USERNAME "Сервисный пользователь (Enter - отмена): "
+      [[ -n "$SELECTEL_USERNAME" ]] || {
+        echo "Подключение отменено."
+        return 1
+      }
+      rish_read_visible_secret SELECTEL_PASSWORD "Пароль (Enter - отмена): "
+      [[ -n "$SELECTEL_PASSWORD" ]] || {
+        echo "Подключение отменено."
+        return 1
+      }
+      rish_read_input SELECTEL_ACCOUNT_ID "Account ID (Enter - отмена): "
+      [[ -n "$SELECTEL_ACCOUNT_ID" ]] || {
+        echo "Подключение отменено."
+        return 1
+      }
+      ;;
+    130)
+      echo "Подключение отменено."
+      return 1
+      ;;
+    *)
+      echo "Не удалось скопировать сохраненные доступы Selectel." >&2
+      return 1
+      ;;
+  esac
   selectel_clear_cached_token
 
   selectel_choose_project
