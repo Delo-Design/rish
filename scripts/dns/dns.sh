@@ -1080,6 +1080,8 @@ dns_domain_menu() {
         }
       else
         restore_active_domain_config "$domain" || fail "Настройки DNS для ${domain} не найдены."
+        echo -e "Смена DNS-провайдера не выполнена. Восстановлено прежнее подключение ${GREEN}${DNS_PROVIDER}${WHITE}."
+        wait_for_enter
       fi
     elif ((choice == ${#DNS_RECORD_LABELS[@]} + 2)); then
       DNS_MENU_DEFAULT_INDEX="$choice"

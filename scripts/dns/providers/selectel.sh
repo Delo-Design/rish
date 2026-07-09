@@ -8,6 +8,9 @@ SELECTEL_TOKEN_REFRESH_MARGIN="${SELECTEL_TOKEN_REFRESH_MARGIN:-60}"
 
 provider_setup_config() {
   local domain="$1"
+  local select_status
+
+  DNS_PROVIDER_ERROR=""
 
   rish_read_input SELECTEL_USERNAME "Сервисный пользователь (Enter - отмена): "
   [[ -n "$SELECTEL_USERNAME" ]] || {
@@ -24,13 +27,52 @@ provider_setup_config() {
     echo "Подключение отменено."
     return 1
   }
-  rish_read_input SELECTEL_PROJECT_NAME "Проект (Enter - отмена): "
-  [[ -n "$SELECTEL_PROJECT_NAME" ]] || {
-    echo "Подключение отменено."
-    return 1
-  }
+  selectel_clear_cached_token
 
-  DNS_ZONE_NAME="$(dns_fqdn "$domain")"
+  selectel_choose_project
+  select_status=$?
+  case "$select_status" in
+    0)
+      ;;
+    130)
+      echo "Подключение отменено."
+      return 1
+      ;;
+    11)
+      return 1
+      ;;
+    2)
+      selectel_read_project_name || return 1
+      ;;
+    *)
+      if [[ "${DNS_PROVIDER_ERROR:-}" == "auth_failed" ]]; then
+        return 1
+      fi
+      echo "Не удалось загрузить список проектов Selectel, введите проект вручную."
+      selectel_read_project_name || return 1
+      ;;
+  esac
+
+  selectel_clear_cached_token
+  provider_auth || return 1
+
+  selectel_choose_zone "$domain"
+  select_status=$?
+  case "$select_status" in
+    0)
+      ;;
+    130)
+      echo "Подключение отменено."
+      return 1
+      ;;
+    2)
+      selectel_read_zone_name "$domain" || return 1
+      ;;
+    *)
+      echo "Не удалось загрузить список DNS-зон Selectel, введите зону вручную."
+      selectel_read_zone_name "$domain" || return 1
+      ;;
+  esac
 }
 
 provider_write_config() {
@@ -80,6 +122,9 @@ selectel_load_cached_token() {
   source "$token_file"
   [[ -n "${SELECTEL_TOKEN:-}" ]] || return 1
   [[ "${SELECTEL_TOKEN_EXPIRES_EPOCH:-}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${SELECTEL_TOKEN_USERNAME:-}" == "${SELECTEL_USERNAME:-}" ]] || return 1
+  [[ "${SELECTEL_TOKEN_ACCOUNT_ID:-}" == "${SELECTEL_ACCOUNT_ID:-}" ]] || return 1
+  [[ "${SELECTEL_TOKEN_PROJECT_NAME:-}" == "${SELECTEL_PROJECT_NAME:-}" ]] || return 1
 
   now="$(date +%s)"
   if ((SELECTEL_TOKEN_EXPIRES_EPOCH - now > SELECTEL_TOKEN_REFRESH_MARGIN)); then
@@ -102,6 +147,9 @@ selectel_save_cached_token() {
     echo "# RISH Selectel DNS token cache."
     echo "SELECTEL_TOKEN=$(shell_quote "$SELECTEL_TOKEN")"
     echo "SELECTEL_TOKEN_EXPIRES_EPOCH=$(shell_quote "$SELECTEL_TOKEN_EXPIRES_EPOCH")"
+    echo "SELECTEL_TOKEN_USERNAME=$(shell_quote "$SELECTEL_USERNAME")"
+    echo "SELECTEL_TOKEN_ACCOUNT_ID=$(shell_quote "$SELECTEL_ACCOUNT_ID")"
+    echo "SELECTEL_TOKEN_PROJECT_NAME=$(shell_quote "$SELECTEL_PROJECT_NAME")"
   } > "$token_file"
   chmod 600 "$token_file" 2>/dev/null || true
 }
@@ -112,29 +160,22 @@ selectel_clear_cached_token() {
   rm -f "$(selectel_token_cache_file)" 2>/dev/null || true
 }
 
-provider_auth() {
-  local headers_file
-  local body_file
-  local body
-  local expires_at
-  local expires_epoch
+selectel_identity_base() {
+  local base="$SELECTEL_IDENTITY_URL"
 
-  provider_check_config || return 1
-  if selectel_load_cached_token; then
-    return 0
-  fi
+  base="${base%/auth/tokens}"
+  printf '%s' "$base"
+}
 
-  headers_file="$(mktemp)" || return 1
-  body_file="$(mktemp)" || {
-    rm -f "$headers_file"
-    return 1
-  }
-  body="$(
+selectel_auth_body() {
+  local project_name="${1:-}"
+
+  if [[ -n "$project_name" ]]; then
     jq -n \
       --arg username "$SELECTEL_USERNAME" \
       --arg password "$SELECTEL_PASSWORD" \
       --arg account_id "$SELECTEL_ACCOUNT_ID" \
-      --arg project_name "$SELECTEL_PROJECT_NAME" \
+      --arg project_name "$project_name" \
       '{
         auth: {
           identity: {
@@ -155,36 +196,251 @@ provider_auth() {
           }
         }
       }'
-  )"
+    return
+  fi
 
-  if ! curl -fsS -D "$headers_file" -o "$body_file" \
+  jq -n \
+    --arg username "$SELECTEL_USERNAME" \
+    --arg password "$SELECTEL_PASSWORD" \
+    --arg account_id "$SELECTEL_ACCOUNT_ID" \
+    '{
+      auth: {
+        identity: {
+          methods: ["password"],
+          password: {
+            user: {
+              name: $username,
+              domain: {name: $account_id},
+              password: $password
+            }
+          }
+        }
+      }
+    }'
+}
+
+selectel_fetch_token() {
+  local project_name="${1:-}"
+  local save_cache="${2:-0}"
+  local headers_file
+  local body_file
+  local body
+  local http_code
+  local token
+  local expires_at
+  local expires_epoch
+
+  headers_file="$(mktemp)" || return 1
+  body_file="$(mktemp)" || {
+    rm -f "$headers_file"
+    return 1
+  }
+  body="$(selectel_auth_body "$project_name")" || {
+    rm -f "$headers_file" "$body_file"
+    return 1
+  }
+
+  http_code="$(curl -sS -D "$headers_file" -o "$body_file" -w "%{http_code}" \
     -X POST \
     -H "Content-Type: application/json" \
     -d "$body" \
-    "$SELECTEL_IDENTITY_URL"; then
+    "$SELECTEL_IDENTITY_URL")" || {
     rm -f "$headers_file" "$body_file"
     echo -e "Не удалось получить ${YELLOW}IAM token Selectel${WHITE}." >&2
     return 1
+  }
+
+  if [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
+    rm -f "$headers_file" "$body_file"
+    DNS_PROVIDER_ERROR="auth_failed"
+    echo -e "Selectel не принял данные авторизации: проверьте ${YELLOW}service user${WHITE}, пароль и ${YELLOW}Account ID${WHITE}." >&2
+    return 11
+  fi
+  if [[ ! "$http_code" =~ ^2 ]]; then
+    echo -e "${YELLOW}Selectel Identity API${WHITE} вернул HTTP ${YELLOW}${http_code}${WHITE}." >&2
+    if [[ -s "$body_file" ]]; then
+      sed -n '1,20p' "$body_file" >&2
+    fi
+    rm -f "$headers_file" "$body_file"
+    return 1
   fi
 
-  SELECTEL_TOKEN="$(
+  token="$(
     awk 'BEGIN {IGNORECASE=1} /^X-Subject-Token:/ {sub(/\r$/, "", $0); print substr($0, index($0, ":") + 2)}' "$headers_file" | tail -n 1
   )"
   expires_at="$(jq -r '.token.expires_at // empty' "$body_file" 2>/dev/null)"
   rm -f "$headers_file" "$body_file"
 
-  if [[ -z "$SELECTEL_TOKEN" ]]; then
+  if [[ -z "$token" ]]; then
     echo -e "Ответ ${YELLOW}Selectel Identity API${WHITE} не содержит ${YELLOW}X-Subject-Token${WHITE}." >&2
     return 1
   fi
 
+  if [[ "$save_cache" != "1" ]]; then
+    printf '%s' "$token"
+    return 0
+  fi
+
+  SELECTEL_TOKEN="$token"
+  SELECTEL_TOKEN_EXPIRES_EPOCH=0
+  expires_epoch=""
   if [[ -n "$expires_at" ]]; then
     expires_epoch="$(date -d "$expires_at" +%s 2>/dev/null || true)"
-    if [[ "$expires_epoch" =~ ^[0-9]+$ ]]; then
-      SELECTEL_TOKEN_EXPIRES_EPOCH="$expires_epoch"
-      selectel_save_cached_token || true
-    fi
   fi
+  if [[ "$expires_epoch" =~ ^[0-9]+$ ]]; then
+    SELECTEL_TOKEN_EXPIRES_EPOCH="$expires_epoch"
+    selectel_save_cached_token || true
+  fi
+}
+
+provider_auth() {
+  provider_check_config || return 1
+  if selectel_load_cached_token; then
+    return 0
+  fi
+
+  selectel_fetch_token "$SELECTEL_PROJECT_NAME" 1
+}
+
+selectel_identity_api_get() {
+  local token="$1"
+  local path="$2"
+
+  curl -fsS \
+    -H "X-Auth-Token: ${token}" \
+    -H "Accept: application/json" \
+    "$(selectel_identity_base)${path}"
+}
+
+selectel_read_project_name() {
+  rish_read_input SELECTEL_PROJECT_NAME "Проект (Enter - отмена): "
+  [[ -n "$SELECTEL_PROJECT_NAME" ]] || {
+    echo "Подключение отменено."
+    return 1
+  }
+}
+
+selectel_choose_project() {
+  local token
+  local token_status
+  local projects_json
+  local selected_index
+  local menu_limit=248
+  local -a project_names
+  local -a labels
+
+  token="$(selectel_fetch_token "" 0)"
+  token_status=$?
+  if ((token_status == 11)); then
+    return 11
+  fi
+  if ((token_status != 0)); then
+    return 1
+  fi
+  projects_json="$(selectel_identity_api_get "$token" "/auth/projects")" || return 1
+  mapfile -t project_names < <(
+    jq -r '
+      .projects[]?
+      | select(.enabled != false)
+      | .name // empty
+    ' <<< "$projects_json" | awk 'NF'
+  )
+  ((${#project_names[@]} > 0)) || return 1
+  if ((${#project_names[@]} > menu_limit)); then
+    echo "Показаны первые ${menu_limit} проектов Selectel. Если нужного нет в списке, выберите ручной ввод."
+    project_names=("${project_names[@]:0:$menu_limit}")
+  fi
+
+  labels=("${project_names[@]}" "Ввести вручную" "Отмена")
+  echo "Выберите проект Selectel:"
+  vertical_menu "current" 2 0 42 "${labels[@]}"
+  selected_index=$?
+  if ((selected_index == 255)); then
+    return 130
+  fi
+  if ((selected_index < ${#project_names[@]})); then
+    SELECTEL_PROJECT_NAME="${project_names[$selected_index]}"
+    return 0
+  fi
+  if ((selected_index == ${#project_names[@]})); then
+    return 2
+  fi
+
+  return 130
+}
+
+selectel_read_zone_name() {
+  local domain="$1"
+  local zone_name
+
+  rish_read_input zone_name "DNS-зона (очистить и Enter - отмена): " "$(dns_fqdn "$domain")"
+  [[ -n "$zone_name" ]] || {
+    echo "Подключение отменено."
+    return 1
+  }
+
+  DNS_ZONE_NAME="$(dns_fqdn "$zone_name")"
+  DNS_ZONE_ID=""
+}
+
+selectel_choose_zone() {
+  local domain="$1"
+  local target_zone
+  local zones_json
+  local selected_index
+  local default_index=0
+  local menu_limit=248
+  local truncated=0
+  local zone_id
+  local zone_name
+  local -a zone_ids
+  local -a zone_names
+  local -a labels
+
+  target_zone="$(dns_fqdn "$domain")"
+  zones_json="$(selectel_api GET "/zones?limit=1000")" || return 1
+  while IFS=$'\t' read -r zone_id zone_name; do
+    [[ -n "$zone_id" && -n "$zone_name" ]] || continue
+    if ((${#zone_names[@]} >= menu_limit)); then
+      truncated=1
+      continue
+    fi
+    zone_ids+=("$zone_id")
+    zone_names+=("$zone_name")
+    labels+=("$zone_name")
+    if [[ "$zone_name" == "$target_zone" ]]; then
+      default_index=$((${#zone_names[@]} - 1))
+    fi
+  done < <(
+    jq -r '
+      .result[]?
+      | select(.id and .name)
+      | [.id, .name]
+      | @tsv
+    ' <<< "$zones_json"
+  )
+  ((${#zone_names[@]} > 0)) || return 1
+  if ((truncated)); then
+    echo "Показаны первые ${menu_limit} DNS-зон Selectel. Если нужной нет в списке, выберите ручной ввод."
+  fi
+
+  labels+=("Ввести вручную" "Отмена")
+  echo "Выберите DNS-зону Selectel:"
+  vertical_menu "current" 2 0 42 "default=${default_index}" "${labels[@]}"
+  selected_index=$?
+  if ((selected_index == 255)); then
+    return 130
+  fi
+  if ((selected_index < ${#zone_names[@]})); then
+    DNS_ZONE_ID="${zone_ids[$selected_index]}"
+    DNS_ZONE_NAME="${zone_names[$selected_index]}"
+    return 0
+  fi
+  if ((selected_index == ${#zone_names[@]})); then
+    return 2
+  fi
+
+  return 130
 }
 
 selectel_api() {
@@ -246,7 +502,13 @@ provider_find_zone() {
   local zones_json
   local zone_id
 
-  zone_name="$(dns_fqdn "$domain")"
+  if [[ -n "${DNS_ZONE_ID:-}" && -n "${DNS_ZONE_NAME:-}" ]]; then
+    printf '%s\t%s\n' "$DNS_ZONE_ID" "$DNS_ZONE_NAME"
+    return 0
+  fi
+
+  zone_name="${DNS_ZONE_NAME:-$(dns_fqdn "$domain")}"
+  zone_name="$(dns_fqdn "$zone_name")"
   zones_json="$(selectel_api GET "/zones?filter=${zone_name}")" || return 1
   zone_id="$(
     jq -r --arg zone_name "$zone_name" '
