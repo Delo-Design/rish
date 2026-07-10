@@ -95,7 +95,8 @@ show_dns_status() {
   local message="$1"
 
   clear
-  echo -e "DNS: ${GREEN}${DNS_DOMAIN}${WHITE}"
+  echo -e "Сайт: ${GREEN}${DNS_DOMAIN}${WHITE}"
+  echo -e "DNS-зона: ${GREEN}${DNS_ZONE_NAME}${WHITE}"
   echo -e "Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}"
   echo
   echo -e "$message"
@@ -339,13 +340,75 @@ has_cname_conflict() {
   return 1
 }
 
+find_best_dns_zone() {
+  local domain="$1"
+  local configured_zone="${DNS_ZONE_NAME:-}"
+  local tried_zone=""
+  local candidate="${domain%.}"
+  local candidate_fqdn
+  local parent
+  local result_file
+  local error_file
+
+  result_file="$(mktemp)" || return 1
+  error_file="$(mktemp)" || {
+    rm -f "$result_file"
+    return 1
+  }
+
+  if [[ -n "$configured_zone" ]]; then
+    tried_zone="$(dns_fqdn "$configured_zone")"
+    DNS_PROVIDER_ERROR=""
+    if provider_find_zone "$configured_zone" > "$result_file" 2> "$error_file"; then
+      cat "$result_file"
+      rm -f "$result_file" "$error_file"
+      return 0
+    fi
+    if [[ "${DNS_PROVIDER_ERROR:-}" != "zone_not_found" ]]; then
+      cat "$error_file" >&2
+      rm -f "$result_file" "$error_file"
+      return 1
+    fi
+  fi
+
+  DNS_ZONE_ID=""
+  DNS_ZONE_NAME=""
+  while [[ "$candidate" == *.* ]]; do
+    candidate_fqdn="$(dns_fqdn "$candidate")"
+    if [[ "$candidate_fqdn" != "$tried_zone" ]]; then
+      : > "$result_file"
+      : > "$error_file"
+      DNS_ZONE_ID=""
+      DNS_ZONE_NAME=""
+      DNS_PROVIDER_ERROR=""
+      if provider_find_zone "$candidate" > "$result_file" 2> "$error_file"; then
+        cat "$result_file"
+        rm -f "$result_file" "$error_file"
+        return 0
+      fi
+      if [[ "${DNS_PROVIDER_ERROR:-}" != "zone_not_found" ]]; then
+        cat "$error_file" >&2
+        rm -f "$result_file" "$error_file"
+        return 1
+      fi
+    fi
+
+    parent="${candidate#*.}"
+    [[ "$parent" == *.* ]] || break
+    candidate="$parent"
+  done
+
+  rm -f "$result_file" "$error_file"
+  DNS_PROVIDER_ERROR="zone_not_found"
+  echo -e "DNS-зона для ${YELLOW}${domain}${WHITE} или его родительских доменов у провайдера ${YELLOW}${DNS_PROVIDER}${WHITE} не найдена." >&2
+  return 1
+}
+
 provider_prepare() {
   if ! provider_auth; then
     return 1
   fi
-  if ! provider_zone_ready; then
-    provider_find_zone "$DNS_DOMAIN" >/dev/null || return 1
-  fi
+  find_best_dns_zone "$DNS_DOMAIN" >/dev/null || return 1
 }
 
 show_connect_provider_menu() {
@@ -389,18 +452,19 @@ connect_provider() {
   provider_setup_config "$domain" || return 1
 
   echo
-  echo -e "Проверяем доступ и ищем DNS-зону ${GREEN}$(dns_fqdn "$domain")${WHITE}..."
+  echo -e "Проверяем доступ и ищем DNS-зону для ${GREEN}$(dns_fqdn "$domain")${WHITE}..."
   provider_auth || {
     wait_for_enter
     return 1
   }
-  zone_info="$(provider_find_zone "$domain")" || {
+  zone_info="$(find_best_dns_zone "$domain")" || {
     wait_for_enter
     return 1
   }
   DNS_ZONE_ID="${zone_info%%$'\t'*}"
   DNS_ZONE_NAME="${zone_info#*$'\t'}"
   echo -e "Доступ к DNS-провайдеру ${GREEN}${DNS_PROVIDER}${WHITE} подтвержден."
+  echo -e "Сайт: ${GREEN}${DNS_DOMAIN}${WHITE}"
   echo -e "DNS-зона найдена: ${GREEN}${DNS_ZONE_NAME}${WHITE}"
 
   if save_domain_config "$domain"; then
@@ -625,6 +689,7 @@ read_record_value() {
   local current="${3:-}"
   local priority="10"
   local server=""
+  local input_value
 
   if [[ "$type" == "MX" ]]; then
     if [[ "$current" =~ ^([0-9]+)[[:space:]]+(.+)$ ]]; then
@@ -652,7 +717,11 @@ read_record_value() {
     return
   fi
 
-  rish_read_input "$result_var" "Значение записи: " "$current"
+  rish_read_input input_value "Значение записи: " "$current"
+  if [[ "$type" == "CNAME" && -n "$input_value" && "$input_value" != *"." ]]; then
+    input_value="${input_value}."
+  fi
+  printf -v "$result_var" '%s' "$input_value"
 }
 
 create_record() {
@@ -666,6 +735,7 @@ create_record() {
   echo -e "Создание DNS-записи для ${GREEN}${DNS_DOMAIN}${WHITE}"
   choose_record_type || return
   type="$SELECTED_RECORD_TYPE"
+  echo -e "Тип записи: ${GREEN}${type}${WHITE}"
 
   rish_read_input name_input "Имя записи (@, www или полное имя): " "@"
   read_record_value "$type" value || {
@@ -955,40 +1025,178 @@ record_actions_menu() {
 }
 
 import_zone_file_menu() {
+  local import_dir
+  local import_parent_dir
+  local import_domain_dir
+  local choice
   local zone_file
+  local existing_records
+  local import_mode
+  local zone_file_origin
+  local target_origin
+  local rewrite_origin=0
+  local parse_status
   local type
   local ttl
   local name
   local records_json
   local record
+  local total_records=0
+  local current_record=0
+  local values_count
   local imported=0
   local failed=0
   local records_tmp
+  local -a import_files=()
+  local -a import_labels=()
+  local candidate
 
   clear
-  echo -e "Импорт zone file для ${GREEN}${DNS_DOMAIN}${WHITE}"
-  rish_read_input zone_file "Путь к zone file: "
-  [[ -n "$zone_file" ]] || return
+  echo -e "Импорт DNS-зоны из файла для сайта ${GREEN}${DNS_DOMAIN}${WHITE}"
+  echo -e "DNS-зона: ${GREEN}${DNS_ZONE_NAME}${WHITE}"
+  echo -e "Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}"
+  echo
+  import_dir="$(dns_config_dir "$DNS_DOMAIN")"
+  import_parent_dir="${import_dir%/*}"
+  import_domain_dir="${import_dir##*/}"
+  echo "Файлы DNS-зоны для импорта ожидаются в папке DNS-настроек домена:"
+  echo -e "${import_parent_dir}/${YELLOW}${import_domain_dir}${WHITE}"
+  echo
+
+  for candidate in "${import_dir}"/*.txt "${import_dir}"/*.zone "${import_dir}"/*.bind "${import_dir}"/*.dns; do
+    [[ -f "$candidate" ]] || continue
+    import_files+=("$candidate")
+    import_labels+=("${candidate##*/}")
+  done
+
+  if ((${#import_files[@]} == 0)); then
+    echo "Файлы DNS-зоны для импорта не найдены."
+    echo -e "Поместите файл в: ${import_parent_dir}/${YELLOW}${import_domain_dir}${WHITE}"
+    wait_for_enter
+    return
+  fi
+
+  import_labels+=("Отмена")
+  echo "Выберите файл DNS-зоны:"
+  vertical_menu "current" 2 0 52 "${import_labels[@]}"
+  choice=$?
+  if ((choice == 255 || choice >= ${#import_labels[@]} - 1)); then
+    return
+  fi
+  zone_file="${import_files[$choice]}"
+
+  zone_file_origin="$(zonefile_detect_origin "$zone_file" "${DNS_ZONE_NAME%.}")" || {
+    wait_for_enter
+    return
+  }
+  target_origin="$(dns_fqdn "$DNS_ZONE_NAME")"
+  if [[ "$zone_file_origin" != "$target_origin" ]]; then
+    echo
+    echo -e "В файле DNS-зоны указан origin ${YELLOW}${zone_file_origin}${WHITE}"
+    echo -e "Текущая DNS-зона: ${GREEN}${target_origin}${WHITE}"
+    echo "При импорте в другую зону можно заменить origin на текущую DNS-зону."
+    vertical_menu "current" 2 0 44 "Отмена" "Заменить origin на текущую зону"
+    choice=$?
+    if ((choice != 1)); then
+      return
+    fi
+    rewrite_origin=1
+  fi
 
   records_tmp="$(mktemp)" || {
     echo -e "Не удалось создать временный файл для импорта." >&2
     wait_for_enter
     return
   }
-  if ! parse_zonefile "$zone_file" "$DNS_DOMAIN" > "$records_tmp"; then
+  if ((rewrite_origin)); then
+    ZONEFILE_REWRITE_SOURCE_ORIGIN="$zone_file_origin"
+    ZONEFILE_REWRITE_TARGET_ORIGIN="$target_origin"
+    parse_zonefile "$zone_file" "${DNS_ZONE_NAME%.}" > "$records_tmp"
+    parse_status=$?
+    ZONEFILE_REWRITE_SOURCE_ORIGIN=""
+    ZONEFILE_REWRITE_TARGET_ORIGIN=""
+  else
+    parse_zonefile "$zone_file" "${DNS_ZONE_NAME%.}" > "$records_tmp"
+    parse_status=$?
+  fi
+  if ((parse_status != 0)); then
     rm -f "$records_tmp"
     wait_for_enter
     return
+  fi
+  while IFS=$'\t' read -r type ttl name records_json; do
+    [[ -n "$type" ]] || continue
+    values_count="$(jq -r 'length' <<< "$records_json" 2>/dev/null)"
+    [[ "$values_count" =~ ^[0-9]+$ ]] || values_count=0
+    total_records=$((total_records + values_count))
+  done < "$records_tmp"
+  if ((total_records == 0)); then
+    rm -f "$records_tmp"
+    echo "В выбранном файле DNS-зоны нет записей для импорта."
+    wait_for_enter
+    return
+  fi
+
+  load_records_cache || {
+    rm -f "$records_tmp"
+    echo -e "Не удалось получить текущие DNS-записи перед импортом." >&2
+    wait_for_enter
+    return
+  }
+
+  existing_records="$(dns_user_records_count)"
+  if ((existing_records > 0)); then
+    echo
+    echo -e "В текущей зоне найдено записей: ${YELLOW}${existing_records}${WHITE}"
+    vertical_menu "current" 2 0 44 "Добавить к существующим" "Удалить текущие записи и импортировать" "Отмена"
+    choice=$?
+    case "$choice" in
+      0)
+        import_mode="append"
+        ;;
+      1)
+        import_mode="replace"
+        ;;
+      *)
+        rm -f "$records_tmp"
+        return
+        ;;
+    esac
+
+    if [[ "$import_mode" == "replace" ]]; then
+      echo
+      echo "Перед импортом будут удалены текущие DNS-записи, кроме NS/SOA."
+      echo "Если удаление или импорт прервется ошибкой, зона может остаться частично измененной."
+      vertical_menu "current" 2 0 32 "Отмена" "Удалить и импортировать"
+      choice=$?
+      if ((choice != 1)); then
+        rm -f "$records_tmp"
+        return
+      fi
+
+      echo
+      echo "Удаляем текущие DNS-записи..."
+      if ! delete_dns_user_records; then
+        rm -f "$records_tmp"
+        wait_for_enter
+        return
+      fi
+    fi
   fi
 
   while IFS=$'\t' read -r type ttl name records_json; do
     [[ -n "$type" ]] || continue
     while IFS= read -r record; do
       [[ -n "$record" ]] || continue
+      current_record=$((current_record + 1))
+      printf '%b' "[${YELLOW}${current_record}${WHITE}/${YELLOW}${total_records}${WHITE}] ${GREEN}${type}${WHITE} ${name} "
       if provider_add_record_value "$DNS_ZONE_ID" "$name" "$type" "$ttl" "$record"; then
         imported=$((imported + 1))
+        echo -e "${GREEN}OK${WHITE}"
       else
         failed=$((failed + 1))
+        echo
+        echo -e "${RED}Ошибка${WHITE}"
         echo -e "Не удалось импортировать ${YELLOW}${type} ${name}${WHITE}." >&2
       fi
     done < <(jq -r '.[]' <<< "$records_json")
@@ -1002,6 +1210,221 @@ import_zone_file_menu() {
   if ((failed > 0)); then
     echo -e "Ошибок: ${RED}${failed}${WHITE}"
   fi
+  wait_for_enter
+}
+
+dns_export_record_name() {
+  local name="$1"
+  local origin="$2"
+  local suffix=".$origin"
+
+  if [[ "$name" == "$origin" ]]; then
+    printf '@'
+  elif [[ "$name" == *"$suffix" ]]; then
+    printf '%s' "${name%"$suffix"}"
+  else
+    printf '%s' "$name"
+  fi
+}
+
+dns_export_txt_value() {
+  local value="$1"
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+dns_export_record_value() {
+  local type="$1"
+  local value="$2"
+
+  case "$type" in
+    TXT)
+      dns_export_txt_value "$value"
+      ;;
+    *)
+      printf '%s' "$value"
+      ;;
+  esac
+}
+
+export_zone_file_menu() {
+  local export_dir
+  local export_parent_dir
+  local export_domain_dir
+  local export_file
+  local timestamp
+  local origin
+  local i
+  local type
+  local ttl
+  local name
+  local export_name
+  local value
+  local export_value
+  local exported=0
+
+  clear
+  echo -e "Экспорт DNS-зоны в файл для сайта ${GREEN}${DNS_DOMAIN}${WHITE}"
+  echo -e "DNS-зона: ${GREEN}${DNS_ZONE_NAME}${WHITE}"
+  echo -e "Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}"
+  echo
+
+  load_records_cache || {
+    echo -e "Не удалось получить текущие DNS-записи." >&2
+    wait_for_enter
+    return
+  }
+
+  export_dir="$(dns_config_dir "$DNS_DOMAIN")"
+  export_parent_dir="${export_dir%/*}"
+  export_domain_dir="${export_dir##*/}"
+  mkdir -p "$export_dir" || {
+    echo -e "Не удалось создать папку экспорта: ${export_parent_dir}/${YELLOW}${export_domain_dir}${WHITE}" >&2
+    wait_for_enter
+    return
+  }
+
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  export_file="${export_dir}/${DNS_ZONE_NAME%.}-export-${timestamp}.txt"
+  origin="$(dns_fqdn "$DNS_ZONE_NAME")"
+
+  {
+    printf '$ORIGIN %s\n' "$origin"
+    printf '$TTL %s\n' "${DNS_DEFAULT_TTL:-3600}"
+    printf '\n'
+
+    for i in "${!DNS_RECORD_TYPES[@]}"; do
+      type="${DNS_RECORD_TYPES[$i]}"
+      [[ "$type" != "SOA" ]] || continue
+      ttl="${DNS_RECORD_TTLS[$i]:-${DNS_DEFAULT_TTL:-3600}}"
+      name="${DNS_RECORD_NAMES[$i]}"
+      export_name="$(dns_export_record_name "$name" "$origin")"
+
+      while IFS= read -r value; do
+        [[ -n "$value" ]] || continue
+        export_value="$(dns_export_record_value "$type" "$value")"
+        printf '%s %s IN %s %s\n' "$export_name" "$ttl" "$type" "$export_value"
+        exported=$((exported + 1))
+      done < <(jq -r '.[]' <<< "${DNS_RECORD_VALUES[$i]}")
+    done
+  } > "$export_file" || {
+    echo -e "Не удалось сохранить export: ${YELLOW}${export_file}${WHITE}" >&2
+    wait_for_enter
+    return
+  }
+
+  chmod 600 "$export_file" 2>/dev/null || true
+
+  if ((exported == 0)); then
+    rm -f "$export_file"
+    echo "В зоне нет записей для экспорта."
+  else
+    echo -e "Экспортировано записей: ${GREEN}${exported}${WHITE}"
+    echo "Файл сохранен в папке DNS-настроек домена:"
+    echo -e "${export_parent_dir}/${YELLOW}${export_domain_dir}${WHITE}/${YELLOW}${export_file##*/}${WHITE}"
+  fi
+  wait_for_enter
+}
+
+dns_user_records_count() {
+  local i
+  local type
+  local values_count
+  local total=0
+
+  for i in "${!DNS_RECORD_TYPES[@]}"; do
+    type="${DNS_RECORD_TYPES[$i]}"
+    [[ "$type" != "SOA" && "$type" != "NS" ]] || continue
+    values_count="$(jq -r 'length' <<< "${DNS_RECORD_VALUES[$i]}" 2>/dev/null)"
+    [[ "$values_count" =~ ^[0-9]+$ ]] || values_count=1
+    total=$((total + values_count))
+  done
+
+  printf '%s' "$total"
+}
+
+delete_dns_user_records() {
+  local i
+  local type
+  local name
+  local deleted=0
+  local failed=0
+  local total=0
+  local current=0
+
+  for i in "${!DNS_RECORD_TYPES[@]}"; do
+    type="${DNS_RECORD_TYPES[$i]}"
+    [[ "$type" != "SOA" && "$type" != "NS" ]] || continue
+    total=$((total + 1))
+  done
+
+  for i in "${!DNS_RECORD_TYPES[@]}"; do
+    type="${DNS_RECORD_TYPES[$i]}"
+    [[ "$type" != "SOA" && "$type" != "NS" ]] || continue
+    name="${DNS_RECORD_NAMES[$i]}"
+    current=$((current + 1))
+    printf '%b' "[${YELLOW}${current}${WHITE}/${YELLOW}${total}${WHITE}] Удаляем ${GREEN}${type}${WHITE} ${name} "
+    if provider_delete_rrset "$DNS_ZONE_ID" "$name" "$type"; then
+      deleted=$((deleted + 1))
+      echo -e "${GREEN}OK${WHITE}"
+    else
+      failed=$((failed + 1))
+      echo
+      echo -e "${RED}Ошибка${WHITE}"
+      echo -e "Не удалось удалить ${YELLOW}${type} ${name}${WHITE}." >&2
+    fi
+  done
+
+  echo -e "Удалено групп записей: ${GREEN}${deleted}${WHITE}"
+  if ((deleted > 0)); then
+    invalidate_records_cache
+  fi
+  if ((failed > 0)); then
+    echo -e "Ошибок удаления: ${RED}${failed}${WHITE}" >&2
+    return 1
+  fi
+}
+
+clear_dns_zone_menu() {
+  local existing_records
+  local choice
+
+  clear
+  echo -e "Очистка DNS-зоны ${GREEN}${DNS_ZONE_NAME}${WHITE}"
+  echo -e "Сайт: ${GREEN}${DNS_DOMAIN}${WHITE}"
+  echo -e "Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}"
+  echo
+
+  load_records_cache || {
+    echo -e "Не удалось получить текущие DNS-записи." >&2
+    wait_for_enter
+    return
+  }
+
+  existing_records="$(dns_user_records_count)"
+  if ((existing_records == 0)); then
+    echo "В зоне нет записей для удаления."
+    wait_for_enter
+    return
+  fi
+
+  echo -e "Будут удалены все DNS-записи, кроме ${YELLOW}NS/SOA${WHITE}."
+  echo -e "Количество записей к удалению: ${YELLOW}${existing_records}${WHITE}"
+  echo "Если удаление прервется ошибкой, зона может остаться частично измененной."
+  echo
+  vertical_menu "current" 2 0 22 "Отмена" "Очистить зону"
+  choice=$?
+  if ((choice != 1)); then
+    echo "Очистка зоны отменена."
+    wait_for_enter
+    return
+  fi
+
+  echo
+  echo "Удаляем DNS-записи..."
+  delete_dns_user_records
   wait_for_enter
 }
 
@@ -1030,7 +1453,8 @@ dns_domain_menu() {
 
   while true; do
     clear
-    echo -e "DNS: ${GREEN}${DNS_DOMAIN}${WHITE}"
+    echo -e "Сайт: ${GREEN}${DNS_DOMAIN}${WHITE}"
+    echo -e "DNS-зона: ${GREEN}${DNS_ZONE_NAME}${WHITE}"
     echo -e "Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}"
     echo
 
@@ -1044,25 +1468,26 @@ dns_domain_menu() {
     fi
 
     clear
-    echo -e "DNS: ${GREEN}${DNS_DOMAIN}${WHITE}"
+    echo -e "Сайт: ${GREEN}${DNS_DOMAIN}${WHITE}"
+    echo -e "DNS-зона: ${GREEN}${DNS_ZONE_NAME}${WHITE}"
     echo -e "Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}"
     echo
-    menu_used_rows=3
+    menu_used_rows=4
     if ((DNS_RECORD_MENU_TRUNCATED)); then
       echo -e "Внимание: показаны первые ${YELLOW}${DNS_RECORD_MENU_LIMIT}${WHITE} строк DNS-записей из ${YELLOW}${DNS_RECORD_MENU_TOTAL_ROWS}${WHITE}; список обрезан."
       echo
-      menu_used_rows=5
+      menu_used_rows=6
     fi
 
     menu_height="$(dns_menu_available_height "$menu_used_rows")"
-    vertical_menu "current_noclear" 2 "$menu_height" 42 "default=${DNS_MENU_DEFAULT_INDEX}" "Создать запись" "${DNS_RECORD_LABELS[@]}" "Сменить DNS-провайдера" "Импорт zone file" "Выйти"
+    vertical_menu "current_noclear" 2 "$menu_height" 42 "default=${DNS_MENU_DEFAULT_INDEX}" "Создать запись" "${DNS_RECORD_LABELS[@]}" "Сменить DNS-провайдера" "Импорт DNS-зоны из файла" "Экспорт DNS-зоны в файл" "Очистить зону" "Выйти"
     choice=$?
     LAST_DNS_MENU_Y="$VERTICAL_MENU_LAST_Y"
     LAST_DNS_MENU_ACTION_X="$(vertical_menu_next_x 2)"
     LAST_DNS_MENU_RIGHT_X="$VERTICAL_MENU_LAST_RIGHT_X"
     LAST_DNS_SELECTED_ROW=$((LAST_DNS_MENU_Y + VERTICAL_MENU_LAST_VISIBLE_SELECTED + 1))
 
-    if ((choice == 255 || choice == ${#DNS_RECORD_LABELS[@]} + 3)); then
+    if ((choice == 255 || choice == ${#DNS_RECORD_LABELS[@]} + 5)); then
       exit 0
     elif ((choice == 0)); then
       DNS_MENU_DEFAULT_INDEX=0
@@ -1086,6 +1511,12 @@ dns_domain_menu() {
     elif ((choice == ${#DNS_RECORD_LABELS[@]} + 2)); then
       DNS_MENU_DEFAULT_INDEX="$choice"
       import_zone_file_menu
+    elif ((choice == ${#DNS_RECORD_LABELS[@]} + 3)); then
+      DNS_MENU_DEFAULT_INDEX="$choice"
+      export_zone_file_menu
+    elif ((choice == ${#DNS_RECORD_LABELS[@]} + 4)); then
+      DNS_MENU_DEFAULT_INDEX="$choice"
+      clear_dns_zone_menu
     else
       DNS_MENU_DEFAULT_INDEX="$choice"
       record_actions_menu "${DNS_RECORD_MENU_INDEXES[$((choice - 1))]}" "${DNS_RECORD_VALUE_INDEXES[$((choice - 1))]}" "${DNS_RECORD_VALUE_REFS[$((choice - 1))]}"
@@ -1137,7 +1568,7 @@ dns_import_zone_command() {
   provider_prepare || exit 1
 
   records_tmp="$(mktemp)" || exit 1
-  if ! parse_zonefile "$zone_file" "$domain" > "$records_tmp"; then
+  if ! parse_zonefile "$zone_file" "${DNS_ZONE_NAME%.}" > "$records_tmp"; then
     rm -f "$records_tmp"
     exit 1
   fi

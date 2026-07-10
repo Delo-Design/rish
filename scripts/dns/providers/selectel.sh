@@ -513,15 +513,19 @@ selectel_choose_zone() {
   local zones_json
   local selected_index
   local default_index=0
+  local default_match_length=0
   local menu_limit=248
   local truncated=0
   local zone_id
   local zone_name
+  local zone_domain
+  local target_domain
   local -a zone_ids
   local -a zone_names
   local -a labels
 
   target_zone="$(dns_fqdn "$domain")"
+  target_domain="${target_zone%.}"
   zones_json="$(selectel_api GET "/zones?limit=1000")" || return 1
   while IFS=$'\t' read -r zone_id zone_name; do
     [[ -n "$zone_id" && -n "$zone_name" ]] || continue
@@ -532,8 +536,10 @@ selectel_choose_zone() {
     zone_ids+=("$zone_id")
     zone_names+=("$zone_name")
     labels+=("$zone_name")
-    if [[ "$zone_name" == "$target_zone" ]]; then
+    zone_domain="${zone_name%.}"
+    if [[ "$target_domain" == "$zone_domain" || "$target_domain" == *".${zone_domain}" ]] && ((${#zone_domain} > default_match_length)); then
       default_index=$((${#zone_names[@]} - 1))
+      default_match_length=${#zone_domain}
     fi
   done < <(
     jq -r '

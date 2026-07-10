@@ -97,17 +97,94 @@ zonefile_is_ttl() {
   [[ "$1" =~ ^[0-9]+$ ]]
 }
 
+zonefile_rewrite_origin_name() {
+  local name="$1"
+  local source_origin="${ZONEFILE_REWRITE_SOURCE_ORIGIN:-}"
+  local target_origin="${ZONEFILE_REWRITE_TARGET_ORIGIN:-}"
+  local suffix
+
+  [[ -n "$source_origin" && -n "$target_origin" ]] || {
+    printf '%s' "$name"
+    return
+  }
+
+  source_origin="$(dns_fqdn "$source_origin")"
+  target_origin="$(dns_fqdn "$target_origin")"
+
+  if [[ "$name" == "$source_origin" ]]; then
+    printf '%s' "$target_origin"
+    return
+  fi
+
+  suffix=".$source_origin"
+  if [[ "$name" == *"$suffix" ]]; then
+    printf '%s.%s' "${name%"$suffix"}" "$target_origin"
+    return
+  fi
+
+  printf '%s' "$name"
+}
+
+zonefile_abs_origin() {
+  local origin="$1"
+  local current_origin="$2"
+
+  if [[ "$origin" == "@" ]]; then
+    printf '%s' "$current_origin"
+  elif [[ "$origin" == *"." ]]; then
+    dns_fqdn "$origin"
+  else
+    dns_fqdn "${origin}.${current_origin}"
+  fi
+}
+
 zonefile_abs_name() {
   local name="$1"
   local origin="$2"
+  local absolute
 
   if [[ "$name" == "@" ]]; then
-    printf '%s' "$origin"
+    absolute="$origin"
   elif [[ "$name" == *"." ]]; then
-    printf '%s' "$name"
+    absolute="$name"
   else
-    printf '%s.%s' "$name" "$origin"
+    absolute="${name}.${origin}"
   fi
+
+  zonefile_rewrite_origin_name "$absolute"
+}
+
+zonefile_detect_origin() {
+  local zone_file="$1"
+  local default_origin="$2"
+  local raw_line
+  local line
+  local -a tokens=()
+  local origin
+
+  if [[ ! -f "$zone_file" ]]; then
+    echo -e "Файл зоны ${YELLOW}${zone_file}${WHITE} не найден." >&2
+    return 1
+  fi
+
+  origin="$(dns_fqdn "$default_origin")"
+
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+    line="$(zonefile_strip_comment "$raw_line")"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "$line" ]] || continue
+
+    mapfile -t tokens < <(zonefile_tokenize "$line")
+    ((${#tokens[@]} > 0)) || continue
+
+    if [[ "${tokens[0]}" == '$ORIGIN' && -n "${tokens[1]:-}" ]]; then
+      zonefile_abs_origin "${tokens[1]}" "$origin"
+      return 0
+    fi
+  done < "$zone_file"
+
+  dns_fqdn "$default_origin"
 }
 
 zonefile_record_value() {
@@ -229,7 +306,7 @@ parse_zonefile() {
     case "${tokens[0]}" in
       '$ORIGIN')
         if [[ -n "${tokens[1]:-}" ]]; then
-          origin="$(dns_fqdn "${tokens[1]}")"
+          origin="$(zonefile_abs_origin "${tokens[1]}" "$origin")"
           ZONEFILE_ORIGIN="$origin"
         fi
         continue
@@ -285,8 +362,8 @@ parse_zonefile() {
       return 1
     fi
 
-    if [[ "$type" == "SOA" ]]; then
-      echo -e "${YELLOW}SOA${WHITE} пропущена: ${raw_line}"
+    if [[ "$type" == "SOA" || "$type" == "NS" ]]; then
+      echo -e "${YELLOW}${type}${WHITE} пропущена: ${raw_line}" >&2
       continue
     fi
 
