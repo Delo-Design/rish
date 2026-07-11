@@ -252,6 +252,12 @@ if ! check_step "$STEP"; then
   mark_step_completed "$STEP"
 fi
 
+STEP="Установка bind-utils"
+if ! check_step "$STEP"; then
+  Install bind-utils
+  mark_step_completed "$STEP"
+fi
+
 STEP="Настройка hard_delete для Yandex remote"
 if ! check_step "$STEP"; then
   echo -e "Проверяем параметр hard_delete для Yandex-подключений ${GREEN}rclone${WHITE}..."

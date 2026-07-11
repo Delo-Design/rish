@@ -102,6 +102,173 @@ show_dns_status() {
   echo -e "$message"
 }
 
+build_dns_info_box_lines() {
+  local result_var="$1"
+  local title="$2"
+  shift 2
+  # shellcheck disable=SC2034
+  local -n result_ref="$result_var"
+  local -a lines=()
+  local content_width=30
+  local title_text=" ${title} "
+  local title_len=${#title_text}
+  local border_width
+  local top_fill_len
+  local line
+  local pad_len
+  local top_fill
+  local bottom_fill
+
+  for line in "$@"; do
+    if ((${#line} > content_width)); then
+      content_width=${#line}
+    fi
+  done
+  if ((title_len > content_width + 2)); then
+    content_width=$((title_len - 2))
+  fi
+
+  border_width=$((content_width + 2))
+  top_fill_len=$((border_width - title_len))
+  printf -v top_fill '%*s' "$top_fill_len" ''
+  printf -v bottom_fill '%*s' "$border_width" ''
+  lines+=("┌${title_text}${top_fill// /─}┐")
+
+  for line in "$@"; do
+    pad_len=$((content_width - ${#line}))
+    ((pad_len < 0)) && pad_len=0
+    printf -v line '│ %s%*s │' "$line" "$pad_len" ''
+    lines+=("$line")
+  done
+
+  lines+=("└${bottom_fill// /─}┘")
+  # shellcheck disable=SC2034
+  result_ref=("${lines[@]}")
+}
+
+get_current_dns_nameservers() {
+  local zone_name="$1"
+  local result_var="$2"
+  # shellcheck disable=SC2034
+  local -n result_ref="$result_var"
+  local dig_output
+  local nameserver
+  local -A seen_nameservers=()
+  local -a sorted_nameservers=()
+
+  result_ref=()
+  command -v dig >/dev/null 2>&1 || return 1
+  if ! dig_output="$(dig +short +time=2 +tries=1 NS "$zone_name" 2>/dev/null)"; then
+    return 1
+  fi
+
+  while IFS= read -r nameserver; do
+    nameserver="${nameserver%.}"
+    [[ -n "$nameserver" ]] || continue
+    [[ -z "${seen_nameservers[$nameserver]+x}" ]] || continue
+    seen_nameservers["$nameserver"]=1
+    result_ref+=("$nameserver")
+  done <<< "$dig_output"
+
+  if ((${#result_ref[@]} > 1)); then
+    mapfile -t sorted_nameservers < <(printf '%s\n' "${result_ref[@]}" | LC_ALL=C sort)
+    result_ref=("${sorted_nameservers[@]}")
+  fi
+
+  ((${#result_ref[@]} > 0))
+}
+
+print_dns_zone_summary() {
+  local -a nameservers=()
+  local -a left_content=(
+    "Сайт: ${DNS_DOMAIN}"
+    "DNS-зона: ${DNS_ZONE_NAME}"
+    "Provider: ${DNS_PROVIDER}"
+    "Записей: ${DNS_RECORD_MENU_TOTAL_ROWS}"
+  )
+  local -a right_content=()
+  local -a left_lines=()
+  local -a right_lines=()
+  local nameserver_status=""
+  local rows
+  local column_width=0
+  local i
+  local right_index
+  local left_value
+  local right_value
+  local line
+  local terminal_columns="${COLUMNS:-0}"
+  local terminal_size
+  local needed_columns
+
+  if terminal_size="$(stty size 2>/dev/null)"; then
+    terminal_columns="${terminal_size#* }"
+  fi
+
+  if ! get_current_dns_nameservers "$DNS_ZONE_NAME" nameservers; then
+    nameserver_status="не удалось получить"
+  fi
+
+  if ((${#nameservers[@]} > 0)); then
+    for line in "${nameservers[@]}"; do
+      ((${#line} > column_width)) && column_width=${#line}
+    done
+    rows=$(((${#nameservers[@]} + 1) / 2))
+    for ((i = 0; i < rows; i++)); do
+      right_index=$((i * 2))
+      left_value="${nameservers[$right_index]}"
+      right_value="${nameservers[$((right_index + 1))]:-}"
+      printf -v line '%-*s   %s' "$column_width" "$left_value" "$right_value"
+      right_content+=("$line")
+    done
+  else
+    right_content+=("$nameserver_status")
+  fi
+
+  rows=${#left_content[@]}
+  ((${#right_content[@]} > rows)) && rows=${#right_content[@]}
+  while ((${#left_content[@]} < rows)); do left_content+=(""); done
+  while ((${#right_content[@]} < rows)); do right_content+=(""); done
+
+  build_dns_info_box_lines left_lines "Выбранная DNS-зона" "${left_content[@]}"
+  build_dns_info_box_lines right_lines "Текущие публичные NS домена" "${right_content[@]}"
+
+  for i in "${!right_lines[@]}"; do
+    for line in "${nameservers[@]}"; do
+      right_lines[$i]="${right_lines[$i]/$line/${GREEN}${line}${WHITE}}"
+    done
+  done
+
+  needed_columns=$((1 + ${#left_lines[0]} + 2 + ${#right_lines[0]}))
+  if [[ "$terminal_columns" =~ ^[0-9]+$ ]] && ((terminal_columns > 0 && needed_columns > terminal_columns)); then
+    for line in "${left_lines[@]}"; do
+      line="${line/Сайт: ${DNS_DOMAIN}/Сайт: ${GREEN}${DNS_DOMAIN}${WHITE}}"
+      line="${line/DNS-зона: ${DNS_ZONE_NAME}/DNS-зона: ${GREEN}${DNS_ZONE_NAME}${WHITE}}"
+      line="${line/Provider: ${DNS_PROVIDER}/Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}}"
+      line="${line/Записей: ${DNS_RECORD_MENU_TOTAL_ROWS}/Записей: ${YELLOW}${DNS_RECORD_MENU_TOTAL_ROWS}${WHITE}}"
+      printf ' %b\n' "$line"
+    done
+    echo
+    for line in "${right_lines[@]}"; do
+      printf ' %b\n' "$line"
+    done
+  else
+    for i in "${!left_lines[@]}"; do
+      line="${left_lines[$i]}"
+      line="${line/Сайт: ${DNS_DOMAIN}/Сайт: ${GREEN}${DNS_DOMAIN}${WHITE}}"
+      line="${line/DNS-зона: ${DNS_ZONE_NAME}/DNS-зона: ${GREEN}${DNS_ZONE_NAME}${WHITE}}"
+      line="${line/Provider: ${DNS_PROVIDER}/Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}}"
+      line="${line/Записей: ${DNS_RECORD_MENU_TOTAL_ROWS}/Записей: ${YELLOW}${DNS_RECORD_MENU_TOTAL_ROWS}${WHITE}}"
+      printf ' %b  %b\n' "$line" "${right_lines[$i]}"
+    done
+  fi
+
+  DNS_STATUS_SUMMARY_ROWS=$((rows + 2))
+  if [[ "$terminal_columns" =~ ^[0-9]+$ ]] && ((terminal_columns > 0 && needed_columns > terminal_columns)); then
+    DNS_STATUS_SUMMARY_ROWS=$((DNS_STATUS_SUMMARY_ROWS * 2 + 1))
+  fi
+}
+
 require_command() {
   local command_name="$1"
 
@@ -703,6 +870,27 @@ switch_dns_provider_menu() {
   done
 }
 
+change_dns_provider() {
+  local domain="$1"
+
+  if switch_dns_provider_menu "$domain"; then
+    DNS_MENU_DEFAULT_INDEX=0
+    invalidate_records_cache
+    restore_active_domain_config "$domain" || fail "Настройки DNS для ${domain} не найдены."
+    show_dns_status "Подключаемся к DNS-провайдеру..."
+    if provider_prepare; then
+      return 0
+    fi
+    wait_for_enter
+    return 1
+  fi
+
+  restore_active_domain_config "$domain" || fail "Настройки DNS для ${domain} не найдены."
+  echo -e "Смена DNS-провайдера не выполнена. Восстановлено прежнее подключение ${GREEN}${DNS_PROVIDER}${WHITE}."
+  wait_for_enter
+  return 1
+}
+
 load_records_cache() {
   if [[ "$DNS_RECORD_CACHE_LOADED" -eq 1 ]]; then
     return 0
@@ -1101,29 +1289,249 @@ delete_record() {
   wait_for_enter
 }
 
+normalize_public_dns_txt_value() {
+  local value="$1"
+  local token
+  local result=""
+  local -a tokens=()
+
+  mapfile -t tokens < <(zonefile_tokenize "$value")
+  for token in "${tokens[@]}"; do
+    result+="$(zonefile_unquote_token "$token")"
+  done
+  printf '%s' "$result"
+}
+
+normalize_dns_value_for_comparison() {
+  local type="$1"
+  local value="$2"
+  local first
+  local second
+  local third
+  local target
+  local params
+
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  case "$type" in
+    ALIAS | CNAME | DNAME | NS | PTR)
+      value="${value%.}"
+      printf '%s' "${value,,}"
+      ;;
+    MX)
+      if [[ "$value" =~ ^([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+        first="${BASH_REMATCH[1]}"
+        target="${BASH_REMATCH[2]%.}"
+        printf '%s %s' "$first" "${target,,}"
+      else
+        printf '%s' "$value"
+      fi
+      ;;
+    SRV)
+      if [[ "$value" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+        first="${BASH_REMATCH[1]}"
+        second="${BASH_REMATCH[2]}"
+        third="${BASH_REMATCH[3]}"
+        target="${BASH_REMATCH[4]%.}"
+        printf '%s %s %s %s' "$first" "$second" "$third" "${target,,}"
+      else
+        printf '%s' "$value"
+      fi
+      ;;
+    HTTPS | SVCB)
+      if [[ "$value" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]]+)([[:space:]]+.*)?$ ]]; then
+        first="${BASH_REMATCH[1]}"
+        target="${BASH_REMATCH[2]%.}"
+        params="${BASH_REMATCH[3]}"
+        printf '%s %s%s' "$first" "${target,,}" "$params"
+      else
+        printf '%s' "$value"
+      fi
+      ;;
+    *)
+      printf '%s' "$value"
+      ;;
+  esac
+}
+
+get_public_dns_record_answers() {
+  local name="$1"
+  local type="$2"
+  local values_var="$3"
+  local ttls_var="$4"
+  # shellcheck disable=SC2034
+  local -n values_ref="$values_var"
+  # shellcheck disable=SC2034
+  local -n ttls_ref="$ttls_var"
+  local answer
+  local owner
+  local ttl
+  local dns_class
+  local answer_type
+  local value
+
+  values_ref=()
+  ttls_ref=()
+  command -v dig >/dev/null 2>&1 || return 2
+  if ! answer="$(dig +noall +answer +time=2 +tries=1 "$name" "$type" 2>/dev/null)"; then
+    return 2
+  fi
+
+  while read -r owner ttl dns_class answer_type value; do
+    [[ "$dns_class" == "IN" && "$answer_type" == "$type" ]] || continue
+    if [[ "$type" == "TXT" ]]; then
+      value="$(normalize_public_dns_txt_value "$value")"
+    fi
+    values_ref+=("$value")
+    ttls_ref+=("$ttl")
+  done <<< "$answer"
+
+  ((${#values_ref[@]} > 0))
+}
+
+color_dns_box_content_line() {
+  local lines_var="$1"
+  local content_index="$2"
+  local raw_content="$3"
+  local colored_content="$4"
+  local -n lines_ref="$lines_var"
+  local line_index=$((content_index + 1))
+  local pad_len
+  local colored_line
+
+  pad_len=$((${#lines_ref[$line_index]} - ${#raw_content} - 4))
+  ((pad_len < 0)) && pad_len=0
+  printf -v colored_line '│ %s%*s │' "$colored_content" "$pad_len" ''
+  lines_ref[$line_index]="$colored_line"
+}
+
+print_record_info_boxes() {
+  local left_var="$1"
+  local right_var="$2"
+  local -n left_content_ref="$left_var"
+  local -n right_content_ref="$right_var"
+  local -a left_lines=()
+  local -a right_lines=()
+  local rows
+  local i
+  local line
+  local terminal_columns="${COLUMNS:-0}"
+  local terminal_size
+  local needed_columns
+  local raw_content
+  local label
+  local content_value
+  local content_color
+
+  rows=${#left_content_ref[@]}
+  ((${#right_content_ref[@]} > rows)) && rows=${#right_content_ref[@]}
+  while ((${#left_content_ref[@]} < rows)); do left_content_ref+=(""); done
+  while ((${#right_content_ref[@]} < rows)); do right_content_ref+=(""); done
+
+  build_dns_info_box_lines left_lines "Запись у провайдера" "${left_content_ref[@]}"
+  build_dns_info_box_lines right_lines "Публичный DNS" "${right_content_ref[@]}"
+
+  for i in "${!left_content_ref[@]}"; do
+    raw_content="${left_content_ref[$i]}"
+    [[ "$raw_content" == *": "* ]] || continue
+    label="${raw_content%%:*}: "
+    content_value="${raw_content#*: }"
+    case "$raw_content" in
+      "Тип: "* | "Имя: "*) content_color="$GREEN" ;;
+      "TTL: "* | "Значение: "*) content_color="$YELLOW" ;;
+      *) continue ;;
+    esac
+    color_dns_box_content_line left_lines "$i" "$raw_content" "${label}${content_color}${content_value}${WHITE}"
+  done
+
+  for i in "${!right_content_ref[@]}"; do
+    raw_content="${right_content_ref[$i]}"
+    [[ "$raw_content" == *": "* ]] || continue
+    label="${raw_content%%:*}: "
+    content_value="${raw_content#*: }"
+    case "$raw_content" in
+      "Статус: запись видна") content_color="$GREEN" ;;
+      "Статус: не удалось выполнить запрос") content_color="$RED" ;;
+      "Статус: "*) content_color="$YELLOW" ;;
+      "TTL: "*) content_color="$YELLOW" ;;
+      "Значение: "*) content_color="$GREEN" ;;
+      *) continue ;;
+    esac
+    color_dns_box_content_line right_lines "$i" "$raw_content" "${label}${content_color}${content_value}${WHITE}"
+  done
+
+  if terminal_size="$(stty size 2>/dev/null)"; then
+    terminal_columns="${terminal_size#* }"
+  fi
+  needed_columns=$((1 + ${#left_lines[0]} + 2 + ${#right_lines[0]}))
+  if [[ "$terminal_columns" =~ ^[0-9]+$ ]] && ((terminal_columns > 0 && needed_columns > terminal_columns)); then
+    printf ' %b\n' "${left_lines[@]}"
+    echo
+    printf ' %b\n' "${right_lines[@]}"
+    return
+  fi
+
+  for i in "${!left_lines[@]}"; do
+    printf ' %b  %b\n' "${left_lines[$i]}" "${right_lines[$i]}"
+  done
+}
+
 show_record_info() {
   local index="$1"
   local value_index="$2"
+  local type="${DNS_RECORD_TYPES[$index]}"
+  local name="${DNS_RECORD_NAMES[$index]}"
   local value
-  local mx_priority
-  local mx_server
+  local normalized_value
+  local normalized_public_value
+  local public_result
+  local value_found=0
+  local i
+  local -a public_values=()
+  local -a public_ttls=()
+  local -a provider_content=()
+  local -a public_content=()
 
   value="$(jq -r --argjson index "$value_index" '.[$index]' <<< "${DNS_RECORD_VALUES[$index]}")"
+  normalized_value="$(normalize_dns_value_for_comparison "$type" "$value")"
+
+  get_public_dns_record_answers "$name" "$type" public_values public_ttls
+  public_result=$?
+  if ((public_result == 0)); then
+    for i in "${!public_values[@]}"; do
+      normalized_public_value="$(normalize_dns_value_for_comparison "$type" "${public_values[$i]}")"
+      if [[ "$normalized_public_value" == "$normalized_value" ]]; then
+        value_found=1
+      fi
+    done
+  fi
+
+  provider_content=(
+    "Тип: ${type}"
+    "Имя: ${name}"
+    "TTL: ${DNS_RECORD_TTLS[$index]}"
+    "Значение: ${value}"
+  )
+
+  if ((public_result == 2)); then
+    public_content+=("Статус: не удалось выполнить запрос")
+  elif ((public_result == 1)); then
+    public_content+=("Статус: ответов нет")
+  elif ((value_found)); then
+    public_content+=("Статус: запись видна")
+  else
+    public_content+=("Статус: выбранное значение не найдено")
+  fi
+  for i in "${!public_values[@]}"; do
+    if ((${#public_values[@]} > 1)); then
+      public_content+=("Ответ $((i + 1))")
+    fi
+    public_content+=("TTL: ${public_ttls[$i]}")
+    public_content+=("Значение: ${public_values[$i]}")
+  done
 
   clear
-  echo "DNS-запись"
-  echo
-  echo -e "Тип записи: ${GREEN}${DNS_RECORD_TYPES[$index]}${WHITE}"
-  echo -e "Имя записи: ${GREEN}${DNS_RECORD_NAMES[$index]}${WHITE}"
-  echo -e "TTL: ${YELLOW}${DNS_RECORD_TTLS[$index]}${WHITE}"
-  if [[ "${DNS_RECORD_TYPES[$index]}" == "MX" && "$value" =~ ^([0-9]+)[[:space:]]+(.+)$ ]]; then
-    mx_priority="${BASH_REMATCH[1]}"
-    mx_server="${BASH_REMATCH[2]}"
-    echo -e "Приоритет MX: ${YELLOW}${mx_priority}${WHITE}"
-    echo -e "Сервер MX: ${YELLOW}${mx_server}${WHITE}"
-  else
-    echo -e "Значение: ${YELLOW}${value}${WHITE}"
-  fi
+  print_record_info_boxes provider_content public_content
   wait_for_enter
 }
 
@@ -1815,20 +2223,26 @@ dns_domain_menu() {
     fi
     if ! load_records_cache; then
       echo -e "Не удалось получить список DNS-записей." >&2
-      wait_for_enter
+      echo
+      vertical_menu "current" 2 0 32 "Повторить" "Сменить DNS-провайдера" "Выйти"
+      choice=$?
+      if ((choice == 0)); then
+        invalidate_records_cache
+        continue
+      elif ((choice == 1)); then
+        change_dns_provider "$domain"
+        continue
+      fi
       return
     fi
 
     clear
-    echo -e "Сайт: ${GREEN}${DNS_DOMAIN}${WHITE}"
-    echo -e "DNS-зона: ${GREEN}${DNS_ZONE_NAME}${WHITE}"
-    echo -e "Provider: ${YELLOW}${DNS_PROVIDER}${WHITE}"
-    echo
-    menu_used_rows=4
+    print_dns_zone_summary
+    menu_used_rows="$DNS_STATUS_SUMMARY_ROWS"
     if ((DNS_RECORD_MENU_TRUNCATED)); then
       echo -e "Внимание: показаны первые ${YELLOW}${DNS_RECORD_MENU_LIMIT}${WHITE} строк DNS-записей из ${YELLOW}${DNS_RECORD_MENU_TOTAL_ROWS}${WHITE}; список обрезан."
       echo
-      menu_used_rows=6
+      menu_used_rows=$((menu_used_rows + 2))
     fi
 
     menu_height="$(dns_menu_available_height "$menu_used_rows")"
@@ -1846,20 +2260,7 @@ dns_domain_menu() {
       create_record
     elif ((choice == ${#DNS_RECORD_LABELS[@]} + 1)); then
       DNS_MENU_DEFAULT_INDEX="$choice"
-      if switch_dns_provider_menu "$domain"; then
-        DNS_MENU_DEFAULT_INDEX=0
-        invalidate_records_cache
-        restore_active_domain_config "$domain" || fail "Настройки DNS для ${domain} не найдены."
-        show_dns_status "Подключаемся к DNS-провайдеру..."
-        provider_prepare || {
-          wait_for_enter
-          return
-        }
-      else
-        restore_active_domain_config "$domain" || fail "Настройки DNS для ${domain} не найдены."
-        echo -e "Смена DNS-провайдера не выполнена. Восстановлено прежнее подключение ${GREEN}${DNS_PROVIDER}${WHITE}."
-        wait_for_enter
-      fi
+      change_dns_provider "$domain"
     elif ((choice == ${#DNS_RECORD_LABELS[@]} + 2)); then
       DNS_MENU_DEFAULT_INDEX="$choice"
       import_zone_file_menu

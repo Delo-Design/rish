@@ -997,6 +997,12 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
+  STEP="Установка bind-utils"
+  if ! check_step "$STEP"; then
+    Install bind-utils
+    mark_step_completed "$STEP"
+  fi
+
   STEP="Установка openssl"
   if ! check_step "$STEP"; then
     Up
