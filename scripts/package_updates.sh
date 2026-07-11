@@ -107,7 +107,8 @@ CheckPackageUpdates() {
 PromptApacheRestart() {
   echo
   echo -e "Обновления ${GREEN}Apache${WHITE} установлены."
-  echo "Для применения обновлений может потребоваться перезапуск Apache."
+  echo "Для применения обновлений нужен полный перезапуск Apache."
+  echo "Это не быстрый reload: активные соединения могут быть прерваны."
   echo "Перезапустить Apache сейчас?"
   vertical_menu "current" 2 0 5 "Да" "Нет"
   if [[ "$?" -ne 0 ]]; then
@@ -122,6 +123,7 @@ PromptApacheRestart() {
     return 1
   fi
 
+  echo "Полный перезапуск может оказаться долгим - до минуты или более."
   echo -e "Перезапускаем Apache: ${GREEN}systemctl restart httpd${WHITE}"
   if systemctl restart httpd; then
     echo -e "Apache ${GREEN}перезапущен${WHITE}."

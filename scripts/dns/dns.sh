@@ -31,30 +31,30 @@ rish_read_input() {
   local result_var="$1"
   local prompt="$2"
   local default_value="${3-}"
-  local input_value
+  local read_value
   local readline_prompt
 
   readline_prompt=$'\001\033[0m\002'"${prompt}"$'\001\033[0;32m\002'
   if (($# >= 3)); then
-    read -r -e -p "$readline_prompt" -i "$default_value" input_value
+    read -r -e -p "$readline_prompt" -i "$default_value" read_value
   else
-    read -r -e -p "$readline_prompt" input_value
+    read -r -e -p "$readline_prompt" read_value
   fi
   echo -en "${WHITE}"
-  printf -v "$result_var" '%s' "$input_value"
+  printf -v "$result_var" '%s' "$read_value"
 }
 
 rish_read_visible_secret() {
   local result_var="$1"
   local prompt="$2"
-  local input_value
+  local read_value
   local readline_prompt
 
   readline_prompt=$'\001\033[0m\002'"${prompt}"$'\001\033[0;32m\002'
-  read -r -e -p "$readline_prompt" input_value
+  read -r -e -p "$readline_prompt" read_value
   printf '\033[1A\033[2K'
   echo -en "${WHITE}"
-  printf -v "$result_var" '%s' "$input_value"
+  printf -v "$result_var" '%s' "$read_value"
 }
 
 wait_for_enter() {
@@ -136,7 +136,7 @@ dns_fqdn() {
 
 dns_record_type_allowed() {
   case "$1" in
-    A | AAAA | CNAME | MX | TXT | NS | CAA)
+    A | AAAA | ALIAS | CAA | CERT | CNAME | DNAME | DS | HINFO | HTTPS | LOC | MX | NAPTR | NS | OPENPGPKEY | PTR | RP | SMIMEA | SPF | SRV | SSHFP | SVCB | TLSA | TXT | WR)
       return 0
       ;;
   esac
@@ -289,9 +289,30 @@ normalize_record_name() {
     dns_fqdn "$domain"
   elif [[ "$input" == *"." ]]; then
     printf '%s' "$input"
+  elif [[ "$input" == *"."* ]]; then
+    dns_fqdn "$input"
   else
     dns_fqdn "${input}.${domain}"
   fi
+}
+
+normalize_record_target_name() {
+  local input="$1"
+  local zone_name="${DNS_ZONE_NAME:-$DNS_DOMAIN}"
+
+  if [[ "$input" == "@" ]]; then
+    dns_fqdn "$zone_name"
+  elif [[ "$input" == *"." ]]; then
+    printf '%s' "$input"
+  elif [[ "$input" == *"."* ]]; then
+    dns_fqdn "$input"
+  else
+    dns_fqdn "${input}.${zone_name%.}"
+  fi
+}
+
+dns_names_equal() {
+  [[ "${1,,}" == "${2,,}" ]]
 }
 
 record_value_label() {
@@ -328,7 +349,7 @@ has_cname_conflict() {
   for i in "${!DNS_RECORD_TYPES[@]}"; do
     existing_type="${DNS_RECORD_TYPES[$i]}"
     existing_name="${DNS_RECORD_NAMES[$i]}"
-    [[ "$existing_name" == "$name" ]] || continue
+    dns_names_equal "$existing_name" "$name" || continue
     if [[ "$mode" == "update" && "$existing_type" == "$type" ]]; then
       continue
     fi
@@ -409,6 +430,105 @@ provider_prepare() {
     return 1
   fi
   find_best_dns_zone "$DNS_DOMAIN" >/dev/null || return 1
+}
+
+validate_provider_import_types() {
+  local records_file="$1"
+  local type
+  local ttl
+  local name
+  local records_json
+  local values_count
+  local rrset_limit=""
+  local existing_type
+  local found
+  local -a unsupported_types=()
+
+  if declare -F provider_import_rrset_limit >/dev/null; then
+    rrset_limit="$(provider_import_rrset_limit)" || return 1
+    [[ "$rrset_limit" =~ ^[0-9]+$ ]] || {
+      echo "Provider вернул некорректный лимит значений в группе DNS-записей." >&2
+      return 1
+    }
+  fi
+
+  while IFS=$'\t' read -r type ttl name records_json; do
+    [[ -n "$type" ]] || continue
+    if ! provider_import_type_supported "$type"; then
+      found=0
+      for existing_type in "${unsupported_types[@]}"; do
+        if [[ "$existing_type" == "$type" ]]; then
+          found=1
+          break
+        fi
+      done
+      ((found)) || unsupported_types+=("$type")
+    fi
+
+    if [[ -n "$rrset_limit" ]]; then
+      values_count="$(jq -r 'length' <<< "$records_json" 2>/dev/null)"
+      [[ "$values_count" =~ ^[0-9]+$ ]] || {
+        echo -e "Некорректная группа ${YELLOW}${type} ${name}${WHITE} в файле DNS-зоны." >&2
+        return 1
+      }
+      if ((values_count > rrset_limit)); then
+        echo -e "Группа ${YELLOW}${type} ${name}${WHITE} содержит ${YELLOW}${values_count}${WHITE} значений." >&2
+        echo -e "Provider ${YELLOW}${DNS_PROVIDER}${WHITE} поддерживает не больше ${YELLOW}${rrset_limit}${WHITE} значений в одной группе." >&2
+        echo "Импорт остановлен до изменения текущей DNS-зоны." >&2
+        return 1
+      fi
+    fi
+  done < "$records_file"
+
+  if ((${#unsupported_types[@]} == 0)); then
+    return 0
+  fi
+
+  echo -e "Provider ${YELLOW}${DNS_PROVIDER}${WHITE} не поддерживает импорт типов: ${YELLOW}${unsupported_types[*]}${WHITE}." >&2
+  echo "Импорт остановлен до изменения текущей DNS-зоны." >&2
+  return 1
+}
+
+validate_provider_append_limits() {
+  local records_file="$1"
+  local rrset_limit
+  local type
+  local ttl
+  local name
+  local records_json
+  local existing_records_json
+  local combined_count
+  local i
+
+  declare -F provider_import_rrset_limit >/dev/null || return 0
+  rrset_limit="$(provider_import_rrset_limit)" || return 1
+  [[ "$rrset_limit" =~ ^[0-9]+$ ]] || {
+    echo "Provider вернул некорректный лимит значений в группе DNS-записей." >&2
+    return 1
+  }
+
+  while IFS=$'\t' read -r type ttl name records_json; do
+    [[ -n "$type" ]] || continue
+    existing_records_json='[]'
+    for i in "${!DNS_RECORD_TYPES[@]}"; do
+      if [[ "${DNS_RECORD_TYPES[$i]}" == "$type" && "${DNS_RECORD_NAMES[$i]}" == "$name" ]]; then
+        existing_records_json="${DNS_RECORD_VALUES[$i]}"
+        break
+      fi
+    done
+    combined_count="$(
+      jq -nr \
+        --argjson existing "$existing_records_json" \
+        --argjson imported "$records_json" \
+        '$existing + $imported | unique | length'
+    )" || return 1
+    if ((combined_count > rrset_limit)); then
+      echo -e "После добавления группа ${YELLOW}${type} ${name}${WHITE} будет содержать ${YELLOW}${combined_count}${WHITE} значений." >&2
+      echo -e "Provider ${YELLOW}${DNS_PROVIDER}${WHITE} поддерживает не больше ${YELLOW}${rrset_limit}${WHITE} значений в одной группе." >&2
+      echo "Импорт остановлен до изменения текущей DNS-зоны." >&2
+      return 1
+    fi
+  done < "$records_file"
 }
 
 show_connect_provider_menu() {
@@ -709,17 +829,15 @@ read_record_value() {
       echo -e "Не задан сервер MX." >&2
       return 1
     fi
-    if [[ "$server" != *"." ]]; then
-      server="${server}."
-    fi
+    server="$(normalize_record_target_name "$server")"
 
     printf -v "$result_var" '%s %s' "$priority" "$server"
     return
   fi
 
   rish_read_input input_value "Значение записи: " "$current"
-  if [[ "$type" == "CNAME" && -n "$input_value" && "$input_value" != *"." ]]; then
-    input_value="${input_value}."
+  if [[ "$type" == "CNAME" && -n "$input_value" ]]; then
+    input_value="$(normalize_record_target_name "$input_value")"
   fi
   printf -v "$result_var" '%s' "$input_value"
 }
@@ -752,6 +870,11 @@ create_record() {
   fi
   if [[ -z "$value" ]]; then
     echo -e "Не задано значение записи." >&2
+    wait_for_enter
+    return
+  fi
+  if [[ "$type" == "CNAME" ]] && dns_names_equal "$name" "$value"; then
+    echo -e "CNAME ${YELLOW}${name}${WHITE} не может ссылаться на самого себя." >&2
     wait_for_enter
     return
   fi
@@ -809,6 +932,11 @@ edit_record() {
   fi
   if [[ -z "$new_value" ]]; then
     echo -e "Не задано значение записи." >&2
+    wait_for_enter
+    return
+  fi
+  if [[ "$type" == "CNAME" ]] && dns_names_equal "$name" "$new_value"; then
+    echo -e "CNAME ${YELLOW}${name}${WHITE} не может ссылаться на самого себя." >&2
     wait_for_enter
     return
   fi
@@ -961,6 +1089,15 @@ record_actions_menu() {
   local action_menu_y
   local server_ip
   local has_server_ip=0
+  local can_edit=1
+  local can_delete=1
+
+  if [[ "$type" == "NS" || "$type" == "SOA" ]]; then
+    can_edit=0
+    can_delete=0
+  elif declare -F provider_import_type_supported >/dev/null && ! provider_import_type_supported "$type"; then
+    can_edit=0
+  fi
 
   while true; do
     server_ip=""
@@ -974,13 +1111,17 @@ record_actions_menu() {
 
     action_menu_y=$((LAST_DNS_SELECTED_ROW - 1))
     draw_dns_action_connector
-    if [[ "$type" == "A" && "$has_server_ip" -eq 1 ]]; then
+    if [[ "$type" == "A" && "$has_server_ip" -eq 1 && "$can_edit" -eq 1 ]]; then
       vertical_menu "$action_menu_y" "$LAST_DNS_MENU_ACTION_X" 0 24 "Инфо: TTL ${DNS_RECORD_TTLS[$index]}" "Установить ${server_ip}" "Редактировать" "Удалить" "Назад"
-    else
+    elif ((can_edit)); then
       vertical_menu "$action_menu_y" "$LAST_DNS_MENU_ACTION_X" 0 20 "Инфо: TTL ${DNS_RECORD_TTLS[$index]}" "Редактировать" "Удалить" "Назад"
+    elif ((can_delete)); then
+      vertical_menu "$action_menu_y" "$LAST_DNS_MENU_ACTION_X" 0 20 "Инфо: TTL ${DNS_RECORD_TTLS[$index]}" "Удалить" "Назад"
+    else
+      vertical_menu "$action_menu_y" "$LAST_DNS_MENU_ACTION_X" 0 20 "Инфо: TTL ${DNS_RECORD_TTLS[$index]}" "Назад"
     fi
     choice=$?
-    if [[ "$type" == "A" && "$has_server_ip" -eq 1 ]]; then
+    if [[ "$type" == "A" && "$has_server_ip" -eq 1 && "$can_edit" -eq 1 ]]; then
       case "$choice" in
         0)
           show_record_info "$index" "$value_index"
@@ -1002,7 +1143,7 @@ record_actions_menu() {
           return
           ;;
       esac
-    else
+    elif ((can_edit)); then
       case "$choice" in
         0)
           show_record_info "$index" "$value_index"
@@ -1017,6 +1158,30 @@ record_actions_menu() {
           return
           ;;
         3 | 255)
+          return
+          ;;
+      esac
+    elif ((can_delete)); then
+      case "$choice" in
+        0)
+          show_record_info "$index" "$value_index"
+          return
+          ;;
+        1)
+          delete_record "$index" "$value_index" "$value_ref"
+          return
+          ;;
+        2 | 255)
+          return
+          ;;
+      esac
+    else
+      case "$choice" in
+        0)
+          show_record_info "$index" "$value_index"
+          return
+          ;;
+        1 | 255)
           return
           ;;
       esac
@@ -1124,6 +1289,11 @@ import_zone_file_menu() {
     wait_for_enter
     return
   fi
+  if ! validate_provider_import_types "$records_tmp"; then
+    rm -f "$records_tmp"
+    wait_for_enter
+    return
+  fi
   while IFS=$'\t' read -r type ttl name records_json; do
     [[ -n "$type" ]] || continue
     values_count="$(jq -r 'length' <<< "$records_json" 2>/dev/null)"
@@ -1163,6 +1333,12 @@ import_zone_file_menu() {
         ;;
     esac
 
+    if [[ "$import_mode" == "append" ]] && ! validate_provider_append_limits "$records_tmp"; then
+      rm -f "$records_tmp"
+      wait_for_enter
+      return
+    fi
+
     if [[ "$import_mode" == "replace" ]]; then
       echo
       echo "Перед импортом будут удалены текущие DNS-записи, кроме NS/SOA."
@@ -1187,7 +1363,7 @@ import_zone_file_menu() {
   while IFS=$'\t' read -r type ttl name records_json; do
     [[ -n "$type" ]] || continue
     while IFS= read -r record; do
-      [[ -n "$record" ]] || continue
+      [[ -n "$record" || "$type" == "TXT" ]] || continue
       current_record=$((current_record + 1))
       printf '%b' "[${YELLOW}${current_record}${WHITE}/${YELLOW}${total_records}${WHITE}] ${GREEN}${type}${WHITE} ${name} "
       if provider_add_record_value "$DNS_ZONE_ID" "$name" "$type" "$ttl" "$record"; then
@@ -1227,21 +1403,98 @@ dns_export_record_name() {
   fi
 }
 
+dns_export_absolute_name() {
+  local name="$1"
+
+  if [[ "$name" == *"." ]]; then
+    printf '%s' "$name"
+  else
+    printf '%s.' "$name"
+  fi
+}
+
 dns_export_txt_value() {
   local value="$1"
+  local remaining="$value"
+  local chunk=""
+  local char
+  local char_bytes
+  local chunk_bytes=0
+  local first_chunk=1
 
-  value="${value//\\/\\\\}"
-  value="${value//\"/\\\"}"
-  printf '"%s"' "$value"
+  if [[ -z "$remaining" ]]; then
+    printf '""'
+    return
+  fi
+
+  while [[ -n "$remaining" ]]; do
+    char="${remaining:0:1}"
+    remaining="${remaining:1}"
+    char_bytes="$(LC_ALL=C; printf '%s' "${#char}")"
+    if ((chunk_bytes + char_bytes > 255)) && [[ -n "$chunk" ]]; then
+      ((first_chunk)) || printf ' '
+      chunk="${chunk//\\/\\\\}"
+      chunk="${chunk//\"/\\\"}"
+      printf '"%s"' "$chunk"
+      first_chunk=0
+      chunk=""
+      chunk_bytes=0
+    fi
+    chunk+="$char"
+    chunk_bytes=$((chunk_bytes + char_bytes))
+  done
+
+  ((first_chunk)) || printf ' '
+  chunk="${chunk//\\/\\\\}"
+  chunk="${chunk//\"/\\\"}"
+  printf '"%s"' "$chunk"
 }
 
 dns_export_record_value() {
   local type="$1"
   local value="$2"
+  local first
+  local second
+  local third
+  local target
+  local params
 
   case "$type" in
     TXT)
       dns_export_txt_value "$value"
+      ;;
+    ALIAS | CNAME | DNAME | NS | PTR)
+      dns_export_absolute_name "$value"
+      ;;
+    MX)
+      if [[ "$value" =~ ^([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+        first="${BASH_REMATCH[1]}"
+        target="${BASH_REMATCH[2]}"
+        printf '%s %s' "$first" "$(dns_export_absolute_name "$target")"
+      else
+        printf '%s' "$value"
+      fi
+      ;;
+    SRV)
+      if [[ "$value" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+        first="${BASH_REMATCH[1]}"
+        second="${BASH_REMATCH[2]}"
+        third="${BASH_REMATCH[3]}"
+        target="${BASH_REMATCH[4]}"
+        printf '%s %s %s %s' "$first" "$second" "$third" "$(dns_export_absolute_name "$target")"
+      else
+        printf '%s' "$value"
+      fi
+      ;;
+    HTTPS | SVCB)
+      if [[ "$value" =~ ^([^[:space:]]+)[[:space:]]+([^[:space:]]+)([[:space:]]+.*)?$ ]]; then
+        first="${BASH_REMATCH[1]}"
+        target="${BASH_REMATCH[2]}"
+        params="${BASH_REMATCH[3]}"
+        printf '%s %s%s' "$first" "$(dns_export_absolute_name "$target")" "$params"
+      else
+        printf '%s' "$value"
+      fi
       ;;
     *)
       printf '%s' "$value"
@@ -1264,6 +1517,11 @@ export_zone_file_menu() {
   local value
   local export_value
   local exported=0
+  local skipped=0
+  local values_count
+  local existing_type
+  local found
+  local -a unsupported_types=()
 
   clear
   echo -e "Экспорт DNS-зоны в файл для сайта ${GREEN}${DNS_DOMAIN}${WHITE}"
@@ -1302,8 +1560,23 @@ export_zone_file_menu() {
       name="${DNS_RECORD_NAMES[$i]}"
       export_name="$(dns_export_record_name "$name" "$origin")"
 
+      if declare -F provider_export_type_supported >/dev/null && ! provider_export_type_supported "$type"; then
+        found=0
+        for existing_type in "${unsupported_types[@]}"; do
+          if [[ "$existing_type" == "$type" ]]; then
+            found=1
+            break
+          fi
+        done
+        ((found)) || unsupported_types+=("$type")
+        values_count="$(jq -r 'length' <<< "${DNS_RECORD_VALUES[$i]}" 2>/dev/null)"
+        [[ "$values_count" =~ ^[0-9]+$ ]] || values_count=1
+        skipped=$((skipped + values_count))
+        continue
+      fi
+
       while IFS= read -r value; do
-        [[ -n "$value" ]] || continue
+        [[ -n "$value" || "$type" == "TXT" ]] || continue
         export_value="$(dns_export_record_value "$type" "$value")"
         printf '%s %s IN %s %s\n' "$export_name" "$ttl" "$type" "$export_value"
         exported=$((exported + 1))
@@ -1319,11 +1592,22 @@ export_zone_file_menu() {
 
   if ((exported == 0)); then
     rm -f "$export_file"
-    echo "В зоне нет записей для экспорта."
+    if ((skipped > 0)); then
+      echo "Файл не создан: в зоне нет записей поддерживаемых типов для экспорта."
+    else
+      echo "В зоне нет записей для экспорта."
+    fi
   else
     echo -e "Экспортировано записей: ${GREEN}${exported}${WHITE}"
     echo "Файл сохранен в папке DNS-настроек домена:"
     echo -e "${export_parent_dir}/${YELLOW}${export_domain_dir}${WHITE}/${YELLOW}${export_file##*/}${WHITE}"
+  fi
+  if ((skipped > 0)); then
+    echo
+    if ((exported > 0)); then
+      echo -e "${YELLOW}Файл не является полной копией DNS-зоны:${WHITE}"
+    fi
+    echo -e "Записи типов ${YELLOW}${unsupported_types[*]}${WHITE} не экспортированы, поскольку их формат не поддерживается."
   fi
   wait_for_enter
 }
@@ -1366,7 +1650,7 @@ delete_dns_user_records() {
     name="${DNS_RECORD_NAMES[$i]}"
     current=$((current + 1))
     printf '%b' "[${YELLOW}${current}${WHITE}/${YELLOW}${total}${WHITE}] Удаляем ${GREEN}${type}${WHITE} ${name} "
-    if provider_delete_rrset "$DNS_ZONE_ID" "$name" "$type"; then
+    if provider_delete_rrset "$DNS_ZONE_ID" "$name" "$type" "${DNS_RECORD_REFS[$i]}"; then
       deleted=$((deleted + 1))
       echo -e "${GREEN}OK${WHITE}"
     else
@@ -1572,11 +1856,25 @@ dns_import_zone_command() {
     rm -f "$records_tmp"
     exit 1
   fi
+  if ! validate_provider_import_types "$records_tmp"; then
+    rm -f "$records_tmp"
+    exit 1
+  fi
+  if declare -F provider_import_rrset_limit >/dev/null; then
+    load_records_cache || {
+      rm -f "$records_tmp"
+      exit 1
+    }
+    if ! validate_provider_append_limits "$records_tmp"; then
+      rm -f "$records_tmp"
+      exit 1
+    fi
+  fi
 
   while IFS=$'\t' read -r type ttl name records_json; do
     [[ -n "$type" ]] || continue
     while IFS= read -r record; do
-      [[ -n "$record" ]] || continue
+      [[ -n "$record" || "$type" == "TXT" ]] || continue
       provider_add_record_value "$DNS_ZONE_ID" "$name" "$type" "$ttl" "$record" || exit 1
     done < <(jq -r '.[]' <<< "$records_json")
   done < "$records_tmp"

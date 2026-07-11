@@ -59,6 +59,7 @@ zonefile_tokenize() {
       continue
     fi
     if [[ "$char" == '"' ]]; then
+      token+="$char"
       if ((in_quote)); then
         in_quote=0
       else
@@ -83,9 +84,38 @@ zonefile_tokenize() {
   printf '%s\n' "${tokens[@]}"
 }
 
+zonefile_validate_quoting() {
+  local line="$1"
+  local char
+  local in_quote=0
+  local escaped=0
+  local i
+
+  for ((i = 0; i < ${#line}; i++)); do
+    char="${line:i:1}"
+    if ((escaped)); then
+      escaped=0
+      continue
+    fi
+    if [[ "$char" == "\\" ]]; then
+      escaped=1
+      continue
+    fi
+    if [[ "$char" == '"' ]]; then
+      if ((in_quote)); then
+        in_quote=0
+      else
+        in_quote=1
+      fi
+    fi
+  done
+
+  ((in_quote == 0 && escaped == 0))
+}
+
 zonefile_is_type() {
   case "$1" in
-    A | AAAA | CNAME | MX | TXT | NS | CAA | SOA)
+    A | AAAA | ALIAS | CAA | CERT | CNAME | DNAME | DS | HINFO | HTTPS | LOC | MX | NAPTR | NS | OPENPGPKEY | PTR | RP | SMIMEA | SOA | SPF | SRV | SSHFP | SVCB | TLSA | TXT | WR)
       return 0
       ;;
   esac
@@ -154,6 +184,64 @@ zonefile_abs_name() {
   zonefile_rewrite_origin_name "$absolute"
 }
 
+zonefile_unquote_token() {
+  local token="$1"
+
+  if ((${#token} >= 2)) && [[ "$token" == '"'*'"' ]]; then
+    token="${token:1:${#token}-2}"
+  fi
+  printf '%s' "$token"
+}
+
+zonefile_strip_grouping_parentheses() {
+  local result_var="$1"
+  local delta_var="$2"
+  local line="$3"
+  local output=""
+  local char
+  local in_quote=0
+  local escaped=0
+  local delta=0
+  local i
+
+  for ((i = 0; i < ${#line}; i++)); do
+    char="${line:i:1}"
+    if ((escaped)); then
+      output+="$char"
+      escaped=0
+      continue
+    fi
+    if [[ "$char" == "\\" ]]; then
+      output+="$char"
+      escaped=1
+      continue
+    fi
+    if [[ "$char" == '"' ]]; then
+      output+="$char"
+      if ((in_quote)); then
+        in_quote=0
+      else
+        in_quote=1
+      fi
+      continue
+    fi
+    if ((in_quote == 0)); then
+      if [[ "$char" == "(" ]]; then
+        delta=$((delta + 1))
+        continue
+      fi
+      if [[ "$char" == ")" ]]; then
+        delta=$((delta - 1))
+        continue
+      fi
+    fi
+    output+="$char"
+  done
+
+  printf -v "$result_var" '%s' "$output"
+  printf -v "$delta_var" '%s' "$delta"
+}
+
 zonefile_detect_origin() {
   local zone_file="$1"
   local default_origin="$2"
@@ -189,6 +277,8 @@ zonefile_detect_origin() {
 
 zonefile_record_value() {
   local type="$1"
+  local part
+  local value
   shift
 
   case "$type" in
@@ -198,23 +288,61 @@ zonefile_record_value() {
       fi
       printf '%s %s' "$1" "$(zonefile_abs_name "$2" "$ZONEFILE_ORIGIN")"
       ;;
-    CNAME | NS)
+    ALIAS | CNAME | DNAME | NS | PTR)
       if (($# < 1)); then
         return 1
       fi
       printf '%s' "$(zonefile_abs_name "$1" "$ZONEFILE_ORIGIN")"
       ;;
-    TXT | CAA)
+    SRV)
+      if (($# < 4)); then
+        return 1
+      fi
+      printf '%s %s %s %s' "$1" "$2" "$3" "$(zonefile_abs_name "$4" "$ZONEFILE_ORIGIN")"
+      ;;
+    HTTPS | SVCB)
+      if (($# < 2)); then
+        return 1
+      fi
+      printf '%s %s' "$1" "$(zonefile_abs_name "$2" "$ZONEFILE_ORIGIN")"
+      shift 2
+      for part in "$@"; do
+        printf ' %s' "$part"
+      done
+      ;;
+    RP)
+      if (($# < 2)); then
+        return 1
+      fi
+      printf '%s %s' "$(zonefile_abs_name "$1" "$ZONEFILE_ORIGIN")" "$(zonefile_abs_name "$2" "$ZONEFILE_ORIGIN")"
+      ;;
+    NAPTR)
+      if (($# < 6)); then
+        return 1
+      fi
+      printf '%s %s %s %s %s %s' "$1" "$2" "$3" "$4" "$5" "$(zonefile_abs_name "$6" "$ZONEFILE_ORIGIN")"
+      ;;
+    TXT)
       if (($# < 1)); then
         return 1
       fi
-      printf '%s' "$*"
+      value=""
+      for part in "$@"; do
+        value+="$(zonefile_unquote_token "$part")"
+      done
+      printf '%s' "$value"
       ;;
     A | AAAA)
       if (($# < 1)); then
         return 1
       fi
       printf '%s' "$1"
+      ;;
+    CAA | CERT | DS | HINFO | LOC | OPENPGPKEY | SMIMEA | SPF | SSHFP | TLSA | WR)
+      if (($# < 1)); then
+        return 1
+      fi
+      printf '%s' "$*"
       ;;
     *)
       return 1
@@ -275,6 +403,10 @@ parse_zonefile() {
   local last_name="@"
   local raw_line
   local line
+  local folded_line
+  local logical_line=""
+  local line_parenthesis_delta
+  local parenthesis_depth=0
   local token
   local -a tokens=()
   local name
@@ -299,6 +431,30 @@ parse_zonefile() {
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     [[ -n "$line" ]] || continue
+
+    zonefile_strip_grouping_parentheses folded_line line_parenthesis_delta "$line"
+    if [[ -n "$logical_line" ]]; then
+      logical_line+=" ${folded_line}"
+    else
+      logical_line="$folded_line"
+    fi
+    parenthesis_depth=$((parenthesis_depth + line_parenthesis_delta))
+    if ((parenthesis_depth < 0)); then
+      echo -e "Лишняя закрывающая скобка в строке: ${YELLOW}${raw_line}${WHITE}" >&2
+      rm -f "$records_tmp"
+      return 1
+    fi
+    if ((parenthesis_depth > 0)); then
+      continue
+    fi
+    line="$logical_line"
+    logical_line=""
+
+    if ! zonefile_validate_quoting "$line"; then
+      echo -e "В записи DNS-зоны не закрыта кавычка или escape-последовательность: ${YELLOW}${line}${WHITE}" >&2
+      rm -f "$records_tmp"
+      return 1
+    fi
 
     mapfile -t tokens < <(zonefile_tokenize "$line")
     ((${#tokens[@]} > 0)) || continue
@@ -363,7 +519,7 @@ parse_zonefile() {
     fi
 
     if [[ "$type" == "SOA" || "$type" == "NS" ]]; then
-      echo -e "${YELLOW}${type}${WHITE} пропущена: ${raw_line}" >&2
+      echo -e "${YELLOW}${type}${WHITE} пропущена: ${line}" >&2
       continue
     fi
 
@@ -381,6 +537,12 @@ parse_zonefile() {
 
     printf '%s\t%s\t%s\t%s\n' "$(zonefile_abs_name "$name" "$origin")" "$type" "$record_ttl" "$value" >> "$records_tmp"
   done < "$zone_file"
+
+  if ((parenthesis_depth != 0)); then
+    echo -e "В файле зоны не закрыта группа в круглых скобках." >&2
+    rm -f "$records_tmp"
+    return 1
+  fi
 
   zonefile_emit_grouped < "$records_tmp"
   rm -f "$records_tmp"

@@ -195,6 +195,26 @@ provider_zone_ready() {
   [[ -n "${DNS_ZONE_NAME:-}" ]]
 }
 
+provider_import_type_supported() {
+  case "$1" in
+    A | AAAA | ALIAS | CAA | CNAME | DNAME | MX | PTR | SRV | SSHFP | TXT)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+provider_export_type_supported() {
+  case "$1" in
+    A | AAAA | ALIAS | CAA | CNAME | DNAME | MX | NS | PTR | SRV | SSHFP | TXT)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 provider_check_config() {
   local missing=0
 
@@ -275,8 +295,51 @@ provider_find_zone() {
 
 cloudns_records_json() {
   local zone_name="$1"
+  local page
+  local page_json
+  local page_records
+  local pages_tmp
+  local status
 
-  cloudns_api "dns/records" "domain-name=${zone_name}" "rows-per-page=100" "page=1"
+  pages_tmp="$(mktemp)" || return 1
+  for ((page = 1; page <= 11; page++)); do
+    page_json="$(cloudns_api "dns/records" "domain-name=${zone_name}" "rows-per-page=100" "page=${page}")" || {
+      rm -f "$pages_tmp"
+      return 1
+    }
+    page_records="$(
+      jq -r '
+        if type == "object" then
+          [to_entries[] | select(.value | type == "object")] | length
+        else
+          0
+        end
+      ' <<< "$page_json" 2>/dev/null
+    )"
+    [[ "$page_records" =~ ^[0-9]+$ ]] || {
+      rm -f "$pages_tmp"
+      echo -e "ClouDNS вернул некорректный список DNS-записей." >&2
+      return 1
+    }
+    if ((page == 11 && page_records > 0)); then
+      rm -f "$pages_tmp"
+      echo -e "В DNS-зоне больше ${YELLOW}1000${WHITE} записей. Операция отменена." >&2
+      return 1
+    fi
+    printf '%s\n' "$page_json" >> "$pages_tmp"
+    if ((page_records < 100)); then
+      break
+    fi
+  done
+
+  jq -c -s '
+    reduce .[] as $page ({};
+      if ($page | type) == "object" then . + $page else . end
+    )
+  ' "$pages_tmp"
+  status=$?
+  rm -f "$pages_tmp"
+  return "$status"
 }
 
 provider_list_records() {
@@ -292,7 +355,13 @@ provider_list_records() {
       else "\($host).\($zone)"
       end;
     def user_record:
-      if .type == "MX" and ((.priority // "") | tostring) != "" and ((.record // "") | test("^[0-9]+[[:space:]]") | not) then
+      if .type == "SRV" and ((.priority // "") | tostring) != "" and ((.weight // "") | tostring) != "" and ((.port // "") | tostring) != "" then
+        "\((.priority // "") | tostring) \((.weight // "") | tostring) \((.port // "") | tostring) \(.record // "")"
+      elif .type == "SSHFP" and ((.algorithm // "") | tostring) != "" and ((.fp_type // "") | tostring) != "" then
+        "\((.algorithm // "") | tostring) \((.fp_type // "") | tostring) \(.record // "")"
+      elif .type == "CAA" and ((.caa_flag // "") | tostring) != "" and ((.caa_type // "") | tostring) != "" then
+        "\((.caa_flag // "") | tostring) \((.caa_type // "") | tostring) \((.caa_value // .record // "") | tojson)"
+      elif .type == "MX" and ((.priority // "") | tostring) != "" and ((.record // "") | test("^[0-9]+[[:space:]]") | not) then
         "\((.priority // "") | tostring) \(.record // "")"
       else
         (.record // "")
@@ -306,9 +375,9 @@ provider_list_records() {
           type: (.value.type | ascii_upcase),
           ttl: ((.value.ttl // "3600") | tostring),
           name: fqdn(.value.host // "@"),
-          record: (.value | {type: (.type | ascii_upcase), record, priority} | user_record)
+          record: (.value | .type = (.type | ascii_upcase) | user_record)
         }
-      | select(.type != "" and .record != "")
+      | select(.type != "")
       | select(.type != "SOA")
     ]
     | group_by(.name + "\u0000" + .type)
@@ -328,7 +397,7 @@ cloudns_host_from_name() {
   fi
 
   name="${name%.}"
-  printf '%s' "${name%.$zone_name}"
+  printf '%s' "${name%."$zone_name"}"
 }
 
 cloudns_split_record() {
@@ -352,6 +421,13 @@ cloudns_add_single_record() {
   local host
   local record_value
   local priority
+  local weight=""
+  local port=""
+  local algorithm=""
+  local fp_type=""
+  local caa_flag=""
+  local caa_type=""
+  local caa_value=""
   local split
   local -a params
 
@@ -359,6 +435,21 @@ cloudns_add_single_record() {
   split="$(cloudns_split_record "$type" "$record")"
   record_value="${split%%$'\t'*}"
   priority="${split#*$'\t'}"
+
+  case "$type" in
+    SRV)
+      read -r priority weight port record_value <<< "$record"
+      ;;
+    SSHFP)
+      read -r algorithm fp_type record_value <<< "$record"
+      ;;
+    CAA)
+      read -r caa_flag caa_type caa_value <<< "$record"
+      caa_value="${caa_value#\"}"
+      caa_value="${caa_value%\"}"
+      record_value="$caa_value"
+      ;;
+  esac
 
   params=(
     "domain-name=${DNS_ZONE_NAME:-${DNS_DOMAIN%.}}"
@@ -370,6 +461,13 @@ cloudns_add_single_record() {
   if [[ -n "$priority" && "$priority" != "$record_value" ]]; then
     params+=("priority=${priority}")
   fi
+  [[ -z "$weight" ]] || params+=("weight=${weight}")
+  [[ -z "$port" ]] || params+=("port=${port}")
+  [[ -z "$algorithm" ]] || params+=("algorithm=${algorithm}")
+  [[ -z "$fp_type" ]] || params+=("fp_type=${fp_type}")
+  [[ -z "$caa_flag" ]] || params+=("caa_flag=${caa_flag}")
+  [[ -z "$caa_type" ]] || params+=("caa_type=${caa_type}")
+  [[ -z "$caa_value" ]] || params+=("caa_value=${caa_value}")
 
   cloudns_api "dns/add-record" "${params[@]}" >/dev/null
 }
@@ -383,6 +481,13 @@ cloudns_modify_single_record() {
   local host
   local record_value
   local priority
+  local weight=""
+  local port=""
+  local algorithm=""
+  local fp_type=""
+  local caa_flag=""
+  local caa_type=""
+  local caa_value=""
   local split
   local -a params
 
@@ -390,6 +495,21 @@ cloudns_modify_single_record() {
   split="$(cloudns_split_record "$type" "$record")"
   record_value="${split%%$'\t'*}"
   priority="${split#*$'\t'}"
+
+  case "$type" in
+    SRV)
+      read -r priority weight port record_value <<< "$record"
+      ;;
+    SSHFP)
+      read -r algorithm fp_type record_value <<< "$record"
+      ;;
+    CAA)
+      read -r caa_flag caa_type caa_value <<< "$record"
+      caa_value="${caa_value#\"}"
+      caa_value="${caa_value%\"}"
+      record_value="$caa_value"
+      ;;
+  esac
 
   params=(
     "domain-name=${DNS_ZONE_NAME:-${DNS_DOMAIN%.}}"
@@ -401,6 +521,13 @@ cloudns_modify_single_record() {
   if [[ -n "$priority" && "$priority" != "$record_value" ]]; then
     params+=("priority=${priority}")
   fi
+  [[ -z "$weight" ]] || params+=("weight=${weight}")
+  [[ -z "$port" ]] || params+=("port=${port}")
+  [[ -z "$algorithm" ]] || params+=("algorithm=${algorithm}")
+  [[ -z "$fp_type" ]] || params+=("fp_type=${fp_type}")
+  [[ -z "$caa_flag" ]] || params+=("caa_flag=${caa_flag}")
+  [[ -z "$caa_type" ]] || params+=("caa_type=${caa_type}")
+  [[ -z "$caa_value" ]] || params+=("caa_value=${caa_value}")
 
   cloudns_api "dns/mod-record" "${params[@]}" >/dev/null
 }
@@ -414,7 +541,7 @@ provider_create_record() {
   local record
 
   while IFS= read -r record; do
-    [[ -n "$record" ]] || continue
+    [[ -n "$record" || "$type" == "TXT" ]] || continue
     cloudns_add_single_record "$name" "$type" "$ttl" "$record" || return 1
   done < <(jq -r '.[]' <<< "$records_json")
 }
@@ -465,7 +592,13 @@ cloudns_find_record_id() {
       else "\($host).\($zone)"
       end;
     def user_record:
-      if .type == "MX" and ((.priority // "") | tostring) != "" and ((.record // "") | test("^[0-9]+[[:space:]]") | not) then
+      if .type == "SRV" and ((.priority // "") | tostring) != "" and ((.weight // "") | tostring) != "" and ((.port // "") | tostring) != "" then
+        "\((.priority // "") | tostring) \((.weight // "") | tostring) \((.port // "") | tostring) \(.record // "")"
+      elif .type == "SSHFP" and ((.algorithm // "") | tostring) != "" and ((.fp_type // "") | tostring) != "" then
+        "\((.algorithm // "") | tostring) \((.fp_type // "") | tostring) \(.record // "")"
+      elif .type == "CAA" and ((.caa_flag // "") | tostring) != "" and ((.caa_type // "") | tostring) != "" then
+        "\((.caa_flag // "") | tostring) \((.caa_type // "") | tostring) \((.caa_value // .record // "") | tojson)"
+      elif .type == "MX" and ((.priority // "") | tostring) != "" and ((.record // "") | test("^[0-9]+[[:space:]]") | not) then
         "\((.priority // "") | tostring) \(.record // "")"
       else
         (.record // "")
@@ -473,7 +606,7 @@ cloudns_find_record_id() {
 
     to_entries[]
     | select(.value | type == "object")
-    | select((.value.type | ascii_upcase) == $type and fqdn(.value.host // "@") == $name and (.value | {type: (.type | ascii_upcase), record, priority} | user_record) == $value)
+    | select((.value.type | ascii_upcase) == $type and fqdn(.value.host // "@") == $name and (.value | .type = (.type | ascii_upcase) | user_record) == $value)
     | (.value.id // .key)
   ' <<< "$records_json" | head -n 1
 }
@@ -482,14 +615,23 @@ provider_delete_rrset() {
   local zone_id="$1"
   local name="$2"
   local type="$3"
+  local record_refs="${4:-[]}"
   local record_id
   local found=0
 
-  while IFS= read -r record_id; do
-    [[ -n "$record_id" ]] || continue
-    found=1
-    cloudns_api "dns/delete-record" "domain-name=${DNS_ZONE_NAME:-${DNS_DOMAIN%.}}" "record-id=${record_id}" >/dev/null || return 1
-  done < <(cloudns_find_record_ids "$name" "$type")
+  if jq -e 'type == "array" and length > 0' <<< "$record_refs" >/dev/null 2>&1; then
+    while IFS= read -r record_id; do
+      [[ -n "$record_id" ]] || continue
+      found=1
+      cloudns_api "dns/delete-record" "domain-name=${DNS_ZONE_NAME:-${DNS_DOMAIN%.}}" "record-id=${record_id}" >/dev/null || return 1
+    done < <(jq -r '.[]' <<< "$record_refs")
+  else
+    while IFS= read -r record_id; do
+      [[ -n "$record_id" ]] || continue
+      found=1
+      cloudns_api "dns/delete-record" "domain-name=${DNS_ZONE_NAME:-${DNS_DOMAIN%.}}" "record-id=${record_id}" >/dev/null || return 1
+    done < <(cloudns_find_record_ids "$name" "$type")
+  fi
 
   if ((found == 0)); then
     DNS_PROVIDER_ERROR="record_not_found"

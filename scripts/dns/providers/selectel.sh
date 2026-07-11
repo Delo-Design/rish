@@ -210,6 +210,20 @@ provider_zone_ready() {
   [[ -n "${DNS_ZONE_ID:-}" && -n "${DNS_ZONE_NAME:-}" ]]
 }
 
+provider_import_type_supported() {
+  case "$1" in
+    A | AAAA | ALIAS | CAA | CNAME | DNAME | HTTPS | MX | SRV | SSHFP | SVCB | TXT)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+provider_import_rrset_limit() {
+  printf '100'
+}
+
 provider_check_config() {
   local missing=0
 
@@ -661,8 +675,20 @@ provider_find_zone() {
 
 selectel_list_records_json() {
   local zone_id="$1"
+  local rrsets_json
+  local rrsets_count
 
-  selectel_api GET "/zones/${zone_id}/rrset?limit=1000&sort_by=name.ascend&sort_by=type.ascend"
+  rrsets_json="$(selectel_api GET "/zones/${zone_id}/rrset?limit=1000&sort_by=name.ascend&sort_by=type.ascend")" || return 1
+  rrsets_count="$(jq -r '.count // (.result | length) // 0' <<< "$rrsets_json" 2>/dev/null)"
+  [[ "$rrsets_count" =~ ^[0-9]+$ ]] || {
+    echo -e "Selectel вернул некорректное количество DNS-записей." >&2
+    return 1
+  }
+  if ((rrsets_count > 1000)); then
+    echo -e "В DNS-зоне больше ${YELLOW}1000${WHITE} групп записей. Операция отменена." >&2
+    return 1
+  fi
+  printf '%s' "$rrsets_json"
 }
 
 provider_list_records() {
@@ -672,7 +698,12 @@ provider_list_records() {
   rrsets_json="$(selectel_list_records_json "$zone_id")" || return 1
   jq -r '
     def user_content($record_type):
-      if $record_type == "TXT" and startswith("\"") and endswith("\"") then .[1:-1] else . end;
+      . as $content
+      | if $record_type == "TXT" and startswith("\"") and endswith("\"") then
+          try ($content | gsub("\"[[:space:]]+\""; "") | fromjson) catch $content
+        else
+          $content
+        end;
 
     .result[]
     | select(.type != "SOA")
@@ -699,7 +730,12 @@ selectel_user_records_json() {
 
   jq -c '
     def user_content($record_type):
-      if $record_type == "TXT" and startswith("\"") and endswith("\"") then .[1:-1] else . end;
+      . as $content
+      | if $record_type == "TXT" and startswith("\"") and endswith("\"") then
+          try ($content | gsub("\"[[:space:]]+\""; "") | fromjson) catch $content
+        else
+          $content
+        end;
 
     .type as $record_type
     | [.records[]? | select(.disabled != true) | (.content | user_content($record_type))]
@@ -742,13 +778,31 @@ selectel_record_body() {
     --arg type "$type" \
     --argjson ttl "$ttl" \
     --argjson records "$records_json" \
-    '{
+    '
+    def txt_content:
+      reduce (explode[]) as $codepoint (
+        {chunks: [], current: [], bytes: 0};
+        ($codepoint | [.] | implode | utf8bytelength) as $char_bytes
+        | if .bytes + $char_bytes > 255 and (.current | length) > 0 then
+            .chunks += [(.current | implode)]
+            | .current = [$codepoint]
+            | .bytes = $char_bytes
+          else
+            .current += [$codepoint]
+            | .bytes += $char_bytes
+          end
+      )
+      | .chunks + [(.current | implode)]
+      | map(tojson)
+      | join(" ");
+
+    {
       name: $name,
       type: $type,
       ttl: $ttl,
       records: (
         $records
-        | map(if $type == "TXT" and (startswith("\"") | not) then "\"\(.)\"" else . end)
+        | map(if $type == "TXT" then txt_content else . end)
         | map({content: ., disabled: false})
       )
     }'
