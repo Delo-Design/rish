@@ -1061,6 +1061,14 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
+  STEP="Настройка задержки клавиши Esc в Midnight Commander"
+  if ! check_step "$STEP"; then
+    if ! grep -q '^export KEYBOARD_KEY_TIMEOUT_US=' ~/.bashrc; then
+      echo "export KEYBOARD_KEY_TIMEOUT_US=100000" >>~/.bashrc
+    fi
+    mark_step_completed "$STEP"
+  fi
+
   STEP="Установка репозиториев для MariaDB"
   if ! check_step "$STEP"; then
     Up
