@@ -27,6 +27,7 @@ mark_step_completed() {
   echo "$step" >>"$LOG_FILE"
 }
 source /root/rish/rish_config.sh
+source /root/rish/scripts/ssh_authentication.sh
 LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
@@ -256,6 +257,31 @@ STEP="Установка bind-utils"
 if ! check_step "$STEP"; then
   Install bind-utils
   mark_step_completed "$STEP"
+fi
+
+STEP="Настройка способов авторизации SSH через 00-rish.conf"
+if ! check_step "$STEP"; then
+  effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
+  read -r password_authentication _ <<<"$effective_settings"
+
+  if [[ "$password_authentication" == "yes" || "$password_authentication" == "no" ]]; then
+    echo "Переносим настройки авторизации SSH в /etc/ssh/sshd_config.d/00-rish.conf."
+    if configure_ssh_password_authentication "$password_authentication"; then
+      print_effective_ssh_authentication
+      if [[ "$password_authentication" == "yes" ]]; then
+        echo
+        echo -e "Авторизация по паролю для SSH ${YELLOW}разрешена${WHITE}."
+        echo "Это повышает риск подбора учётных данных и несанкционированного доступа."
+        echo "Рекомендуется использовать SSH-ключи и запретить авторизацию по паролю через меню управления сервером."
+      fi
+      mark_step_completed "$STEP"
+    else
+      echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+    fi
+  else
+    echo -e "${YELLOW}Не удалось определить PasswordAuthentication через sshd -T.${WHITE}"
+    echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+  fi
 fi
 
 STEP="Настройка hard_delete для Yandex remote"

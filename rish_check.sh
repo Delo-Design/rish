@@ -706,6 +706,38 @@ check_php_fpm_configtests() {
   return "$status"
 }
 
+print_ssh_password_auth_warning() {
+  local sshd_config
+  local option
+  local value
+  local password_authentication="no"
+  local kbd_interactive_authentication="no"
+
+  [[ "$SILENT" -eq 1 ]] && return
+
+  if ! sshd_config="$(sshd -T 2>/dev/null)"; then
+    return
+  fi
+
+  while read -r option value _; do
+    case "$option" in
+      passwordauthentication)
+        password_authentication="$value"
+        ;;
+      kbdinteractiveauthentication)
+        kbd_interactive_authentication="$value"
+        ;;
+    esac
+  done <<< "$sshd_config"
+
+  if [[ "$password_authentication" == "yes" || "$kbd_interactive_authentication" == "yes" ]]; then
+    log
+    log "В SSH ${YELLOW}способы аутентификации${WHITE} с вводом пароля ${YELLOW}разрешены${WHITE}."
+    log "Это повышает риск подбора учетных данных и несанкционированного доступа."
+    log "Рекомендуется использовать SSH-ключи и отключить PasswordAuthentication и KbdInteractiveAuthentication."
+  fi
+}
+
 print_kernel_default_fix_hint() {
   local latest_kernel_path="$1"
 
@@ -934,6 +966,7 @@ run_final_configtests() {
 
   [[ "$SILENT" -eq 1 ]] && return
 
+  print_ssh_password_auth_warning
   log
   check_apache_configtest || status=1
   check_php_fpm_configtests || status=1

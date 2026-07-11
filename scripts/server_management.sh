@@ -7,7 +7,7 @@ ServerManagementMenu() {
   options=("Создать пользователя"
     "Удалить пользователя"
     "Установка новых версий PHP"
-    "Запретить авторизацию по паролю по SSH"
+    "Включить/отключить авторизацию по паролю по SSH"
     "Включить/отключить управление DNS"
     "Выйти")
   Down
@@ -15,7 +15,7 @@ ServerManagementMenu() {
   echo -e "Версия ${GREEN}apache${WHITE}"
   httpd -v
   echo
-  sshd -T | grep passwordauthentication
+  print_effective_ssh_authentication
   echo
   echo -e "Установленные версии ${GREEN}PHP${WHITE}:"
   mapfile -t installed_versions < <(get_installed_php_version_labels)
@@ -35,7 +35,9 @@ ServerManagementMenu() {
       ;;
     1)
       clear
-      usrs=($(cat /etc/passwd | grep home | awk -F: '{ print $1}' | sort))
+      mapfile -t usrs < <(
+        awk -F: '$6 ~ /^\/home\// { print $1 }' /etc/passwd | sort
+      )
       if ((${#usrs[@]} > 0)); then
         echo "Выберите пользователя для удаления из системы"
         vertical_menu "current" 2 0 30 "${usrs[@]}"
@@ -66,23 +68,37 @@ ServerManagementMenu() {
       cursor_to $((${rim} + 2)) 1
       ;;
     3)
-      echo -e "Запретить авторизацию по ${RED}паролю${WHITE} для SSH?"
+      effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
+      read -r password_authentication kbd_interactive_authentication <<<"$effective_settings"
+
+      if [[ -z "$password_authentication" || -z "$kbd_interactive_authentication" ]]; then
+        echo -e "${RED}Не удалось определить${WHITE} текущие настройки авторизации SSH."
+        echo
+        continue
+      fi
+
+      if [[ "$password_authentication" == "yes" || "$kbd_interactive_authentication" == "yes" ]]; then
+        target_value="no"
+        question_text="Запретить способы авторизации с вводом пароля для SSH?"
+        result_text="запрещена"
+        result_color="$GREEN"
+      else
+        target_value="yes"
+        question_text="Разрешить авторизацию по паролю для SSH?"
+        result_text="разрешена"
+        result_color="$YELLOW"
+      fi
+
+      echo -e "${question_text/пароля/${YELLOW}пароля${WHITE}}"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
         echo -e -n "${CURSORUP}"
-        # Обработка основного файла конфигурации
-        process_ssh_config_file /etc/ssh/sshd_config
-        # Обработка файлов в /etc/ssh/sshd_config.d
-        for file in /etc/ssh/sshd_config.d/*.conf; do
-          if [ -f "$file" ]; then
-            process_ssh_config_file "$file"
-          fi
-        done
-        systemctl restart sshd.service
-        echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE} ${ERASEUNTILLENDOFLINE} в файлах конфигурации."
-        sshd -T | grep passwordauthentication
+        if configure_ssh_password_authentication "$target_value"; then
+          echo -e "Авторизация по паролю для SSH ${result_color}${result_text}${WHITE}.${ERASEUNTILLENDOFLINE}"
+          print_effective_ssh_authentication
+        fi
       else
-        echo -e "${CURSORUP}Файл /etc/ssh/sshd_config ${VIOLET}не изменен${WHITE}.${ERASEUNTILLENDOFLINE}"
-        echo -e
+        echo -e "${CURSORUP}Настройки авторизации SSH ${VIOLET}не изменены${WHITE}.${ERASEUNTILLENDOFLINE}"
+        echo
       fi
       ;;
     4)

@@ -84,6 +84,7 @@ source php_helpers.sh
 source scripts/mariadb_install.sh
 source create_hotlist.sh
 source scripts/create_swapfile.sh
+source scripts/ssh_authentication.sh
 
 if (( lines < 40 || columns < 140 )); then
   echo
@@ -325,23 +326,6 @@ OpenFirewall() {
   fi
 }
 
-process_ssh_config_file() {
-  local config_file=$1
-
-  # Резервное копирование файла конфигурации
-  cp "$config_file" "${config_file}.bak"
-
-  # Удаление всех строк с PasswordAuthentication
-  sed -i '/^#\?PasswordAuthentication/d' "$config_file"
-
-  # Добавление строки с отключением аутентификации по паролю перед первым блоком Match
-  awk '/^Match/ && !done {print "PasswordAuthentication no"; done=1} 1' "$config_file" >"${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
-
-  # Если строка PasswordAuthentication no не была добавлена, добавить её в конец файла
-  if ! grep -q "^PasswordAuthentication no" "$config_file"; then
-    echo "PasswordAuthentication no" >>"$config_file"
-  fi
-}
 # shellcheck disable=SC2120
 check_user_dirs_exist() {
   local count=0
@@ -1310,32 +1294,6 @@ EOF
     mark_step_completed "$STEP"
   fi
 
-  STEP="Отключение авторизации по паролю для SSH."
-  if ! check_step "$STEP"; then
-    echo
-    echo -e "Советуем запретить авторизацию по паролю при доступе по ${GREEN}SSH${WHITE}."
-    echo -e "Вы всегда сможете авторизоваться по паролю на сервере через VNC."
-      echo -e "Запретить авторизацию по ${VIOLET}паролю${WHITE} для SSH?"
-    if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-      echo -e -n "${CURSORUP}"
-      # Обработка основного файла конфигурации
-      process_ssh_config_file /etc/ssh/sshd_config
-      # Обработка файлов в /etc/ssh/sshd_config.d
-      for file in /etc/ssh/sshd_config.d/*.conf; do
-        if [ -f "$file" ]; then
-          process_ssh_config_file "$file"
-        fi
-      done
-      systemctl restart sshd.service
-      echo -e "Авторизация по паролю ${GREEN}запрещена${WHITE} ${ERASEUNTILLENDOFLINE} в файлах конфигурации."
-      sshd -T | grep passwordauthentication
-    else
-      echo -e "${CURSORUP}${ERASEUNTILLENDOFLINE}Авторизация по паролю ${RED}разрешена${WHITE}."
-      echo -e
-    fi
-    mark_step_completed "$STEP"
-  fi
-
   STEP="Предлагаем создать ключ доступ к серверу и вывести его на экран для копирования."
   if ! check_step "$STEP"; then
     echo -e "${RED}Не забудьте${WHITE} добавить свой открытый (public) ключ для авторизации без пароля."
@@ -1366,6 +1324,27 @@ EOF
       echo -e "С помощью команды ${GREEN}mcedit /root/.ssh/authorized_keys${WHITE} откройте файл и добавьте туда свой открытый ключ."
     fi
     mark_step_completed "$STEP"
+  fi
+
+  STEP="Настройка способов авторизации SSH через 00-rish.conf"
+  if ! check_step "$STEP"; then
+    echo
+    echo -e "Советуем запретить авторизацию по паролю при доступе по ${GREEN}SSH${WHITE}."
+    echo -e "Вы всегда сможете авторизоваться по паролю на сервере через VNC."
+    echo -e "Запретить авторизацию по ${VIOLET}паролю${WHITE} для SSH?"
+    if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+      echo -e -n "${CURSORUP}"
+      if configure_ssh_password_authentication no; then
+        echo -e "Авторизация по паролю для SSH ${GREEN}запрещена${WHITE}.${ERASEUNTILLENDOFLINE}"
+        mark_step_completed "$STEP"
+      fi
+    else
+      echo -e -n "${CURSORUP}"
+      if configure_ssh_password_authentication yes; then
+        echo -e "Авторизация по паролю для SSH ${YELLOW}разрешена${WHITE}.${ERASEUNTILLENDOFLINE}"
+        mark_step_completed "$STEP"
+      fi
+    fi
   fi
 
   STEP="Обновление hotlist"
