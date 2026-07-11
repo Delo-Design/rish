@@ -315,6 +315,31 @@ dns_names_equal() {
   [[ "${1,,}" == "${2,,}" ]]
 }
 
+show_self_cname_error() {
+  local name="$1"
+  local value="$2"
+
+  echo "Имя и значение CNAME указывают на один домен."
+  echo
+  echo -e "Имя записи: ${YELLOW}${name}${WHITE}"
+  echo -e "Значение записи: ${YELLOW}${value}${WHITE}"
+  echo
+  echo "CNAME должен указывать на другой домен."
+}
+
+show_short_name_expansion() {
+  local label="$1"
+  local input="$2"
+  local normalized="$3"
+  local zone_name="${DNS_ZONE_NAME:-$DNS_DOMAIN}"
+
+  echo
+  echo -e "Введено короткое имя${label:+ ${label}}: ${YELLOW}${input}${WHITE}"
+  echo
+  echo -e "В DNS короткие имена относятся к текущей зоне ${GREEN}${zone_name%.}${WHITE},"
+  echo -e "поэтому будет использовано полное имя: ${GREEN}${normalized}${WHITE}"
+}
+
 record_value_label() {
   local value="$1"
 
@@ -810,6 +835,9 @@ read_record_value() {
   local priority="10"
   local server=""
   local input_value
+  local original_value
+
+  RECORD_VALUE_NAME_EXPANDED=false
 
   if [[ "$type" == "MX" ]]; then
     if [[ "$current" =~ ^([0-9]+)[[:space:]]+(.+)$ ]]; then
@@ -829,7 +857,12 @@ read_record_value() {
       echo -e "Не задан сервер MX." >&2
       return 1
     fi
+    original_value="$server"
     server="$(normalize_record_target_name "$server")"
+    if [[ "$original_value" != "@" && "$original_value" != *"."* ]]; then
+      show_short_name_expansion "сервера" "$original_value" "$server"
+      RECORD_VALUE_NAME_EXPANDED=true
+    fi
 
     printf -v "$result_var" '%s %s' "$priority" "$server"
     return
@@ -837,7 +870,12 @@ read_record_value() {
 
   rish_read_input input_value "Значение записи: " "$current"
   if [[ "$type" == "CNAME" && -n "$input_value" ]]; then
+    original_value="$input_value"
     input_value="$(normalize_record_target_name "$input_value")"
+    if [[ "$original_value" != "@" && "$original_value" != *"."* ]]; then
+      show_short_name_expansion "" "$original_value" "$input_value"
+      RECORD_VALUE_NAME_EXPANDED=true
+    fi
   fi
   printf -v "$result_var" '%s' "$input_value"
 }
@@ -848,6 +886,7 @@ create_record() {
   local name
   local value
   local ttl
+  local ttl_prompt="TTL: "
 
   clear
   echo -e "Создание DNS-записи для ${GREEN}${DNS_DOMAIN}${WHITE}"
@@ -856,11 +895,22 @@ create_record() {
   echo -e "Тип записи: ${GREEN}${type}${WHITE}"
 
   rish_read_input name_input "Имя записи (@, www или полное имя): " "@"
+  if [[ "$name_input" == *"@"* && "$name_input" != "@" ]]; then
+    echo -e "Некорректное имя DNS-записи: ${YELLOW}${name_input}${WHITE}"
+    echo
+    echo -e "${YELLOW}@${WHITE} означает сам домен ${GREEN}${DNS_DOMAIN%.}${WHITE} и не является частью имени."
+    echo -e "Укажите либо ${YELLOW}@${WHITE}, либо имя без ${YELLOW}@${WHITE}, например ${GREEN}${name_input//@/}${WHITE}."
+    wait_for_enter
+    return
+  fi
   read_record_value "$type" value || {
     wait_for_enter
     return
   }
-  rish_read_input ttl "TTL: " "${DNS_DEFAULT_TTL:-3600}"
+  if [[ "$RECORD_VALUE_NAME_EXPANDED" == true ]]; then
+    ttl_prompt=$'\nTTL: '
+  fi
+  rish_read_input ttl "$ttl_prompt" "${DNS_DEFAULT_TTL:-3600}"
 
   name="$(normalize_record_name "$name_input" "$DNS_DOMAIN")"
   if [[ ! "$ttl" =~ ^[0-9]+$ ]]; then
@@ -874,7 +924,7 @@ create_record() {
     return
   fi
   if [[ "$type" == "CNAME" ]] && dns_names_equal "$name" "$value"; then
-    echo -e "CNAME ${YELLOW}${name}${WHITE} не может ссылаться на самого себя." >&2
+    show_self_cname_error "$name" "$value" >&2
     wait_for_enter
     return
   fi
@@ -912,6 +962,7 @@ edit_record() {
   local current_value
   local new_value
   local new_ttl
+  local ttl_prompt="TTL: "
 
   current_value="$(jq -r --argjson index "$value_index" '.[$index]' <<< "${DNS_RECORD_VALUES[$index]}")"
   clear
@@ -923,7 +974,10 @@ edit_record() {
     wait_for_enter
     return
   }
-  rish_read_input new_ttl "TTL: " "$ttl"
+  if [[ "$RECORD_VALUE_NAME_EXPANDED" == true ]]; then
+    ttl_prompt=$'\nTTL: '
+  fi
+  rish_read_input new_ttl "$ttl_prompt" "$ttl"
 
   if [[ ! "$new_ttl" =~ ^[0-9]+$ ]]; then
     echo -e "TTL должен быть числом." >&2
@@ -936,7 +990,7 @@ edit_record() {
     return
   fi
   if [[ "$type" == "CNAME" ]] && dns_names_equal "$name" "$new_value"; then
-    echo -e "CNAME ${YELLOW}${name}${WHITE} не может ссылаться на самого себя." >&2
+    show_self_cname_error "$name" "$new_value" >&2
     wait_for_enter
     return
   fi
@@ -1018,8 +1072,13 @@ delete_record() {
 
   value="$(jq -r --argjson index "$value_index" '.[$index]' <<< "${DNS_RECORD_VALUES[$index]}")"
   clear
-  echo -e "Удалить ${RED}${type} ${name}${WHITE}?"
-  echo -e "Значение: ${YELLOW}${value}${WHITE}"
+  echo -e "${RED}Удаление${WHITE} DNS-записи"
+  echo
+  echo -e "Тип записи: ${YELLOW}${type}${WHITE}"
+  echo -e "Имя записи: ${YELLOW}${name}${WHITE}"
+  echo -e "Значение записи: ${YELLOW}${value}${WHITE}"
+  echo
+  echo -e "${RED}Удалить${WHITE} запись?"
   vertical_menu "current" 2 0 5 "Нет" "Да"
   choice=$?
   if ((choice != 1)); then
@@ -1030,7 +1089,11 @@ delete_record() {
 
   if provider_delete_record_value "$DNS_ZONE_ID" "$name" "$type" "$value" "$value_ref"; then
     invalidate_records_cache
-    echo -e "Запись ${GREEN}${type} ${name}${WHITE} удалена."
+    echo "DNS-запись удалена."
+    echo
+    echo -e "Тип записи: ${YELLOW}${type}${WHITE}"
+    echo -e "Имя записи: ${YELLOW}${name}${WHITE}"
+    echo -e "Значение записи: ${YELLOW}${value}${WHITE}"
   else
     echo >&2
     echo -e "Не удалось удалить запись." >&2
@@ -1215,6 +1278,7 @@ import_zone_file_menu() {
   local -a import_files=()
   local -a import_labels=()
   local candidate
+  local candidate_with_mtime
 
   clear
   echo -e "Импорт DNS-зоны из файла для сайта ${GREEN}${DNS_DOMAIN}${WHITE}"
@@ -1228,11 +1292,15 @@ import_zone_file_menu() {
   echo -e "${import_parent_dir}/${YELLOW}${import_domain_dir}${WHITE}"
   echo
 
-  for candidate in "${import_dir}"/*.txt "${import_dir}"/*.zone "${import_dir}"/*.bind "${import_dir}"/*.dns; do
-    [[ -f "$candidate" ]] || continue
+  while IFS= read -r -d '' candidate_with_mtime; do
+    candidate="${candidate_with_mtime#* }"
     import_files+=("$candidate")
     import_labels+=("${candidate##*/}")
-  done
+  done < <(
+    find "$import_dir" -maxdepth 1 -type f \
+      \( -name '*.txt' -o -name '*.zone' -o -name '*.bind' -o -name '*.dns' \) \
+      -printf '%T@ %p\0' | LC_ALL=C sort -z -nr
+  )
 
   if ((${#import_files[@]} == 0)); then
     echo "Файлы DNS-зоны для импорта не найдены."
