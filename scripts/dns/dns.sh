@@ -18,6 +18,13 @@ LAST_DNS_MENU_Y=0
 LAST_DNS_MENU_ACTION_X=0
 LAST_DNS_MENU_RIGHT_X=0
 LAST_DNS_SELECTED_ROW=0
+DNS_RECORD_INFO_RESULT_DIR=""
+DNS_RECORD_INFO_QUERY_PIDS=()
+DNS_RECORD_INFO_PREVIOUS_INT_TRAP=""
+DNS_RECORD_INFO_PREVIOUS_TERM_TRAP=""
+DNS_RECORD_INFO_PREVIOUS_HUP_TRAP=""
+DNS_RECORD_INFO_LEFT_WIDTH=50
+DNS_RECORD_INFO_RIGHT_WIDTH=70
 
 if [[ -f "${RISH_HOME}/windows.sh" ]]; then
   source "${RISH_HOME}/windows.sh"
@@ -109,7 +116,7 @@ build_dns_info_box_lines() {
   # shellcheck disable=SC2034
   local -n result_ref="$result_var"
   local -a lines=()
-  local content_width=30
+  local content_width="${DNS_INFO_BOX_MIN_WIDTH:-30}"
   local title_text=" ${title} "
   local title_len=${#title_text}
   local border_width
@@ -158,7 +165,7 @@ get_current_dns_nameservers() {
 
   result_ref=()
   command -v dig >/dev/null 2>&1 || return 1
-  if ! dig_output="$(dig +short +time=2 +tries=1 NS "$zone_name" 2>/dev/null)"; then
+  if ! dig_output="$(dig +short +time=2 +tries=3 NS "$zone_name" 2>/dev/null)"; then
     return 1
   fi
 
@@ -1302,6 +1309,85 @@ normalize_public_dns_txt_value() {
   printf '%s' "$result"
 }
 
+normalize_ipv6_address() {
+  local value="${1,,}"
+  local original="$value"
+  local ipv4
+  local prefix
+  local ipv4_groups
+  local left
+  local right
+  local group
+  local normalized=""
+  local missing
+  local octet
+  local -a octets=()
+  local -a left_groups=()
+  local -a right_groups=()
+  local -a groups=()
+
+  if [[ "$value" == *.* ]]; then
+    ipv4="${value##*:}"
+    prefix="${value%:*}"
+    IFS='.' read -r -a octets <<< "$ipv4"
+    if ((${#octets[@]} != 4)); then
+      printf '%s' "$original"
+      return
+    fi
+    for octet in "${octets[@]}"; do
+      if [[ ! "$octet" =~ ^[0-9]+$ ]] || ((10#$octet > 255)); then
+        printf '%s' "$original"
+        return
+      fi
+    done
+    printf -v ipv4_groups '%x:%x' \
+      "$((10#${octets[0]} * 256 + 10#${octets[1]}))" \
+      "$((10#${octets[2]} * 256 + 10#${octets[3]}))"
+    value="${prefix}:${ipv4_groups}"
+  fi
+
+  if [[ "$value" == *::* ]]; then
+    if [[ "${value#*::}" == *::* ]]; then
+      printf '%s' "$original"
+      return
+    fi
+    left="${value%%::*}"
+    right="${value#*::}"
+    [[ -z "$left" ]] || IFS=':' read -r -a left_groups <<< "$left"
+    [[ -z "$right" ]] || IFS=':' read -r -a right_groups <<< "$right"
+    missing=$((8 - ${#left_groups[@]} - ${#right_groups[@]}))
+    if ((missing < 1)); then
+      printf '%s' "$original"
+      return
+    fi
+    groups=("${left_groups[@]}")
+    while ((missing > 0)); do
+      groups+=(0)
+      missing=$((missing - 1))
+    done
+    groups+=("${right_groups[@]}")
+  else
+    IFS=':' read -r -a groups <<< "$value"
+    if ((${#groups[@]} != 8)); then
+      printf '%s' "$original"
+      return
+    fi
+  fi
+
+  for group in "${groups[@]}"; do
+    if [[ ! "$group" =~ ^[0-9a-f]{1,4}$ ]]; then
+      printf '%s' "$original"
+      return
+    fi
+    printf -v group '%x' "$((16#$group))"
+    if [[ -n "$normalized" ]]; then
+      normalized+=":"
+    fi
+    normalized+="$group"
+  done
+  printf '%s' "$normalized"
+}
+
 normalize_dns_value_for_comparison() {
   local type="$1"
   local value="$2"
@@ -1314,6 +1400,9 @@ normalize_dns_value_for_comparison() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   case "$type" in
+    AAAA)
+      normalize_ipv6_address "$value"
+      ;;
     ALIAS | CNAME | DNAME | NS | PTR)
       value="${value%.}"
       printf '%s' "${value,,}"
@@ -1359,6 +1448,7 @@ get_public_dns_record_answers() {
   local type="$2"
   local values_var="$3"
   local ttls_var="$4"
+  local resolver="${5:-}"
   # shellcheck disable=SC2034
   local -n values_ref="$values_var"
   # shellcheck disable=SC2034
@@ -1369,13 +1459,34 @@ get_public_dns_record_answers() {
   local dns_class
   local answer_type
   local value
+  local -a dig_args=(+noall +comments +answer +time=2 +tries=3)
 
   values_ref=()
   ttls_ref=()
+  PUBLIC_DNS_QUERY_STATUS=""
+  if [[ "$type" == "ALIAS" || "$type" == "WR" ]]; then
+    PUBLIC_DNS_QUERY_STATUS="UNSUPPORTED"
+    return 5
+  fi
   command -v dig >/dev/null 2>&1 || return 2
-  if ! answer="$(dig +noall +answer +time=2 +tries=1 "$name" "$type" 2>/dev/null)"; then
+  if [[ -n "$resolver" ]]; then
+    dig_args+=("@${resolver}")
+  fi
+  if ! answer="$(dig "${dig_args[@]}" "$name" "$type" 2>/dev/null)"; then
     return 2
   fi
+
+  if [[ "$answer" =~ status:[[:space:]]*([A-Z]+), ]]; then
+    PUBLIC_DNS_QUERY_STATUS="${BASH_REMATCH[1]}"
+  else
+    PUBLIC_DNS_QUERY_STATUS="UNKNOWN"
+    return 4
+  fi
+  case "$PUBLIC_DNS_QUERY_STATUS" in
+    NOERROR) ;;
+    NXDOMAIN) return 3 ;;
+    *) return 4 ;;
+  esac
 
   while read -r owner ttl dns_class answer_type value; do
     [[ "$dns_class" == "IN" && "$answer_type" == "$type" ]] || continue
@@ -1387,6 +1498,291 @@ get_public_dns_record_answers() {
   done <<< "$answer"
 
   ((${#values_ref[@]} > 0))
+}
+
+query_public_dns_resolver_to_file() {
+  local name="$1"
+  local type="$2"
+  local resolver="$3"
+  local output_file="$4"
+  local tmp_file="${output_file}.tmp"
+  local result
+  local i
+  local -a values=()
+  local -a ttls=()
+
+  get_public_dns_record_answers "$name" "$type" values ttls "$resolver"
+  result=$?
+  {
+    printf '%s\0%s\0' "$result" "${PUBLIC_DNS_QUERY_STATUS:-TRANSPORT}"
+    for i in "${!values[@]}"; do
+      printf '%s\0%s\0' "${ttls[$i]}" "${values[$i]}"
+    done
+  } > "$tmp_file"
+  mv "$tmp_file" "$output_file"
+}
+
+wrap_dns_info_content() {
+  local content_var="$1"
+  local width="$2"
+  local -n content_ref="$content_var"
+  local -a wrapped=()
+  local line
+  local label
+  local value
+  local available
+  local continuation_width
+  local chunk
+
+  for line in "${content_ref[@]}"; do
+    if ((${#line} <= width)); then
+      wrapped+=("$line")
+      continue
+    fi
+
+    if [[ "$line" == *": "* ]]; then
+      label="${line%%:*}: "
+      value="${line#*: }"
+      available=$((width - ${#label}))
+      ((available < 1)) && available=1
+      if ((${#value} > available)); then
+        chunk="${value:0:available}"
+        wrapped+=("${label}${chunk}")
+        value="${value:available}"
+        continuation_width=$((width - 4))
+        ((continuation_width < 1)) && continuation_width=1
+        while ((${#value} > continuation_width)); do
+          wrapped+=("  ↳ ${value:0:continuation_width}")
+          value="${value:continuation_width}"
+        done
+        wrapped+=("  ↳ ${value}")
+      else
+        wrapped+=("${label}${value}")
+      fi
+    else
+      while ((${#line} > width)); do
+        wrapped+=("${line:0:width}")
+        line="${line:width}"
+      done
+      wrapped+=("$line")
+    fi
+  done
+  content_ref=("${wrapped[@]}")
+}
+
+truncate_dns_info_value() {
+  local value="$1"
+  local max_length="${2:-40}"
+
+  if ((${#value} > max_length)); then
+    printf '%s…' "${value:0:max_length-1}"
+  else
+    printf '%s' "$value"
+  fi
+}
+
+build_multi_resolver_public_content() {
+  local result_var="$1"
+  local type="$2"
+  local name="$3"
+  local selected_value="$4"
+  local result_dir="$5"
+  local states_var="$6"
+  local -n result_ref="$result_var"
+  local -n states_ref="$states_var"
+  local -a labels=("Системный DNS" "Google" "Quad9 Secure")
+  local -a details=()
+  local -a separated_details=()
+  local -a data=()
+  local -a display_indices=()
+  local normalized_selected
+  local normalized_public
+  local result
+  local value_found
+  local display_index
+  local answer_count
+  local displayed_count
+  local display_number
+  local display_value
+  local display_value_found
+  local value_label
+  local value_max_length
+  local max_display_values=4
+  local available=0
+  local checked=0
+  local matched=0
+  local unavailable=0
+  local dns_errors=0
+  local unsupported=0
+  local nxdomain=0
+  local pending=0
+  local i
+  local data_index
+  local ttl
+  local value
+  local detail
+  local resolver_status
+  local summary
+
+  normalized_selected="$(normalize_dns_value_for_comparison "$type" "$selected_value")"
+  for i in "${!labels[@]}"; do
+    case "${states_ref[$i]}" in
+      pending)
+        pending=$((pending + 1))
+        details+=("${labels[$i]}: проверяем...")
+        ;;
+      timeout)
+        unavailable=$((unavailable + 1))
+        details+=("${labels[$i]}: нет ответа")
+        ;;
+      unsupported)
+        unsupported=$((unsupported + 1))
+        ;;
+      done)
+        data=()
+        mapfile -d '' -t data < "${result_dir}/${i}.done"
+        result="${data[0]:-2}"
+        if [[ "$result" == "2" ]]; then
+          unavailable=$((unavailable + 1))
+          details+=("${labels[$i]}: нет ответа")
+          continue
+        fi
+        if [[ "$result" == "4" ]]; then
+          available=$((available + 1))
+          dns_errors=$((dns_errors + 1))
+          details+=("${labels[$i]}: ошибка ${data[1]:-UNKNOWN}")
+          continue
+        fi
+        if [[ "$result" == "5" ]]; then
+          unsupported=$((unsupported + 1))
+          continue
+        fi
+
+        available=$((available + 1))
+        checked=$((checked + 1))
+        if [[ "$result" == "1" ]]; then
+          details+=("${labels[$i]}: ответов нет")
+          continue
+        fi
+        if [[ "$result" == "3" ]]; then
+          nxdomain=$((nxdomain + 1))
+          details+=("${labels[$i]}: имя не существует")
+          continue
+        fi
+
+        value_found=0
+        display_index=2
+        display_indices=()
+        answer_count=$(((${#data[@]} - 2) / 2))
+        for ((data_index = 2; data_index + 1 < ${#data[@]}; data_index += 2)); do
+          value="${data[$((data_index + 1))]}"
+          normalized_public="$(normalize_dns_value_for_comparison "$type" "$value")"
+          if [[ "$normalized_public" == "$normalized_selected" ]]; then
+            value_found=1
+            display_index="$data_index"
+          fi
+          if ((${#display_indices[@]} < max_display_values)); then
+            display_indices+=("$data_index")
+          fi
+        done
+        if ((value_found && answer_count > max_display_values)); then
+          display_value_found=0
+          for data_index in "${display_indices[@]}"; do
+            if ((data_index == display_index)); then
+              display_value_found=1
+              break
+            fi
+          done
+          if ((!display_value_found)); then
+            display_indices[$((max_display_values - 1))]="$display_index"
+          fi
+        fi
+        if ((value_found)); then
+          matched=$((matched + 1))
+          resolver_status="${labels[$i]}: видна"
+        else
+          resolver_status="${labels[$i]}: не совпадает"
+        fi
+        if ((answer_count > 1)); then
+          resolver_status+=", записей: ${answer_count}"
+        fi
+        details+=("$resolver_status")
+        if ((answer_count > 0)); then
+          ttl="${data[2]}"
+          details+=("TTL: ${ttl}")
+          if ((answer_count == 1)); then
+            value_label="Значение"
+            value_max_length=$((DNS_RECORD_INFO_RIGHT_WIDTH - ${#value_label} - 2))
+            value="$(truncate_dns_info_value "${data[3]}" "$value_max_length")"
+            details+=("${value_label}: ${value}")
+          else
+            display_number=1
+            for data_index in "${display_indices[@]}"; do
+              value_label="Значение ${display_number}"
+              value_max_length=$((DNS_RECORD_INFO_RIGHT_WIDTH - ${#value_label} - 2))
+              display_value="$(truncate_dns_info_value "${data[$((data_index + 1))]}" "$value_max_length")"
+              details+=("${value_label}: ${display_value}")
+              display_number=$((display_number + 1))
+            done
+            displayed_count=${#display_indices[@]}
+            if ((answer_count > displayed_count)); then
+              details+=("Ещё записей: $((answer_count - displayed_count))")
+            fi
+          fi
+        fi
+        ;;
+    esac
+  done
+
+  for detail in "${details[@]}"; do
+    case "$detail" in
+      "Системный DNS: "* | "Google: "* | "Quad9 Secure: "*)
+        if ((${#separated_details[@]} > 0)); then
+          separated_details+=("")
+        fi
+        ;;
+    esac
+    separated_details+=("$detail")
+  done
+  details=("${separated_details[@]}")
+
+  if ((unsupported == ${#labels[@]})); then
+    summary="проверка типа ${type} не поддерживается"
+  elif ((pending > 0)); then
+    summary="проверяем..."
+  elif ((available == 0)); then
+    summary="нет доступных резолверов"
+  elif ((nxdomain == available)); then
+    summary="имя отсутствует в публичном DNS"
+  elif ((matched == 0 && dns_errors == 0)); then
+    summary="выбранное значение не найдено"
+  elif ((matched == 0)); then
+    summary="значение не подтверждено доступными DNS"
+  elif ((matched == checked && dns_errors == 0)); then
+    summary="значение подтверждено всеми доступными DNS"
+  else
+    summary="значение совпадает у ${matched} из ${checked} проверенных"
+  fi
+
+  result_ref=("Тип: ${type}" "Имя: ${name}" "Итог: ${summary}")
+  if ((unavailable > 0)); then
+    result_ref+=("Без ответа: ${unavailable}")
+  fi
+  if ((dns_errors > 0)); then
+    result_ref+=("DNS-ошибок: ${dns_errors}")
+  fi
+  result_ref+=("" "${details[@]}")
+}
+
+clear_dns_record_info_area() {
+  local rows="$1"
+  local i
+
+  for ((i = 0; i < rows; i++)); do
+    cursor_to "$((i + 1))" 1
+    printf '\033[2K'
+  done
+  cursor_to 1 1
 }
 
 color_dns_box_content_line() {
@@ -1405,6 +1801,83 @@ color_dns_box_content_line() {
   lines_ref[$line_index]="$colored_line"
 }
 
+cleanup_dns_record_info_queries() {
+  local pid
+
+  for pid in "${DNS_RECORD_INFO_QUERY_PIDS[@]}"; do
+    terminate_dns_record_info_query_tree "$pid"
+  done
+  for pid in "${DNS_RECORD_INFO_QUERY_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  DNS_RECORD_INFO_QUERY_PIDS=()
+
+  if [[ -n "$DNS_RECORD_INFO_RESULT_DIR" ]]; then
+    rm -rf -- "$DNS_RECORD_INFO_RESULT_DIR"
+    DNS_RECORD_INFO_RESULT_DIR=""
+  fi
+}
+
+terminate_dns_record_info_query_tree() {
+  local pid="$1"
+  local child
+  local -a children=()
+
+  [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1)) || return
+  if command -v ps >/dev/null 2>&1; then
+    mapfile -t children < <(ps -o pid= --ppid "$pid" 2>/dev/null)
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  for child in "${children[@]}"; do
+    child="${child//[[:space:]]/}"
+    [[ -n "$child" ]] || continue
+    terminate_dns_record_info_query_tree "$child"
+  done
+}
+
+restore_dns_record_info_traps() {
+  if [[ -n "$DNS_RECORD_INFO_PREVIOUS_INT_TRAP" ]]; then
+    eval "$DNS_RECORD_INFO_PREVIOUS_INT_TRAP"
+  else
+    trap - INT
+  fi
+  if [[ -n "$DNS_RECORD_INFO_PREVIOUS_TERM_TRAP" ]]; then
+    eval "$DNS_RECORD_INFO_PREVIOUS_TERM_TRAP"
+  else
+    trap - TERM
+  fi
+  if [[ -n "$DNS_RECORD_INFO_PREVIOUS_HUP_TRAP" ]]; then
+    eval "$DNS_RECORD_INFO_PREVIOUS_HUP_TRAP"
+  else
+    trap - HUP
+  fi
+  DNS_RECORD_INFO_PREVIOUS_INT_TRAP=""
+  DNS_RECORD_INFO_PREVIOUS_TERM_TRAP=""
+  DNS_RECORD_INFO_PREVIOUS_HUP_TRAP=""
+}
+
+handle_dns_record_info_signal() {
+  local signal="$1"
+
+  cleanup_dns_record_info_queries
+  restore_dns_record_info_traps
+  kill -s "$signal" "$$"
+
+  # Если предыдущий обработчик вернул управление или игнорирует сигнал,
+  # продолжаем работу со своими обработчиками.
+  install_dns_record_info_traps
+}
+
+install_dns_record_info_traps() {
+  DNS_RECORD_INFO_PREVIOUS_INT_TRAP="$(trap -p INT)"
+  DNS_RECORD_INFO_PREVIOUS_TERM_TRAP="$(trap -p TERM)"
+  DNS_RECORD_INFO_PREVIOUS_HUP_TRAP="$(trap -p HUP)"
+  trap 'handle_dns_record_info_signal INT' INT
+  trap 'handle_dns_record_info_signal TERM' TERM
+  trap 'handle_dns_record_info_signal HUP' HUP
+}
+
 print_record_info_boxes() {
   local left_var="$1"
   local right_var="$2"
@@ -1413,64 +1886,153 @@ print_record_info_boxes() {
   local -a left_lines=()
   local -a right_lines=()
   local rows
+  local projected_rows
   local i
   local line
   local terminal_columns="${COLUMNS:-0}"
+  local terminal_lines="${LINES:-0}"
   local terminal_size
   local needed_columns
   local raw_content
   local label
   local content_value
   local content_color
+  local -a compact_right_content=()
+  local DNS_INFO_BOX_MIN_WIDTH
+  local left_box_min_width="$DNS_RECORD_INFO_LEFT_WIDTH"
+  local right_box_min_width="$DNS_RECORD_INFO_RIGHT_WIDTH"
+  local stacked=0
 
-  rows=${#left_content_ref[@]}
-  ((${#right_content_ref[@]} > rows)) && rows=${#right_content_ref[@]}
-  while ((${#left_content_ref[@]} < rows)); do left_content_ref+=(""); done
-  while ((${#right_content_ref[@]} < rows)); do right_content_ref+=(""); done
+  wrap_dns_info_content "$left_var" "$left_box_min_width"
+  wrap_dns_info_content "$right_var" "$right_box_min_width"
 
+  DNS_INFO_BOX_MIN_WIDTH="$left_box_min_width"
   build_dns_info_box_lines left_lines "Запись у провайдера" "${left_content_ref[@]}"
-  build_dns_info_box_lines right_lines "Публичный DNS" "${right_content_ref[@]}"
+  DNS_INFO_BOX_MIN_WIDTH="$right_box_min_width"
+  build_dns_info_box_lines right_lines "Запись в публичном DNS" "${right_content_ref[@]}"
 
+  if terminal_size="$(stty size 2>/dev/null)"; then
+    terminal_lines="${terminal_size% *}"
+    terminal_columns="${terminal_size#* }"
+  fi
+  needed_columns=$((1 + ${#left_lines[0]} + 2 + ${#right_lines[0]}))
+  if [[ "$terminal_columns" =~ ^[0-9]+$ ]] && ((terminal_columns > 0 && needed_columns > terminal_columns)); then
+    stacked=1
+    projected_rows=$((${#left_lines[@]} + 1 + ${#right_lines[@]}))
+  else
+    projected_rows=${#left_lines[@]}
+    ((${#right_lines[@]} > projected_rows)) && projected_rows=${#right_lines[@]}
+  fi
+
+  if [[ "$terminal_lines" =~ ^[0-9]+$ ]] && ((terminal_lines > 0 && projected_rows >= terminal_lines)); then
+    for line in "${right_content_ref[@]}"; do
+      [[ -n "$line" ]] && compact_right_content+=("$line")
+    done
+    right_content_ref=("${compact_right_content[@]}")
+    DNS_INFO_BOX_MIN_WIDTH="$right_box_min_width"
+    build_dns_info_box_lines right_lines "Запись в публичном DNS" "${right_content_ref[@]}"
+
+    if ((stacked)); then
+      projected_rows=$((${#left_lines[@]} + 1 + ${#right_lines[@]}))
+    else
+      projected_rows=${#left_lines[@]}
+      ((${#right_lines[@]} > projected_rows)) && projected_rows=${#right_lines[@]}
+    fi
+    if ((projected_rows >= terminal_lines)); then
+      compact_right_content=()
+      for line in "${right_content_ref[@]}"; do
+        case "$line" in
+          Значение\ [2-4]:\ * | "Ещё записей: "*) continue ;;
+        esac
+        compact_right_content+=("$line")
+      done
+      right_content_ref=("${compact_right_content[@]}")
+      DNS_INFO_BOX_MIN_WIDTH="$right_box_min_width"
+      build_dns_info_box_lines right_lines "Запись в публичном DNS" "${right_content_ref[@]}"
+    fi
+  fi
+
+  if ((!stacked)); then
+    rows=${#left_content_ref[@]}
+    ((${#right_content_ref[@]} > rows)) && rows=${#right_content_ref[@]}
+    while ((${#left_content_ref[@]} < rows)); do left_content_ref+=(""); done
+    while ((${#right_content_ref[@]} < rows)); do right_content_ref+=(""); done
+    DNS_INFO_BOX_MIN_WIDTH="$left_box_min_width"
+    build_dns_info_box_lines left_lines "Запись у провайдера" "${left_content_ref[@]}"
+    DNS_INFO_BOX_MIN_WIDTH="$right_box_min_width"
+    build_dns_info_box_lines right_lines "Запись в публичном DNS" "${right_content_ref[@]}"
+  fi
+
+  content_color=""
   for i in "${!left_content_ref[@]}"; do
     raw_content="${left_content_ref[$i]}"
-    [[ "$raw_content" == *": "* ]] || continue
+    if [[ "$raw_content" == "  ↳ "* ]]; then
+      if [[ -n "$content_color" ]]; then
+        color_dns_box_content_line left_lines "$i" "$raw_content" "  ↳ ${content_color}${raw_content#  ↳ }${WHITE}"
+      fi
+      continue
+    fi
+    [[ "$raw_content" == *": "* ]] || {
+      content_color=""
+      continue
+    }
     label="${raw_content%%:*}: "
     content_value="${raw_content#*: }"
     case "$raw_content" in
       "Тип: "* | "Имя: "*) content_color="$GREEN" ;;
       "TTL: "* | "Значение: "*) content_color="$YELLOW" ;;
-      *) continue ;;
+      *) content_color=""; continue ;;
     esac
     color_dns_box_content_line left_lines "$i" "$raw_content" "${label}${content_color}${content_value}${WHITE}"
   done
 
+  content_color=""
   for i in "${!right_content_ref[@]}"; do
     raw_content="${right_content_ref[$i]}"
-    [[ "$raw_content" == *": "* ]] || continue
+    if [[ "$raw_content" == "  ↳ "* ]]; then
+      if [[ -n "$content_color" ]]; then
+        color_dns_box_content_line right_lines "$i" "$raw_content" "  ↳ ${content_color}${raw_content#  ↳ }${WHITE}"
+      fi
+      continue
+    fi
+    [[ "$raw_content" == *": "* ]] || {
+      content_color=""
+      continue
+    }
     label="${raw_content%%:*}: "
     content_value="${raw_content#*: }"
     case "$raw_content" in
-      "Статус: запись видна") content_color="$GREEN" ;;
-      "Статус: не удалось выполнить запрос") content_color="$RED" ;;
-      "Статус: "*) content_color="$YELLOW" ;;
+      "Тип: "* | "Имя: "*) content_color="$GREEN" ;;
+      "Итог: значение подтверждено всеми доступными DNS") content_color="$GREEN" ;;
+      "Итог: нет доступных резолверов") content_color="$RED" ;;
+      "Итог: имя отсутствует в публичном DNS") content_color="$RED" ;;
+      "Итог: выбранное значение не найдено") content_color="$RED" ;;
+      "Итог: значение не подтверждено доступными DNS") content_color="$RED" ;;
+      "Итог: "* | "Без ответа: "*) content_color="$YELLOW" ;;
+      "DNS-ошибок: "*) content_color="$RED" ;;
+      *": видна"*) content_color="$GREEN" ;;
+      *": нет ответа") content_color="$RED" ;;
+      *": ошибка "*) content_color="$RED" ;;
+      *": имя не существует") content_color="$RED" ;;
+      "Системный DNS: "* | "Google: "* | "Quad9 Secure: "*) content_color="$YELLOW" ;;
       "TTL: "*) content_color="$YELLOW" ;;
       "Значение: "*) content_color="$GREEN" ;;
-      *) continue ;;
+      Значение\ [0-9]*:\ *) content_color="$GREEN" ;;
+      "Ещё записей: "*) content_color="$YELLOW" ;;
+      *) content_color=""; continue ;;
     esac
     color_dns_box_content_line right_lines "$i" "$raw_content" "${label}${content_color}${content_value}${WHITE}"
   done
 
-  if terminal_size="$(stty size 2>/dev/null)"; then
-    terminal_columns="${terminal_size#* }"
-  fi
-  needed_columns=$((1 + ${#left_lines[0]} + 2 + ${#right_lines[0]}))
-  if [[ "$terminal_columns" =~ ^[0-9]+$ ]] && ((terminal_columns > 0 && needed_columns > terminal_columns)); then
+  if ((stacked)); then
+    DNS_RECORD_INFO_RENDERED_ROWS=$((${#left_lines[@]} + 1 + ${#right_lines[@]}))
     printf ' %b\n' "${left_lines[@]}"
     echo
     printf ' %b\n' "${right_lines[@]}"
     return
   fi
 
+  DNS_RECORD_INFO_RENDERED_ROWS=$((rows + 2))
   for i in "${!left_lines[@]}"; do
     printf ' %b  %b\n' "${left_lines[$i]}" "${right_lines[$i]}"
   done
@@ -1481,57 +2043,104 @@ show_record_info() {
   local value_index="$2"
   local type="${DNS_RECORD_TYPES[$index]}"
   local name="${DNS_RECORD_NAMES[$index]}"
+  local display_name
   local value
-  local normalized_value
-  local normalized_public_value
-  local public_result
-  local value_found=0
+  local display_value
+  local result_dir=""
+  local start_ms
+  local deadline_ms
+  local now_ms
+  local pending
+  local changed
+  local old_rendered_rows=0
   local i
-  local -a public_values=()
-  local -a public_ttls=()
+  local -a resolver_addresses=("" "8.8.8.8" "9.9.9.9")
+  local -a resolver_states=(pending pending pending)
+  local -a resolver_pids=()
   local -a provider_content=()
   local -a public_content=()
 
   value="$(jq -r --argjson index "$value_index" '.[$index]' <<< "${DNS_RECORD_VALUES[$index]}")"
-  normalized_value="$(normalize_dns_value_for_comparison "$type" "$value")"
-
-  get_public_dns_record_answers "$name" "$type" public_values public_ttls
-  public_result=$?
-  if ((public_result == 0)); then
-    for i in "${!public_values[@]}"; do
-      normalized_public_value="$(normalize_dns_value_for_comparison "$type" "${public_values[$i]}")"
-      if [[ "$normalized_public_value" == "$normalized_value" ]]; then
-        value_found=1
-      fi
-    done
-  fi
-
+  display_name="$(truncate_dns_info_value "$name" 44)"
+  display_value="$(truncate_dns_info_value "$value")"
   provider_content=(
     "Тип: ${type}"
-    "Имя: ${name}"
+    "Имя: ${display_name}"
     "TTL: ${DNS_RECORD_TTLS[$index]}"
-    "Значение: ${value}"
+    "Значение: ${display_value}"
   )
 
-  if ((public_result == 2)); then
-    public_content+=("Статус: не удалось выполнить запрос")
-  elif ((public_result == 1)); then
-    public_content+=("Статус: ответов нет")
-  elif ((value_found)); then
-    public_content+=("Статус: запись видна")
+  install_dns_record_info_traps
+
+  if [[ "$type" == "ALIAS" || "$type" == "WR" ]]; then
+    resolver_states=(unsupported unsupported unsupported)
+  elif ! command -v dig >/dev/null 2>&1; then
+    resolver_states=(timeout timeout timeout)
+  elif result_dir="$(mktemp -d)"; then
+    DNS_RECORD_INFO_RESULT_DIR="$result_dir"
+    for i in "${!resolver_addresses[@]}"; do
+      query_public_dns_resolver_to_file "$name" "$type" "${resolver_addresses[$i]}" "${result_dir}/${i}.done" &
+      resolver_pids[$i]=$!
+      DNS_RECORD_INFO_QUERY_PIDS+=("${resolver_pids[$i]}")
+    done
   else
-    public_content+=("Статус: выбранное значение не найдено")
+    resolver_states=(timeout timeout timeout)
   fi
-  for i in "${!public_values[@]}"; do
-    if ((${#public_values[@]} > 1)); then
-      public_content+=("Ответ $((i + 1))")
-    fi
-    public_content+=("TTL: ${public_ttls[$i]}")
-    public_content+=("Значение: ${public_values[$i]}")
-  done
 
   clear
+  DNS_RECORD_INFO_RENDERED_ROWS=0
+  build_multi_resolver_public_content public_content "$type" "$display_name" "$value" "$result_dir" resolver_states
   print_record_info_boxes provider_content public_content
+
+  if ((${#resolver_pids[@]} > 0)); then
+    start_ms="$(get_time_ms)"
+    [[ "$start_ms" =~ ^[0-9]+$ ]] || start_ms=0
+    deadline_ms=$((start_ms + 7000))
+
+    while true; do
+      changed=0
+      pending=0
+      for i in "${!resolver_states[@]}"; do
+        if [[ "${resolver_states[$i]}" == "pending" ]]; then
+          if [[ -f "${result_dir}/${i}.done" ]]; then
+            resolver_states[$i]="done"
+            changed=1
+          else
+            pending=$((pending + 1))
+          fi
+        fi
+      done
+
+      if ((changed)); then
+        old_rendered_rows="$DNS_RECORD_INFO_RENDERED_ROWS"
+        build_multi_resolver_public_content public_content "$type" "$display_name" "$value" "$result_dir" resolver_states
+        clear_dns_record_info_area "$old_rendered_rows"
+        print_record_info_boxes provider_content public_content
+      fi
+      ((pending > 0)) || break
+
+      now_ms="$(get_time_ms)"
+      [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$deadline_ms"
+      if ((now_ms >= deadline_ms)); then
+        for i in "${!resolver_states[@]}"; do
+          if [[ "${resolver_states[$i]}" == "pending" ]]; then
+            resolver_states[$i]="timeout"
+            terminate_dns_record_info_query_tree "${resolver_pids[$i]}"
+          fi
+        done
+        old_rendered_rows="$DNS_RECORD_INFO_RENDERED_ROWS"
+        build_multi_resolver_public_content public_content "$type" "$display_name" "$value" "$result_dir" resolver_states
+        clear_dns_record_info_area "$old_rendered_rows"
+        print_record_info_boxes provider_content public_content
+        break
+      fi
+      sleep 0.05
+    done
+
+  fi
+
+  cleanup_dns_record_info_queries
+  restore_dns_record_info_traps
   wait_for_enter
 }
 
