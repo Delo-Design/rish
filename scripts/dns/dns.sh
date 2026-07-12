@@ -816,9 +816,9 @@ switch_dns_provider_menu() {
   }
 
   while true; do
-    labels=("Подключить Selectel" "Подключить ClouDNS")
-    actions=("connect" "connect")
-    providers=("selectel" "cloudns")
+    labels=()
+    actions=()
+    providers=()
     saved_selectel=0
     saved_cloudns=0
 
@@ -834,6 +834,9 @@ switch_dns_provider_menu() {
       providers+=("cloudns")
       saved_cloudns=1
     fi
+    labels+=("Подключить Selectel" "Подключить ClouDNS")
+    actions+=("connect" "connect")
+    providers+=("selectel" "cloudns")
     labels+=("Назад")
     actions+=("back")
     providers+=("")
