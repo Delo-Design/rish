@@ -10,10 +10,11 @@ RISH_HOME="${RISH_HOME:-/root/rish}"
 DNS_RUNTIME_DIR="${DNS_RUNTIME_DIR:-/root/rish/dns}"
 DNS_PROVIDER_ERROR=""
 DNS_RECORD_CACHE_LOADED=0
-DNS_RECORD_MENU_LIMIT=248
+DNS_RECORD_MENU_LIMIT=247
 DNS_RECORD_MENU_TOTAL_ROWS=0
 DNS_RECORD_MENU_TRUNCATED=0
 DNS_MENU_DEFAULT_INDEX=0
+DNS_PROVIDER_CONNECTION_READY=0
 LAST_DNS_MENU_Y=0
 LAST_DNS_MENU_ACTION_X=0
 LAST_DNS_MENU_RIGHT_X=0
@@ -733,21 +734,56 @@ validate_provider_append_limits() {
 show_connect_provider_menu() {
   local domain="$1"
   local choice
+  local selected_action
+  local selected_provider
+  local -a labels=()
+  local -a actions=()
+  local -a providers=()
+
+  DNS_PROVIDER_CONNECTION_READY=0
+  if [[ -f "$(dns_provider_config_file "$domain" "selectel")" ]]; then
+    labels+=("Выбрать сохраненный Selectel")
+    actions+=("select")
+    providers+=("selectel")
+  fi
+  if [[ -f "$(dns_provider_config_file "$domain" "cloudns")" ]]; then
+    labels+=("Выбрать сохраненный ClouDNS")
+    actions+=("select")
+    providers+=("cloudns")
+  fi
+  labels+=("Подключить Selectel" "Подключить ClouDNS" "Выйти")
+  actions+=("connect" "connect" "exit")
+  providers+=("selectel" "cloudns" "")
 
   clear
   echo -e "DNS для домена ${GREEN}${domain}${WHITE}"
   echo "Provider еще не подключен."
+  if ((${#labels[@]} > 3)); then
+    echo
+    echo "Сохраненные подключения можно выбрать без повторного ввода доступов."
+  fi
   echo
-  vertical_menu "current" 2 0 20 "Подключить Selectel" "Подключить ClouDNS" "Выйти"
+  vertical_menu "current" 2 0 32 "${labels[@]}"
   choice=$?
-  case "$choice" in
-    0)
-      connect_provider "$domain" "selectel"
+  if ((choice == 255 || choice >= ${#labels[@]})); then
+    exit 0
+  fi
+
+  selected_action="${actions[$choice]}"
+  selected_provider="${providers[$choice]}"
+  case "$selected_action" in
+    select)
+      if activate_saved_provider_config "$domain" "$selected_provider"; then
+        return 0
+      fi
+      echo -e "Не удалось выбрать сохраненное подключение ${YELLOW}${selected_provider}${WHITE}." >&2
+      wait_for_enter
+      return 1
       ;;
-    1)
-      connect_provider "$domain" "cloudns"
+    connect)
+      connect_provider "$domain" "$selected_provider"
       ;;
-    *)
+    exit)
       exit 0
       ;;
   esac
@@ -795,11 +831,13 @@ connect_provider() {
     return 1
   fi
   wait_for_enter
+  DNS_PROVIDER_CONNECTION_READY=1
   return 0
 }
 
 switch_dns_provider_menu() {
   local domain="$1"
+  local pause_after_selection="${2:-1}"
   local choice
   local selected_action
   local selected_provider
@@ -809,6 +847,7 @@ switch_dns_provider_menu() {
   local -a actions=()
   local -a providers=()
 
+  DNS_PROVIDER_CONNECTION_READY=0
   archive_active_domain_config "$domain" || {
     echo -e "Не удалось сохранить текущее подключение." >&2
     wait_for_enter
@@ -866,7 +905,9 @@ switch_dns_provider_menu() {
       select)
         if activate_saved_provider_config "$domain" "$selected_provider"; then
           echo -e "Активировано сохраненное подключение ${GREEN}${selected_provider}${WHITE}."
-          wait_for_enter
+          if ((pause_after_selection)); then
+            wait_for_enter
+          fi
           return 0
         fi
         echo -e "Не удалось выбрать сохраненное подключение ${YELLOW}${selected_provider}${WHITE}." >&2
@@ -882,11 +923,24 @@ switch_dns_provider_menu() {
 
 change_dns_provider() {
   local domain="$1"
+  local prepare_connection="${2:-1}"
+  local pause_after_selection=1
 
-  if switch_dns_provider_menu "$domain"; then
+  if ((!prepare_connection)); then
+    pause_after_selection=0
+  fi
+
+  if switch_dns_provider_menu "$domain" "$pause_after_selection"; then
     DNS_MENU_DEFAULT_INDEX=0
     invalidate_records_cache
     restore_active_domain_config "$domain" || fail "Настройки DNS для ${domain} не найдены."
+    if ((DNS_PROVIDER_CONNECTION_READY)); then
+      DNS_PROVIDER_CONNECTION_READY=0
+      return 0
+    fi
+    if ((!prepare_connection)); then
+      return 2
+    fi
     show_dns_status "Подключаемся к DNS-провайдеру..."
     if provider_prepare; then
       return 0
@@ -896,9 +950,55 @@ change_dns_provider() {
   fi
 
   restore_active_domain_config "$domain" || fail "Настройки DNS для ${domain} не найдены."
+  if ((!prepare_connection)); then
+    return 1
+  fi
   echo -e "Смена DNS-провайдера не выполнена. Восстановлено прежнее подключение ${GREEN}${DNS_PROVIDER}${WHITE}."
   wait_for_enter
   return 1
+}
+
+delete_dns_provider_connection() {
+  local domain="$1"
+  local provider="${DNS_PROVIDER:-}"
+  local config_file
+  local provider_config_file
+  local choice
+
+  if [[ -z "$provider" ]]; then
+    echo "Не удалось определить DNS-провайдера для удаления подключения." >&2
+    wait_for_enter
+    return 1
+  fi
+
+  config_file="$(dns_config_file "$domain")"
+  provider_config_file="$(dns_provider_config_file "$domain" "$provider")"
+
+  clear
+  echo -e "Удаление подключения DNS-провайдера ${YELLOW}${provider}${WHITE} для ${GREEN}${domain}${WHITE}"
+  echo
+  echo "Будут удалены только локальные настройки подключения RISH."
+  echo "DNS-зона и записи у провайдера останутся без изменений."
+  echo
+  vertical_menu "current" 2 0 42 "Отмена" "Удалить подключение к DNS-провайдеру"
+  choice=$?
+  if ((choice != 1)); then
+    return 1
+  fi
+
+  if ! rm -f -- "$config_file" "$provider_config_file"; then
+    echo -e "Не удалось удалить локальные настройки подключения ${YELLOW}${provider}${WHITE}." >&2
+    wait_for_enter
+    return 1
+  fi
+
+  invalidate_records_cache
+  DNS_PROVIDER=""
+  DNS_ZONE_ID=""
+  DNS_ZONE_NAME=""
+  echo -e "Подключение DNS-провайдера ${YELLOW}${provider}${WHITE} для ${GREEN}${domain}${WHITE} удалено."
+  wait_for_enter
+  return 0
 }
 
 load_records_cache() {
@@ -932,6 +1032,7 @@ load_records_cache() {
   local i
   local first_value
   local value_index
+  local records_invalid=0
 
   records_tmp="$(mktemp)" || return 1
   if ! provider_list_records "$DNS_ZONE_ID" > "$records_tmp"; then
@@ -943,14 +1044,14 @@ load_records_cache() {
     [[ -n "$type" ]] || continue
     refs_json="${refs_json:-[]}"
     if ! jq -e 'type == "array"' <<< "$records_json" >/dev/null 2>&1; then
-      rm -f "$records_tmp"
       echo -e "Провайдер вернул некорректные значения для ${YELLOW}${type} ${name}${WHITE}." >&2
-      return 1
+      records_invalid=1
+      break
     fi
     if ! jq -e 'type == "array"' <<< "$refs_json" >/dev/null 2>&1; then
-      rm -f "$records_tmp"
       echo -e "Провайдер вернул некорректные идентификаторы для ${YELLOW}${type} ${name}${WHITE}." >&2
-      return 1
+      records_invalid=1
+      break
     fi
     DNS_RECORD_TYPES+=("$type")
     DNS_RECORD_TTLS+=("$ttl")
@@ -965,6 +1066,7 @@ load_records_cache() {
     fi
   done < "$records_tmp"
   rm -f "$records_tmp"
+  ((records_invalid == 0)) || return 1
 
   if ((DNS_RECORD_NAME_WIDTH < 8)); then
     DNS_RECORD_NAME_WIDTH=8
@@ -2803,6 +2905,7 @@ clear_dns_zone_menu() {
 dns_domain_menu() {
   local domain="$1"
   local choice
+  local change_status
   local menu_height
   local menu_used_rows
 
@@ -2810,18 +2913,48 @@ dns_domain_menu() {
   require_command curl
   require_command jq
 
-  if ! load_domain_config "$domain"; then
+  while ! load_domain_config "$domain"; do
     show_connect_provider_menu "$domain"
-  fi
+  done
 
-  load_domain_config "$domain" || fail "Настройки DNS для ${domain} не найдены."
   load_provider "$DNS_PROVIDER"
 
-  show_dns_status "Подключаемся к DNS-провайдеру..."
-  provider_prepare || {
-    wait_for_enter
-    return
-  }
+  while true; do
+    if ((DNS_PROVIDER_CONNECTION_READY)); then
+      DNS_PROVIDER_CONNECTION_READY=0
+      break
+    fi
+    show_dns_status "Подключаемся к DNS-провайдеру..."
+    if provider_prepare; then
+      break
+    fi
+
+    echo
+    vertical_menu "current" 2 0 42 "Повторить" "Сменить DNS-провайдера" "Удалить подключение к DNS-провайдеру" "Выйти"
+    choice=$?
+    case "$choice" in
+      0)
+        continue
+        ;;
+      1)
+        change_dns_provider "$domain" 0
+        change_status=$?
+        if ((change_status == 0)); then
+          break
+        fi
+        continue
+        ;;
+      2)
+        if delete_dns_provider_connection "$domain"; then
+          return
+        fi
+        continue
+        ;;
+      *)
+        return
+        ;;
+    esac
+  done
 
   while true; do
     clear
@@ -2858,14 +2991,14 @@ dns_domain_menu() {
     fi
 
     menu_height="$(dns_menu_available_height "$menu_used_rows")"
-    vertical_menu "current_noclear" 2 "$menu_height" 42 "default=${DNS_MENU_DEFAULT_INDEX}" "Создать запись" "${DNS_RECORD_LABELS[@]}" "Сменить DNS-провайдера" "Импорт DNS-зоны из файла" "Экспорт DNS-зоны в файл" "Очистить зону" "Выйти"
+    vertical_menu "current_noclear" 2 "$menu_height" 42 "default=${DNS_MENU_DEFAULT_INDEX}" "Создать запись" "${DNS_RECORD_LABELS[@]}" "Сменить DNS-провайдера" "Удалить подключение к DNS-провайдеру" "Импорт DNS-зоны из файла" "Экспорт DNS-зоны в файл" "Очистить зону" "Выйти"
     choice=$?
     LAST_DNS_MENU_Y="$VERTICAL_MENU_LAST_Y"
     LAST_DNS_MENU_ACTION_X="$(vertical_menu_next_x 2)"
     LAST_DNS_MENU_RIGHT_X="$VERTICAL_MENU_LAST_RIGHT_X"
     LAST_DNS_SELECTED_ROW=$((LAST_DNS_MENU_Y + VERTICAL_MENU_LAST_VISIBLE_SELECTED + 1))
 
-    if ((choice == 255 || choice == ${#DNS_RECORD_LABELS[@]} + 5)); then
+    if ((choice == 255 || choice == ${#DNS_RECORD_LABELS[@]} + 6)); then
       exit 0
     elif ((choice == 0)); then
       DNS_MENU_DEFAULT_INDEX=0
@@ -2875,11 +3008,16 @@ dns_domain_menu() {
       change_dns_provider "$domain"
     elif ((choice == ${#DNS_RECORD_LABELS[@]} + 2)); then
       DNS_MENU_DEFAULT_INDEX="$choice"
-      import_zone_file_menu
+      if delete_dns_provider_connection "$domain"; then
+        return
+      fi
     elif ((choice == ${#DNS_RECORD_LABELS[@]} + 3)); then
       DNS_MENU_DEFAULT_INDEX="$choice"
-      export_zone_file_menu
+      import_zone_file_menu
     elif ((choice == ${#DNS_RECORD_LABELS[@]} + 4)); then
+      DNS_MENU_DEFAULT_INDEX="$choice"
+      export_zone_file_menu
+    elif ((choice == ${#DNS_RECORD_LABELS[@]} + 5)); then
       DNS_MENU_DEFAULT_INDEX="$choice"
       clear_dns_zone_menu
     else
