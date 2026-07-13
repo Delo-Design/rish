@@ -384,6 +384,51 @@ selectel_auth_body() {
     }'
 }
 
+selectel_print_api_error_body() {
+  local response_file="$1"
+  local error_value
+  local description
+  local location
+
+  [[ -s "$response_file" ]] || return 0
+
+  if ! jq -e . "$response_file" >/dev/null 2>&1; then
+    sed -n '1,20p' "$response_file" >&2
+    return 0
+  fi
+
+  error_value="$(jq -r '
+    if type != "object" then empty
+    elif (.error | type) == "string" then .error
+    elif (.error | type) == "object" then (.error.title // empty)
+    else empty
+    end
+  ' "$response_file")"
+  description="$(jq -r '
+    if type != "object" then empty
+    else
+      .description
+      // .message
+      // (if (.error | type) == "object" then .error.message else empty end)
+      // empty
+    end
+  ' "$response_file")"
+  location="$(jq -r 'if type == "object" then (.location // empty) else empty end' "$response_file")"
+
+  if [[ -n "$error_value" ]]; then
+    printf 'Ошибка: %b%s%b\n' "$YELLOW" "$error_value" "$WHITE" >&2
+  fi
+  if [[ -n "$description" ]]; then
+    printf 'Описание: %s\n' "$description" >&2
+  fi
+  if [[ -n "$location" ]]; then
+    printf 'Поле: %b%s%b\n' "$YELLOW" "$location" "$WHITE" >&2
+  fi
+  if [[ -z "${error_value}${description}${location}" ]]; then
+    sed -n '1,20p' "$response_file" >&2
+  fi
+}
+
 selectel_fetch_token() {
   local project_name="${1:-}"
   local save_cache="${2:-0}"
@@ -430,9 +475,7 @@ selectel_fetch_token() {
   fi
   if [[ ! "$http_code" =~ ^2 ]]; then
     echo -e "${YELLOW}Selectel Identity API${WHITE} вернул HTTP ${YELLOW}${http_code}${WHITE}." >&2
-    if [[ -s "$body_file" ]]; then
-      sed -n '1,20p' "$body_file" >&2
-    fi
+    selectel_print_api_error_body "$body_file"
     rm -f "$headers_file" "$body_file"
     return 1
   fi
@@ -524,9 +567,7 @@ selectel_projects_api() {
   fi
   if [[ ! "$http_code" =~ ^2 ]]; then
     echo -e "${YELLOW}Selectel Projects API${WHITE} вернул HTTP ${YELLOW}${http_code}${WHITE}." >&2
-    if [[ -s "$response_file" ]]; then
-      sed -n '1,20p' "$response_file" >&2
-    fi
+    selectel_print_api_error_body "$response_file"
     rm -f "$response_file"
     return 1
   fi
@@ -934,9 +975,7 @@ selectel_api() {
   fi
   if [[ ! "$http_code" =~ ^2 ]]; then
     echo -e "${YELLOW}Selectel API${WHITE} вернул HTTP ${YELLOW}${http_code}${WHITE}." >&2
-    if [[ -s "$response_file" ]]; then
-      sed -n '1,20p' "$response_file" >&2
-    fi
+    selectel_print_api_error_body "$response_file"
     rm -f "$response_file"
     return 1
   fi
