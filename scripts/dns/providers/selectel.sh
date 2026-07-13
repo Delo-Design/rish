@@ -2,6 +2,7 @@
 
 SELECTEL_DNS_API_BASE="${SELECTEL_DNS_API_BASE:-https://api.selectel.ru/domains/v2}"
 SELECTEL_IDENTITY_URL="${SELECTEL_IDENTITY_URL:-https://cloud.api.selcloud.ru/identity/v3/auth/tokens}"
+SELECTEL_PROJECTS_API_BASE="${SELECTEL_PROJECTS_API_BASE:-https://api.selectel.ru/vpc/resell/v2}"
 SELECTEL_TOKEN="${SELECTEL_TOKEN:-}"
 SELECTEL_TOKEN_EXPIRES_EPOCH="${SELECTEL_TOKEN_EXPIRES_EPOCH:-0}"
 SELECTEL_TOKEN_REFRESH_MARGIN="${SELECTEL_TOKEN_REFRESH_MARGIN:-60}"
@@ -153,7 +154,7 @@ provider_setup_config() {
   esac
   selectel_clear_cached_token
 
-  selectel_choose_project
+  selectel_choose_project "$domain"
   select_status=$?
   case "$select_status" in
     0)
@@ -307,6 +308,7 @@ selectel_identity_base() {
 
 selectel_auth_body() {
   local project_name="${1:-}"
+  local token_scope="${2:-}"
 
   if [[ -n "$project_name" ]]; then
     jq -n \
@@ -337,6 +339,31 @@ selectel_auth_body() {
     return
   fi
 
+  if [[ "$token_scope" == "account" ]]; then
+    jq -n \
+      --arg username "$SELECTEL_USERNAME" \
+      --arg password "$SELECTEL_PASSWORD" \
+      --arg account_id "$SELECTEL_ACCOUNT_ID" \
+      '{
+        auth: {
+          identity: {
+            methods: ["password"],
+            password: {
+              user: {
+                name: $username,
+                domain: {name: $account_id},
+                password: $password
+              }
+            }
+          },
+          scope: {
+            domain: {name: $account_id}
+          }
+        }
+      }'
+    return
+  fi
+
   jq -n \
     --arg username "$SELECTEL_USERNAME" \
     --arg password "$SELECTEL_PASSWORD" \
@@ -360,6 +387,8 @@ selectel_auth_body() {
 selectel_fetch_token() {
   local project_name="${1:-}"
   local save_cache="${2:-0}"
+  local token_scope="${3:-}"
+  local required_role="${4:-}"
   local headers_file
   local body_file
   local body
@@ -373,7 +402,7 @@ selectel_fetch_token() {
     rm -f "$headers_file"
     return 1
   }
-  body="$(selectel_auth_body "$project_name")" || {
+  body="$(selectel_auth_body "$project_name" "$token_scope")" || {
     rm -f "$headers_file" "$body_file"
     return 1
   }
@@ -390,8 +419,13 @@ selectel_fetch_token() {
 
   if [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
     rm -f "$headers_file" "$body_file"
-    DNS_PROVIDER_ERROR="auth_failed"
-    echo -e "Selectel не принял данные авторизации: проверьте ${YELLOW}service user${WHITE}, пароль и ${YELLOW}Account ID${WHITE}." >&2
+    if [[ "$token_scope" == "account" ]]; then
+      DNS_PROVIDER_ERROR="account_access_denied"
+      echo -e "Не удалось получить токен уровня аккаунта Selectel. Проверьте, что ${YELLOW}service user${WHITE} имеет роль ${YELLOW}member${WHITE} с областью доступа ${YELLOW}Аккаунт${WHITE}." >&2
+    else
+      DNS_PROVIDER_ERROR="auth_failed"
+      echo -e "Selectel не принял данные авторизации: проверьте ${YELLOW}service user${WHITE}, пароль и ${YELLOW}Account ID${WHITE}." >&2
+    fi
     return 11
   fi
   if [[ ! "$http_code" =~ ^2 ]]; then
@@ -401,6 +435,11 @@ selectel_fetch_token() {
     fi
     rm -f "$headers_file" "$body_file"
     return 1
+  fi
+
+  if [[ -n "$required_role" ]] && ! jq -e --arg role "$required_role" 'any(.token.roles[]?; .name == $role)' "$body_file" >/dev/null 2>&1; then
+    rm -f "$headers_file" "$body_file"
+    return 12
   fi
 
   token="$(
@@ -450,6 +489,52 @@ selectel_identity_api_get() {
     "$(selectel_identity_base)${path}"
 }
 
+selectel_projects_api() {
+  local method="$1"
+  local token="$2"
+  local path="$3"
+  local data="${4:-}"
+  local response_file
+  local http_code
+  local -a curl_args
+
+  response_file="$(mktemp)" || return 1
+  curl_args=(
+    -sS
+    -o "$response_file"
+    -w "%{http_code}"
+    -X "$method"
+    -H "X-Auth-Token: ${token}"
+    -H "Accept: application/json"
+  )
+  if [[ -n "$data" ]]; then
+    curl_args+=(-H "Content-Type: application/json" -d "$data")
+  fi
+
+  http_code="$(curl "${curl_args[@]}" "${SELECTEL_PROJECTS_API_BASE}${path}")" || {
+    rm -f "$response_file"
+    echo -e "Не удалось выполнить запрос к ${YELLOW}Selectel Projects API${WHITE}." >&2
+    return 1
+  }
+  if [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
+    rm -f "$response_file"
+    DNS_PROVIDER_ERROR="account_access_denied"
+    echo -e "Selectel не разрешил управление проектами. Проверьте роль ${YELLOW}member${WHITE} и область доступа ${YELLOW}Аккаунт${WHITE}." >&2
+    return 1
+  fi
+  if [[ ! "$http_code" =~ ^2 ]]; then
+    echo -e "${YELLOW}Selectel Projects API${WHITE} вернул HTTP ${YELLOW}${http_code}${WHITE}." >&2
+    if [[ -s "$response_file" ]]; then
+      sed -n '1,20p' "$response_file" >&2
+    fi
+    rm -f "$response_file"
+    return 1
+  fi
+
+  cat "$response_file"
+  rm -f "$response_file"
+}
+
 selectel_read_project_name() {
   rish_read_input SELECTEL_PROJECT_NAME "Проект (Enter - отмена): "
   [[ -n "$SELECTEL_PROJECT_NAME" ]] || {
@@ -458,11 +543,89 @@ selectel_read_project_name() {
   }
 }
 
-selectel_choose_project() {
+selectel_find_project_name() {
+  local token="$1"
+  local project_name="$2"
+  local projects_json
+
+  projects_json="$(selectel_projects_api GET "$token" "/projects")" || return 1
+  if ! jq -e '.projects | type == "array"' <<< "$projects_json" >/dev/null 2>&1; then
+    echo -e "Selectel вернул некорректный список ${YELLOW}проектов${WHITE}." >&2
+    return 1
+  fi
+  jq -r --arg project_name "$project_name" '
+    .projects[]?
+    | select(.enabled != false and .name == $project_name)
+    | .name
+  ' <<< "$projects_json" | head -n 1
+}
+
+selectel_create_project() {
+  local domain="$1"
+  local account_token="${2:-}"
+  local project_name
   local token
   local token_status
+  local request_body
+  local response
+  local created_name
+  local recovered_after_error=0
+  local choice
+
+  rish_read_input project_name "Новый проект (очистить и Enter - отмена): " "$domain"
+  [[ -n "$project_name" ]] || return 2
+  if ((${#project_name} > 64)); then
+    echo -e "Имя проекта должно содержать не больше ${YELLOW}64${WHITE} символов." >&2
+    return 1
+  fi
+
+  echo -e "Создать проект Selectel ${GREEN}${project_name}${WHITE}?"
+  vertical_menu "current" 2 0 30 "Отмена" "Создать проект"
+  choice=$?
+  ((choice == 1)) || return 2
+
+  if [[ -n "$account_token" ]]; then
+    token="$account_token"
+  else
+    token="$(selectel_fetch_token "" 0 "account")"
+    token_status=$?
+    ((token_status == 0)) || return 1
+  fi
+  request_body="$(jq -n --arg name "$project_name" '{project: {name: $name}}')" || return 1
+  if response="$(selectel_projects_api POST "$token" "/projects" "$request_body")"; then
+    created_name="$(jq -r '.project.name // empty' <<< "$response" 2>/dev/null)"
+  else
+    created_name="$(selectel_find_project_name "$token" "$project_name")" || return 1
+    recovered_after_error=1
+  fi
+  if [[ -z "$created_name" ]]; then
+    if ((recovered_after_error)); then
+      return 1
+    fi
+    created_name="$project_name"
+  fi
+
+  SELECTEL_PROJECT_NAME="$created_name"
+  if ((recovered_after_error)); then
+    echo -e "Проект Selectel ${GREEN}${SELECTEL_PROJECT_NAME}${WHITE} найден после ошибки ответа и выбран."
+  else
+    echo -e "Проект Selectel ${GREEN}${SELECTEL_PROJECT_NAME}${WHITE} создан."
+  fi
+}
+
+selectel_choose_project() {
+  local domain="$1"
+  local token
+  local token_status
+  local account_token
+  local account_token_status
+  local can_create_project=0
+  local project_creation_check_error=0
   local projects_json
   local selected_index
+  local create_status
+  local project_index_offset
+  local manual_index
   local menu_limit=248
   local -a project_names
   local -a labels
@@ -476,35 +639,85 @@ selectel_choose_project() {
     return 1
   fi
   projects_json="$(selectel_identity_api_get "$token" "/auth/projects")" || return 1
+  if ! jq -e '.projects | type == "array"' <<< "$projects_json" >/dev/null 2>&1; then
+    echo -e "Selectel вернул некорректный список ${YELLOW}проектов${WHITE}." >&2
+    return 1
+  fi
   mapfile -t project_names < <(
     jq -r '
       .projects[]?
       | select(.enabled != false)
       | .name // empty
-    ' <<< "$projects_json" | awk 'NF'
+    ' <<< "$projects_json" | awk 'NF' | LC_ALL=C sort -f
   )
-  ((${#project_names[@]} > 0)) || return 1
   if ((${#project_names[@]} > menu_limit)); then
     echo "Показаны первые ${menu_limit} проектов Selectel. Если нужного нет в списке, выберите ручной ввод."
     project_names=("${project_names[@]:0:$menu_limit}")
   fi
 
-  labels=("${project_names[@]}" "Ввести вручную" "Отмена")
-  echo "Выберите проект Selectel:"
-  vertical_menu "current" 2 0 42 "${labels[@]}"
-  selected_index=$?
-  if ((selected_index == 255)); then
-    return 130
-  fi
-  if ((selected_index < ${#project_names[@]})); then
-    SELECTEL_PROJECT_NAME="${project_names[$selected_index]}"
-    return 0
-  fi
-  if ((selected_index == ${#project_names[@]})); then
-    return 2
-  fi
+  account_token="$(selectel_fetch_token "" 0 "account" "member" 2>/dev/null)"
+  account_token_status=$?
+  case "$account_token_status" in
+    0)
+      can_create_project=1
+      ;;
+    11 | 12)
+      ;;
+    *)
+      project_creation_check_error=1
+      ;;
+  esac
 
-  return 130
+  while true; do
+    labels=()
+    project_index_offset=0
+    if ((can_create_project)); then
+      labels+=("Создать новый проект")
+      project_index_offset=1
+    fi
+    labels+=("${project_names[@]}")
+    if ((${#project_names[@]} > 0)); then
+      labels+=("Ввести вручную")
+      manual_index=$((project_index_offset + ${#project_names[@]}))
+    elif ((can_create_project)); then
+      echo "В аккаунте Selectel нет доступных проектов."
+    elif ((project_creation_check_error)); then
+      echo "Не удалось проверить права на создание проектов Selectel."
+    else
+      echo "Проекты Selectel недоступны для этого пользователя."
+    fi
+    if ((project_creation_check_error && ${#project_names[@]} > 0)); then
+      echo "Не удалось проверить права на создание проектов Selectel."
+    fi
+    labels+=("Отмена")
+
+    echo "Выберите проект Selectel:"
+    vertical_menu "current" 2 0 42 "${labels[@]}"
+    selected_index=$?
+    if ((selected_index == 255)); then
+      return 130
+    fi
+    if ((can_create_project && selected_index == 0)); then
+      selectel_create_project "$domain" "$account_token"
+      create_status=$?
+      if ((create_status == 0)); then
+        return 0
+      fi
+      if ((create_status != 2)); then
+        wait_for_enter
+      fi
+      continue
+    fi
+    if ((selected_index >= project_index_offset && selected_index < project_index_offset + ${#project_names[@]})); then
+      SELECTEL_PROJECT_NAME="${project_names[$((selected_index - project_index_offset))]}"
+      return 0
+    fi
+    if ((${#project_names[@]} > 0 && selected_index == manual_index)); then
+      return 2
+    fi
+
+    return 130
+  done
 }
 
 selectel_read_zone_name() {
@@ -521,11 +734,78 @@ selectel_read_zone_name() {
   DNS_ZONE_ID=""
 }
 
+selectel_create_zone() {
+  local domain="$1"
+  local zone_name
+  local zone_fqdn
+  local request_body
+  local response
+  local zones_json
+  local created_id
+  local created_name
+  local post_status
+  local recovered_after_error=0
+  local choice
+
+  rish_read_input zone_name "Новая DNS-зона (очистить и Enter - отмена): " "${domain%.}"
+  [[ -n "$zone_name" ]] || return 2
+  zone_name="${zone_name%.}"
+  if ! validate_domain "$zone_name"; then
+    echo -e "Некорректное имя DNS-зоны ${YELLOW}${zone_name}${WHITE}." >&2
+    return 1
+  fi
+  zone_fqdn="$(dns_fqdn "$zone_name")"
+
+  echo -e "Создать DNS-зону Selectel ${GREEN}${zone_name}${WHITE}?"
+  vertical_menu "current" 2 0 30 "Отмена" "Создать DNS-зону"
+  choice=$?
+  ((choice == 1)) || return 2
+
+  request_body="$(jq -n --arg name "$zone_fqdn" '{name: $name}')" || return 1
+  response="$(selectel_api POST "/zones" "$request_body")"
+  post_status=$?
+  if ((post_status == 0)); then
+    created_id="$(jq -r '.id // empty' <<< "$response" 2>/dev/null)"
+    created_name="$(jq -r '.name // empty' <<< "$response" 2>/dev/null)"
+  else
+    recovered_after_error=1
+  fi
+  if [[ -z "$created_id" || -z "$created_name" ]]; then
+    zones_json="$(selectel_api GET "/zones?filter=${zone_fqdn}")" || return 1
+    while IFS=$'\t' read -r created_id created_name; do
+      [[ -n "$created_id" && -n "$created_name" ]] && break
+    done < <(
+      jq -r --arg zone_name "$zone_fqdn" '
+        .result[]?
+        | select(.id and .name == $zone_name)
+        | [.id, .name]
+        | @tsv
+      ' <<< "$zones_json"
+    )
+  fi
+  if [[ -z "$created_id" || -z "$created_name" ]]; then
+    if ((post_status == 0)); then
+      echo -e "Selectel вернул успешный ответ, но созданная DNS-зона ${YELLOW}${zone_name}${WHITE} не найдена." >&2
+    fi
+    return 1
+  fi
+
+  DNS_ZONE_ID="$created_id"
+  DNS_ZONE_NAME="$created_name"
+  if ((recovered_after_error)); then
+    echo -e "DNS-зона Selectel ${GREEN}${DNS_ZONE_NAME%.}${WHITE} найдена после ошибки ответа и выбрана."
+  else
+    echo -e "DNS-зона Selectel ${GREEN}${DNS_ZONE_NAME%.}${WHITE} создана."
+  fi
+}
+
 selectel_choose_zone() {
   local domain="$1"
   local target_zone
   local zones_json
   local selected_index
+  local create_index
+  local create_status
   local default_index=0
   local default_match_length=0
   local menu_limit=248
@@ -540,7 +820,11 @@ selectel_choose_zone() {
 
   target_zone="$(dns_fqdn "$domain")"
   target_domain="${target_zone%.}"
-  zones_json="$(selectel_api GET "/zones?limit=1000")" || return 1
+  zones_json="$(selectel_api GET "/zones?limit=1000&sort_by=name.ascend")" || return 1
+  if ! jq -e '.result | type == "array"' <<< "$zones_json" >/dev/null 2>&1; then
+    echo -e "Selectel вернул некорректный список ${YELLOW}DNS-зон${WHITE}." >&2
+    return 1
+  fi
   while IFS=$'\t' read -r zone_id zone_name; do
     [[ -n "$zone_id" && -n "$zone_name" ]] || continue
     if ((${#zone_names[@]} >= menu_limit)); then
@@ -557,34 +841,55 @@ selectel_choose_zone() {
     fi
   done < <(
     jq -r '
-      .result[]?
+      [.result[]? | select(.id and .name)]
+      | sort_by(.name | ascii_downcase)[]
       | select(.id and .name)
       | [.id, .name]
       | @tsv
     ' <<< "$zones_json"
   )
-  ((${#zone_names[@]} > 0)) || return 1
   if ((truncated)); then
     echo "Показаны первые ${menu_limit} DNS-зон Selectel. Если нужной нет в списке, выберите ручной ввод."
   fi
 
-  labels+=("Ввести вручную" "Отмена")
-  echo "Выберите DNS-зону Selectel:"
-  vertical_menu "current" 2 0 42 "default=${default_index}" "${labels[@]}"
-  selected_index=$?
-  if ((selected_index == 255)); then
-    return 130
-  fi
-  if ((selected_index < ${#zone_names[@]})); then
-    DNS_ZONE_ID="${zone_ids[$selected_index]}"
-    DNS_ZONE_NAME="${zone_names[$selected_index]}"
-    return 0
-  fi
-  if ((selected_index == ${#zone_names[@]})); then
-    return 2
-  fi
+  while true; do
+    labels=("${zone_names[@]}" "Создать новую DNS-зону")
+    if ((${#zone_names[@]} > 0)); then
+      labels+=("Ввести вручную")
+    else
+      echo -e "В проекте ${GREEN}${SELECTEL_PROJECT_NAME}${WHITE} нет DNS-зон."
+    fi
+    labels+=("Отмена")
+    create_index=${#zone_names[@]}
 
-  return 130
+    echo "Выберите DNS-зону Selectel:"
+    vertical_menu "current" 2 0 42 "default=${default_index}" "${labels[@]}"
+    selected_index=$?
+    if ((selected_index == 255)); then
+      return 130
+    fi
+    if ((selected_index < ${#zone_names[@]})); then
+      DNS_ZONE_ID="${zone_ids[$selected_index]}"
+      DNS_ZONE_NAME="${zone_names[$selected_index]}"
+      return 0
+    fi
+    if ((selected_index == create_index)); then
+      selectel_create_zone "$domain"
+      create_status=$?
+      if ((create_status == 0)); then
+        return 0
+      fi
+      if ((create_status != 2)); then
+        wait_for_enter
+      fi
+      continue
+    fi
+    if ((${#zone_names[@]} > 0 && selected_index == create_index + 1)); then
+      return 2
+    fi
+
+    return 130
+  done
 }
 
 selectel_api() {

@@ -458,17 +458,41 @@ restore_active_domain_config() {
 normalize_record_name() {
   local input="$1"
   local domain="$2"
+  local zone_name="${DNS_ZONE_NAME:-$domain}"
+  local input_name
+  local input_lower
+  local domain_lower
+  local zone_lower
 
   input="${input:-@}"
+  domain="${domain%.}"
+  zone_name="${zone_name%.}"
   if [[ "$input" == "@" ]]; then
     dns_fqdn "$domain"
   elif [[ "$input" == *"." ]]; then
     printf '%s' "$input"
-  elif [[ "$input" == *"."* ]]; then
-    dns_fqdn "$input"
   else
-    dns_fqdn "${input}.${domain}"
+    input_name="${input%.}"
+    input_lower="${input_name,,}"
+    domain_lower="${domain,,}"
+    zone_lower="${zone_name,,}"
+    if [[ "$input_lower" == "$domain_lower" || "$input_lower" == *".${domain_lower}" ||
+          "$input_lower" == "$zone_lower" || "$input_lower" == *".${zone_lower}" ]]; then
+      dns_fqdn "$input_name"
+    else
+      dns_fqdn "${input_name}.${domain}"
+    fi
   fi
+}
+
+record_name_in_selected_zone() {
+  local name="${1%.}"
+  local zone_name="${DNS_ZONE_NAME:-$DNS_DOMAIN}"
+
+  zone_name="${zone_name%.}"
+  name="${name,,}"
+  zone_name="${zone_name,,}"
+  [[ "$name" == "$zone_name" || "$name" == *".${zone_name}" ]]
 }
 
 normalize_record_target_name() {
@@ -512,6 +536,17 @@ show_short_name_expansion() {
   echo -e "Введено короткое имя${label:+ ${label}}: ${YELLOW}${input}${WHITE}"
   echo
   echo -e "В DNS короткие имена относятся к текущей зоне ${GREEN}${zone_name%.}${WHITE},"
+  echo -e "поэтому будет использовано полное имя: ${GREEN}${normalized}${WHITE}"
+}
+
+show_record_name_expansion() {
+  local input="$1"
+  local normalized="$2"
+
+  echo
+  echo -e "Введено относительное имя записи: ${YELLOW}${input}${WHITE}"
+  echo
+  echo -e "Имена записей без завершающей точки относятся к сайту ${GREEN}${DNS_DOMAIN%.}${WHITE},"
   echo -e "поэтому будет использовано полное имя: ${GREEN}${normalized}${WHITE}"
 }
 
@@ -1194,7 +1229,8 @@ create_record() {
   type="$SELECTED_RECORD_TYPE"
   echo -e "Тип записи: ${GREEN}${type}${WHITE}"
 
-  rish_read_input name_input "Имя записи (@, www или полное имя): " "@"
+  rish_read_input name_input "Имя записи (@, www, selector._domainkey или полное имя): " "@"
+  name_input="${name_input:-@}"
   if [[ "$name_input" == *"@"* && "$name_input" != "@" ]]; then
     echo -e "Некорректное имя DNS-записи: ${YELLOW}${name_input}${WHITE}"
     echo
@@ -1202,6 +1238,16 @@ create_record() {
     echo -e "Укажите либо ${YELLOW}@${WHITE}, либо имя без ${YELLOW}@${WHITE}, например ${GREEN}${name_input//@/}${WHITE}."
     wait_for_enter
     return
+  fi
+  name="$(normalize_record_name "$name_input" "$DNS_DOMAIN")"
+  if ! record_name_in_selected_zone "$name"; then
+    echo -e "Имя DNS-записи ${YELLOW}${name}${WHITE} находится вне выбранной зоны ${GREEN}${DNS_ZONE_NAME%.}${WHITE}." >&2
+    echo "Укажите относительное имя без завершающей точки либо полное имя внутри выбранной зоны." >&2
+    wait_for_enter
+    return
+  fi
+  if [[ "$name_input" != "@" && "$name_input" != *"." ]] && ! dns_names_equal "$name" "$(dns_fqdn "$name_input")"; then
+    show_record_name_expansion "$name_input" "$name"
   fi
   read_record_value "$type" value || {
     wait_for_enter
@@ -1212,7 +1258,6 @@ create_record() {
   fi
   rish_read_input ttl "$ttl_prompt" "${DNS_DEFAULT_TTL:-3600}"
 
-  name="$(normalize_record_name "$name_input" "$DNS_DOMAIN")"
   if [[ ! "$ttl" =~ ^[0-9]+$ ]]; then
     echo -e "TTL должен быть числом." >&2
     wait_for_enter
