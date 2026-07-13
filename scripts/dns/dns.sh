@@ -157,14 +157,13 @@ build_dns_info_box_lines() {
 get_current_dns_nameservers() {
   local zone_name="$1"
   local result_var="$2"
-  # shellcheck disable=SC2034
-  local -n result_ref="$result_var"
+  local -n nameservers_ref="$result_var"
   local dig_output
   local nameserver
   local -A seen_nameservers=()
   local -a sorted_nameservers=()
 
-  result_ref=()
+  nameservers_ref=()
   command -v dig >/dev/null 2>&1 || return 1
   if ! dig_output="$(dig +short +time=2 +tries=3 NS "$zone_name" 2>/dev/null)"; then
     return 1
@@ -175,15 +174,15 @@ get_current_dns_nameservers() {
     [[ -n "$nameserver" ]] || continue
     [[ -z "${seen_nameservers[$nameserver]+x}" ]] || continue
     seen_nameservers["$nameserver"]=1
-    result_ref+=("$nameserver")
+    nameservers_ref+=("$nameserver")
   done <<< "$dig_output"
 
-  if ((${#result_ref[@]} > 1)); then
-    mapfile -t sorted_nameservers < <(printf '%s\n' "${result_ref[@]}" | LC_ALL=C sort)
-    result_ref=("${sorted_nameservers[@]}")
+  if ((${#nameservers_ref[@]} > 1)); then
+    mapfile -t sorted_nameservers < <(printf '%s\n' "${nameservers_ref[@]}" | LC_ALL=C sort)
+    nameservers_ref=("${sorted_nameservers[@]}")
   fi
 
-  ((${#result_ref[@]} > 0))
+  ((${#nameservers_ref[@]} > 0))
 }
 
 print_dns_zone_summary() {
@@ -1738,7 +1737,7 @@ build_multi_resolver_public_content() {
   local selected_value="$4"
   local result_dir="$5"
   local states_var="$6"
-  local -n result_ref="$result_var"
+  local -n public_content_ref="$result_var"
   local -n states_ref="$states_var"
   local -a labels=("Системный DNS" "Google" "Quad9 Secure")
   local -a details=()
@@ -1914,14 +1913,14 @@ build_multi_resolver_public_content() {
     summary="значение совпадает у ${matched} из ${checked} проверенных"
   fi
 
-  result_ref=("Тип: ${type}" "Имя: ${name}" "Итог: ${summary}")
+  public_content_ref=("Тип: ${type}" "Имя: ${name}" "Итог: ${summary}")
   if ((unavailable > 0)); then
-    result_ref+=("Без ответа: ${unavailable}")
+    public_content_ref+=("Без ответа: ${unavailable}")
   fi
   if ((dns_errors > 0)); then
-    result_ref+=("DNS-ошибок: ${dns_errors}")
+    public_content_ref+=("DNS-ошибок: ${dns_errors}")
   fi
-  result_ref+=("" "${details[@]}")
+  public_content_ref+=("" "${details[@]}")
 }
 
 clear_dns_record_info_area() {
