@@ -120,6 +120,15 @@ fi
 trap - EXIT
 rm -rf "$vhost_backup_dir"
 
+dns_domain_dir="/root/rish/dns/domains/${site_name}"
+if [[ -e "$dns_domain_dir" || -L "$dns_domain_dir" ]]; then
+  if rm -rf -- "$dns_domain_dir"; then
+    echo -e "Локальные настройки DNS для ${GREEN}${site_label}${WHITE} удалены."
+  else
+    echo -e "Не удалось удалить локальные настройки DNS для ${RED}${site_label}${WHITE}."
+  fi
+fi
+
 echo "Проверяем наличие сертификата у сайта"
 if command -v certbot >/dev/null 2>&1; then
   if certbot certificates --cert-name "$site_name" | grep "$site_name" &>/dev/null; then

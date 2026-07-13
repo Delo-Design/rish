@@ -254,6 +254,7 @@ cloudns_api() {
   local -a curl_args
   local auth_arg
 
+  DNS_PROVIDER_ERROR=""
   curl_args=(-fsS -G)
   while IFS= read -r auth_arg; do
     curl_args+=("$auth_arg")
@@ -264,6 +265,7 @@ cloudns_api() {
   done
 
   response="$(curl "${curl_args[@]}" "${CLOUDNS_API_BASE}/${endpoint}.json")" || {
+    DNS_PROVIDER_ERROR="api_unavailable"
     echo -e "Не удалось выполнить запрос к ${YELLOW}ClouDNS API${WHITE}." >&2
     return 1
   }
@@ -271,6 +273,17 @@ cloudns_api() {
   status="$(jq -r '.status // empty' <<< "$response" 2>/dev/null)"
   if [[ "$status" == "Failed" ]]; then
     description="$(jq -r '.statusDescription // "unknown error"' <<< "$response")"
+    case "${description,,}" in
+      "invalid authentication,"*)
+        DNS_PROVIDER_ERROR="auth_failed"
+        ;;
+      "missing domain-name"* | "missing domain name"*)
+        DNS_PROVIDER_ERROR="zone_not_found"
+        ;;
+      *)
+        DNS_PROVIDER_ERROR="api_error"
+        ;;
+    esac
     echo -e "${YELLOW}ClouDNS API${WHITE}: ${description}" >&2
     return 1
   fi
@@ -283,8 +296,9 @@ provider_find_zone() {
   local zone_name="${domain%.}"
 
   cloudns_api "dns/records" "domain-name=${zone_name}" "rows-per-page=10" "page=1" >/dev/null || {
-    DNS_PROVIDER_ERROR="zone_not_found"
-    echo -e "DNS-зона ${YELLOW}${zone_name}${WHITE} в ClouDNS не найдена или недоступна." >&2
+    if [[ "${DNS_PROVIDER_ERROR:-}" == "zone_not_found" ]]; then
+      echo -e "DNS-зона ${YELLOW}${zone_name}${WHITE} в ClouDNS не найдена или недоступна." >&2
+    fi
     return 1
   }
 
