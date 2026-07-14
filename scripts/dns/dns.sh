@@ -1698,13 +1698,13 @@ wrap_dns_info_content() {
         chunk="${value:0:available}"
         wrapped+=("${label}${chunk}")
         value="${value:available}"
-        continuation_width=$((width - 4))
+        continuation_width=$((width - 2))
         ((continuation_width < 1)) && continuation_width=1
         while ((${#value} > continuation_width)); do
-          wrapped+=("  ↳ ${value:0:continuation_width}")
+          wrapped+=("↳ ${value:0:continuation_width}")
           value="${value:continuation_width}"
         done
-        wrapped+=("  ↳ ${value}")
+        wrapped+=("↳ ${value}")
       else
         wrapped+=("${label}${value}")
       fi
@@ -2115,9 +2115,9 @@ print_record_info_boxes() {
   content_color=""
   for i in "${!left_content_ref[@]}"; do
     raw_content="${left_content_ref[$i]}"
-    if [[ "$raw_content" == "  ↳ "* ]]; then
+    if [[ "$raw_content" == "↳ "* ]]; then
       if [[ -n "$content_color" ]]; then
-        color_dns_box_content_line left_lines "$i" "$raw_content" "  ↳ ${content_color}${raw_content#  ↳ }${WHITE}"
+        color_dns_box_content_line left_lines "$i" "$raw_content" "↳ ${content_color}${raw_content#↳ }${WHITE}"
       fi
       continue
     fi
@@ -2138,9 +2138,9 @@ print_record_info_boxes() {
   content_color=""
   for i in "${!right_content_ref[@]}"; do
     raw_content="${right_content_ref[$i]}"
-    if [[ "$raw_content" == "  ↳ "* ]]; then
+    if [[ "$raw_content" == "↳ "* ]]; then
       if [[ -n "$content_color" ]]; then
-        color_dns_box_content_line right_lines "$i" "$raw_content" "  ↳ ${content_color}${raw_content#  ↳ }${WHITE}"
+        color_dns_box_content_line right_lines "$i" "$raw_content" "↳ ${content_color}${raw_content#↳ }${WHITE}"
       fi
       continue
     fi
@@ -2187,6 +2187,23 @@ print_record_info_boxes() {
   done
 }
 
+show_full_dns_record_for_copy() {
+  local type="$1"
+  local name="$2"
+  local ttl="$3"
+  local value="$4"
+
+  echo
+  echo "Полная DNS-запись"
+  echo "Выделите имя или значение мышью и скопируйте в буфер обмена."
+  echo
+  printf 'Тип: %b%s%b\n' "$GREEN" "$type" "$WHITE"
+  printf 'TTL: %b%s%b\n\n' "$YELLOW" "$ttl" "$WHITE"
+  printf 'Имя записи:\n%b%s%b\n\n' "$GREEN" "$name" "$WHITE"
+  printf 'Значение записи:\n%b%s%b\n\n' "$YELLOW" "$value" "$WHITE"
+  vertical_menu "current" 2 0 5 nomouse "Нажмите Enter"
+}
+
 show_record_info() {
   local index="$1"
   local value_index="$2"
@@ -2194,13 +2211,13 @@ show_record_info() {
   local name="${DNS_RECORD_NAMES[$index]}"
   local display_name
   local value
-  local display_value
   local result_dir=""
   local start_ms
   local deadline_ms
   local now_ms
   local pending
   local changed
+  local choice
   local old_rendered_rows=0
   local i
   local -a resolver_addresses=("" "8.8.8.8" "9.9.9.9")
@@ -2211,12 +2228,11 @@ show_record_info() {
 
   value="$(jq -r --argjson index "$value_index" '.[$index]' <<< "${DNS_RECORD_VALUES[$index]}")"
   display_name="$(truncate_dns_info_value "$name" 44)"
-  display_value="$(truncate_dns_info_value "$value")"
   provider_content=(
     "Тип: ${type}"
-    "Имя: ${display_name}"
+    "Имя: ${name}"
     "TTL: ${DNS_RECORD_TTLS[$index]}"
-    "Значение: ${display_value}"
+    "Значение: ${value}"
   )
 
   install_dns_record_info_traps
@@ -2290,7 +2306,11 @@ show_record_info() {
 
   cleanup_dns_record_info_queries
   restore_dns_record_info_traps
-  wait_for_enter
+  vertical_menu "current" 2 0 30 "Нажмите Enter" "Показать запись для копирования в буфер обмена"
+  choice=$?
+  if ((choice == 1)); then
+    show_full_dns_record_for_copy "$type" "$name" "${DNS_RECORD_TTLS[$index]}" "$value"
+  fi
 }
 
 draw_dns_action_connector() {
