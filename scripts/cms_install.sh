@@ -1147,7 +1147,14 @@ install_phpmyadmin() {
 }
 
 audit_joomla_extensions() {
-  bash /root/rish/scripts/joomla_extensions_audit.sh "$site_path" "$site_name" "$joomla_version"
+  local site_user=""
+
+  if ! site_user=$(get_site_user "$directory"); then
+    site_user=""
+  fi
+
+  bash /root/rish/scripts/joomla_extensions_audit.sh \
+    "$site_path" "$site_name" "$joomla_version" "$php_bin" "$site_user"
 }
 
 run_manual_joomla_cli_command() {

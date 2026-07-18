@@ -12,13 +12,23 @@ source "${RISH_HOME}/windows.sh"
 SITE_PATH="${1:-}"
 SITE_NAME="${2:-}"
 JOOMLA_VERSION="${3:-}"
+PHP_BIN="${4:-}"
+SITE_USER="${5:-}"
+CAN_CHECK_UPDATES=0
 
 wait_for_enter() {
   vertical_menu "current" 2 0 5 nomouse "Нажмите Enter"
 }
 
 wait_for_audit_action() {
-  vertical_menu "current" 2 0 25 nomouse "Нажмите Enter" "Отфильтровать по строке"
+  local -a items=("Вернуться")
+
+  if ((CAN_CHECK_UPDATES)); then
+    items+=("Проверить обновления расширений")
+  fi
+  items+=("Отфильтровать по строке")
+
+  vertical_menu "current" 2 0 35 nomouse "${items[@]}"
 }
 
 fail() {
@@ -191,6 +201,339 @@ filter_audit_rows() {
   print_audit_footer "$pattern"
 }
 
+UPDATE_TABLE_TOP="┌─────┬──────────────────┬──────────────────────────────┬──────────────────────────────┬────────────┬────────────┐"
+UPDATE_TABLE_HEADER="├─────┼──────────────────┼──────────────────────────────┼──────────────────────────────┼────────────┼────────────┤"
+UPDATE_TABLE_BOTTOM="└─────┴──────────────────┴──────────────────────────────┴──────────────────────────────┴────────────┴────────────┘"
+
+print_update_row() {
+  local number="$1"
+  local type="$2"
+  local element="$3"
+  local name="$4"
+  local installed="$5"
+  local available="$6"
+
+  number="$(truncate_cell "$number" 3)"
+  type="$(truncate_cell "$type" 16)"
+  element="$(truncate_cell "$element" 28)"
+  name="$(truncate_cell "$name" 28)"
+  installed="$(truncate_cell "$installed" 10)"
+  available="$(truncate_cell "$available" 10)"
+
+  printf '│ %3s │ ' "$number"
+  print_text_cell "$type" 16 0
+  printf ' │ '
+  print_text_cell "$element" 28 0
+  printf ' │ '
+  print_text_cell "$name" 28 0
+  printf ' │ '
+  print_text_cell "$installed" 10 0
+  printf ' │ '
+  print_text_cell "$available" 10 0
+  printf ' │\n'
+}
+
+show_extension_updates() {
+  local cli_output
+  local cli_pid=""
+  local cli_running=1
+  local cli_status
+  local can_track_progress=1
+  local check_interrupted=0
+  local check_started_at
+  local completed_sites=0
+  local current_second
+  local elapsed=0
+  local lock_file
+  local lock_key
+  local progress_output
+  local progress_row
+  local reported_count
+  local site_id
+  local site_name
+  local tracking_error=""
+  local tracking_warning_shown=0
+  local query_output
+  local row
+  local key
+  local type
+  local folder
+  local element
+  local client_id
+  local name
+  local manifest_cache
+  local available
+  local installed
+  local group
+  local found=0
+  local updates_table
+  local update_sites_table
+  local update_query
+  local update_lock_fd
+  local total_sites=0
+  local -A reported_sites=()
+  local -a progress_rows=()
+  local -a update_rows=()
+
+  echo
+  echo "Проверка обновлений расширений Joomla"
+  echo
+  echo -e "Сайт: ${GREEN}${SITE_NAME:-${SITE_PATH}}${WHITE}"
+  echo -e "Joomla: ${GREEN}${JOOMLA_VERSION}${WHITE}"
+  echo "Проверяем серверы обновлений..."
+  echo
+
+  if ! command -v flock > /dev/null 2>&1; then
+    echo -e "Не удалось запустить проверку: команда ${RED}flock не найдена${WHITE}."
+    wait_for_enter
+    return
+  fi
+
+  lock_key="$(printf '%s' "$SITE_PATH" | sha256sum)"
+  lock_key="${lock_key%% *}"
+  lock_file="/run/lock/rish-joomla-update-${lock_key}.lock"
+  if ! exec {update_lock_fd}> "$lock_file"; then
+    echo -e "Не удалось ${RED}создать блокировку${WHITE} проверки обновлений."
+    wait_for_enter
+    return
+  fi
+  chmod 600 "$lock_file"
+  if ! flock -n "$update_lock_fd"; then
+    echo -e "Для этого сайта уже выполняется ${YELLOW}проверка обновлений${WHITE}."
+    exec {update_lock_fd}>&-
+    wait_for_enter
+    return
+  fi
+
+  update_sites_table="$(sql_escape_identifier "${DB_PREFIX}update_sites")"
+  if ! total_sites=$(
+    mariadb --defaults-extra-file="$TMP_DEFAULTS" --batch --raw --skip-column-names \
+      "$DB_NAME" -e "SELECT COUNT(*) FROM \`${update_sites_table}\` WHERE enabled = 1;" 2>&1
+  ); then
+    tracking_error="$total_sites"
+    can_track_progress=0
+    total_sites=0
+  fi
+  if [[ ! "$total_sites" =~ ^[0-9]+$ ]]; then
+    if [[ -z "$tracking_error" ]]; then
+      tracking_error="MariaDB вернула некорректное количество серверов обновлений: ${total_sites}"
+    fi
+    can_track_progress=0
+    total_sites=0
+  fi
+
+  : > "$CLI_OUTPUT_FILE"
+  current_second="$(date +%s)"
+  check_started_at=$((current_second + 1))
+  while (($(date +%s) < check_started_at)); do
+    sleep 0.05
+  done
+  trap 'check_interrupted=129; [[ -z "$cli_pid" ]] || kill -TERM "$cli_pid" 2>/dev/null' HUP
+  trap 'check_interrupted=130; [[ -z "$cli_pid" ]] || kill -TERM "$cli_pid" 2>/dev/null' INT
+  trap 'check_interrupted=131; [[ -z "$cli_pid" ]] || kill -TERM "$cli_pid" 2>/dev/null' QUIT
+  trap 'check_interrupted=143; [[ -z "$cli_pid" ]] || kill -TERM "$cli_pid" 2>/dev/null' TERM
+  (
+    cd "$SITE_PATH" || exit 1
+    exec timeout --kill-after=5s 120s runuser -u "$SITE_USER" -- \
+      "$PHP_BIN" cli/joomla.php update:extensions:check
+  ) > "$CLI_OUTPUT_FILE" 2>&1 &
+  cli_pid=$!
+  if ((check_interrupted)); then
+    kill -TERM "$cli_pid" 2>/dev/null
+  fi
+
+  while true; do
+    ((check_interrupted)) && break
+    if kill -0 "$cli_pid" 2>/dev/null; then
+      cli_running=1
+    else
+      cli_running=0
+    fi
+
+    if ((can_track_progress)); then
+      if ! progress_output=$(
+        mariadb --defaults-extra-file="$TMP_DEFAULTS" --batch --raw --skip-column-names \
+          "$DB_NAME" -e "
+SELECT CONCAT(
+  update_site_id,
+  CHAR(31),
+  COALESCE(name, '-')
+)
+FROM \`${update_sites_table}\`
+WHERE enabled = 1
+  AND last_check_timestamp >= ${check_started_at}
+ORDER BY last_check_timestamp, update_site_id;
+" 2>&1
+      ); then
+        tracking_error="$progress_output"
+        can_track_progress=0
+      else
+        progress_rows=()
+        if [[ -n "$progress_output" ]]; then
+          mapfile -t progress_rows <<< "$progress_output"
+        fi
+        completed_sites="${#progress_rows[@]}"
+
+        for progress_row in "${progress_rows[@]}"; do
+          IFS=$'\037' read -r site_id site_name <<< "$progress_row"
+          if [[ ! "$site_id" =~ ^[0-9]+$ ]]; then
+            tracking_error="MariaDB вернула некорректный update_site_id: ${site_id}"
+            can_track_progress=0
+            break
+          fi
+          if [[ -n "${reported_sites[$site_id]+x}" ]]; then
+            continue
+          fi
+
+          site_name="$(printf '%s' "$site_name" | LC_ALL=C tr -d '\000-\037\177')"
+          [[ -n "$site_name" ]] || site_name="-"
+          site_name="$(truncate_cell "$site_name" 60)"
+          reported_sites["$site_id"]=1
+          reported_count="${#reported_sites[@]}"
+          printf '\033[2K\r[%s/%s] Обработан: %s\n' \
+            "$reported_count" "$total_sites" "$site_name"
+        done
+      fi
+    fi
+
+    if ((!can_track_progress && !tracking_warning_shown)); then
+      tracking_error="${tracking_error//$'\n'/ }"
+      tracking_error="${tracking_error//$'\r'/ }"
+      tracking_error="${tracking_error//$'\t'/ }"
+      tracking_error="$(printf '%s' "$tracking_error" | LC_ALL=C tr -d '\000-\037\177')"
+      tracking_error="$(truncate_cell "$tracking_error" 140)"
+      printf '\033[2K\r'
+      echo -e "${YELLOW}Названия серверов обновлений недоступны; проверка продолжается без них.${WHITE}"
+      if [[ -n "$tracking_error" ]]; then
+        echo "MariaDB: ${tracking_error}"
+      fi
+      echo
+      tracking_warning_shown=1
+    fi
+    elapsed=$(($(date +%s) - check_started_at))
+
+    ((cli_running)) || break
+
+    if ((can_track_progress)); then
+      printf '\033[2K\rОбработано серверов: %s из %s | %s сек.' \
+        "$completed_sites" "$total_sites" "$elapsed"
+    else
+      printf '\033[2K\rПроверка выполняется | %s сек.' "$elapsed"
+    fi
+    sleep 1
+  done
+
+  wait "$cli_pid"
+  cli_status=$?
+  if ((check_interrupted)); then
+    while kill -0 "$cli_pid" 2>/dev/null; do
+      wait "$cli_pid" 2>/dev/null
+    done
+  fi
+  trap - HUP INT QUIT TERM
+  exec {update_lock_fd}>&-
+  cli_output="$(< "$CLI_OUTPUT_FILE")"
+  elapsed=$(($(date +%s) - check_started_at))
+  printf '\033[2K\r'
+
+  if ((check_interrupted == 129 || check_interrupted == 131 || check_interrupted == 143)); then
+    exit "$check_interrupted"
+  elif ((check_interrupted)); then
+    echo -e "Проверка обновлений ${YELLOW}прервана${WHITE}."
+    wait_for_enter
+    return
+  elif ((cli_status == 0 && can_track_progress)); then
+    echo "Обработано серверов: ${total_sites} из ${total_sites} | ${elapsed} сек."
+    echo
+  elif ((cli_status == 0)); then
+    echo "Проверка серверов завершена | ${elapsed} сек."
+    echo
+  fi
+
+  if ((cli_status != 0)); then
+    if ((cli_status == 124 || cli_status == 137)); then
+      echo -e "Проверка обновлений ${RED}превысила лимит 120 секунд и была остановлена${WHITE}."
+    else
+      echo -e "Не удалось ${RED}проверить обновления расширений Joomla${WHITE}."
+    fi
+    if [[ -n "$cli_output" ]]; then
+      echo
+      printf '%s\n' "$cli_output"
+    fi
+    wait_for_enter
+    return
+  fi
+
+  updates_table="$(sql_escape_identifier "${DB_PREFIX}updates")"
+  update_query="
+SELECT
+  CONCAT(
+    CONCAT(e.type, '|', e.folder, '|', e.element, '|', e.client_id),
+    CHAR(31), e.type,
+    CHAR(31), e.folder,
+    CHAR(31), e.element,
+    CHAR(31), e.client_id,
+    CHAR(31), e.name,
+    CHAR(31), e.manifest_cache,
+    CHAR(31), u.version
+  ) AS row_data
+FROM \`${updates_table}\` AS u
+INNER JOIN \`${EXTENSIONS_TABLE}\` AS e ON e.extension_id = u.extension_id
+INNER JOIN \`${update_sites_table}\` AS us
+  ON us.update_site_id = u.update_site_id AND us.enabled = 1
+WHERE e.type <> 'language'
+  AND NOT (e.type = 'package' AND e.element REGEXP '^pkg_[a-z]{2,3}-[A-Z]{2}$')
+ORDER BY e.type, e.folder, e.element, e.client_id;
+"
+
+  if ! query_output=$(
+    mariadb --defaults-extra-file="$TMP_DEFAULTS" --batch --raw --skip-column-names \
+      "$DB_NAME" -e "$update_query" 2>&1
+  ); then
+    echo -e "Проверка Joomla завершена, но ${RED}не удалось прочитать найденные обновления${WHITE}."
+    if [[ -n "$query_output" ]]; then
+      echo
+      printf '%s\n' "$query_output"
+    fi
+    wait_for_enter
+    return
+  fi
+
+  if [[ -n "$query_output" ]]; then
+    mapfile -t update_rows <<< "$query_output"
+  fi
+
+  echo -e "Проверка обновлений ${GREEN}завершена${WHITE}."
+  echo
+  echo "Доступные обновления нестандартных расширений"
+  echo
+  echo "$UPDATE_TABLE_TOP"
+  print_update_row "#" "Type" "Element" "Name" "Installed" "Available"
+  echo "$UPDATE_TABLE_HEADER"
+
+  for row in "${update_rows[@]}"; do
+    IFS=$'\037' read -r key type folder element client_id name manifest_cache available <<< "$row"
+    [[ -n "$key" ]] || continue
+    if [[ -n "${CORE_EXTENSIONS[$key]:-}" ]]; then
+      continue
+    fi
+
+    found=$((found + 1))
+    group="$(extension_group "$type" "$folder" "$client_id")"
+    installed="$(manifest_field "$manifest_cache" "version")"
+    [[ -n "$available" ]] || available="-"
+    print_update_row "$found" "$group" "$element" "$name" "$installed" "$available"
+  done
+
+  echo "$UPDATE_TABLE_BOTTOM"
+  echo
+  if ((found == 0)); then
+    echo -e "${GREEN}Joomla не обнаружила доступных обновлений нестандартных расширений.${WHITE}"
+  else
+    echo -e "Найдено доступных обновлений: ${YELLOW}${found}${WHITE}"
+  fi
+}
+
 audit_action_menu() {
   local choice
 
@@ -201,10 +544,16 @@ audit_action_menu() {
       0 | 255)
         return
         ;;
-      1)
-        filter_audit_rows
-        ;;
     esac
+
+    if ((CAN_CHECK_UPDATES)); then
+      case "$choice" in
+        1) show_extension_updates ;;
+        2) filter_audit_rows ;;
+      esac
+    elif ((choice == 1)); then
+      filter_audit_rows
+    fi
   done
 }
 
@@ -261,6 +610,15 @@ if [[ -z "$JOOMLA_VERSION" ]]; then
   )
 fi
 [[ -n "$JOOMLA_VERSION" ]] || fail "${RED}Не удалось определить версию Joomla.${WHITE}"
+
+if [[ "${JOOMLA_VERSION%%.*}" =~ ^[0-9]+$ ]] &&
+  ((10#${JOOMLA_VERSION%%.*} >= 4)) &&
+  [[ -x "$PHP_BIN" ]] &&
+  [[ -n "$SITE_USER" ]] &&
+  id -u "$SITE_USER" > /dev/null 2>&1 &&
+  [[ -f "${SITE_PATH}/cli/joomla.php" ]]; then
+  CAN_CHECK_UPDATES=1
+fi
 
 BASELINE_VERSION="$(joomla_major_to_baseline "$JOOMLA_VERSION")" ||
   fail "Для Joomla ${RED}${JOOMLA_VERSION}${WHITE} нет baseline расширений."
@@ -326,8 +684,12 @@ is_unwanted_extension() {
 
 TMP_DEFAULTS="$(mktemp /tmp/rish-joomla-audit.XXXXXX)" ||
   fail "${RED}Не удалось создать временный файл для подключения к БД.${WHITE}"
-trap 'rm -f "$TMP_DEFAULTS"' EXIT
-chmod 600 "$TMP_DEFAULTS"
+CLI_OUTPUT_FILE="$(mktemp /tmp/rish-joomla-update.XXXXXX)" || {
+  rm -f "$TMP_DEFAULTS"
+  fail "${RED}Не удалось создать временный файл для вывода проверки обновлений.${WHITE}"
+}
+trap 'rm -f "$TMP_DEFAULTS" "$CLI_OUTPUT_FILE"' EXIT
+chmod 600 "$TMP_DEFAULTS" "$CLI_OUTPUT_FILE"
 {
   echo "[client]"
   echo "user=${DB_USER}"
