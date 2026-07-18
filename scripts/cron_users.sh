@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 source /root/rish/windows.sh
+source /root/rish/scripts/cron_access.sh
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -12,6 +13,11 @@ function cron_users() {
   while true; do
     clear
     echo -e "${WHITE}CRON для пользователей (/home/*) и root:${WHITE}"
+    if cron_allow_is_secure; then
+      echo -e "Управление crontab разрешено только пользователю ${ROOT_COLOR}root${WHITE}."
+    else
+      echo -e "${RED}Внимание:${WHITE} /etc/cron.allow не соответствует безопасной конфигурации RISH."
+    fi
     echo
 
     local users=("root")
@@ -20,6 +26,9 @@ function cron_users() {
     local size
     local columns
     local pad_total
+    local cron_content
+    local cron_filtered
+    local read_errors=0
 
     if [ -d /home ]; then
       for d in /home/*; do
@@ -35,9 +44,18 @@ function cron_users() {
     local any_jobs=0
     for user in "${users[@]}"; do
       if [ -n "$user" ] && (id "$user" >/dev/null 2>&1); then
-        crontab -l -u "$user" >/tmp/.rish_cron_tmp 2>/dev/null || true
-        sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' /tmp/.rish_cron_tmp > /tmp/.rish_cron_tmp_filtered
-        if [ -s /tmp/.rish_cron_tmp_filtered ]; then
+        if cron_content="$(LC_ALL=C crontab -l -u "$user" 2>&1)"; then
+          :
+        elif [[ "$cron_content" == "no crontab for ${user}" ]]; then
+          cron_content=""
+        else
+          read_errors=1
+          echo -e "Не удалось прочитать CRON пользователя ${YELLOW}${user}${WHITE}:"
+          printf '  %s\n\n' "$cron_content"
+          continue
+        fi
+        cron_filtered="$(printf '%s\n' "$cron_content" | sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d')"
+        if [[ -n "$cron_filtered" ]]; then
           any_jobs=1
           size=$(stty size 2>/dev/null)
           columns=${size#* }
@@ -62,7 +80,7 @@ function cron_users() {
             "${name_color}" "${user}" "${WHITE}" \
             "$(printf '─%.0s' $(seq 1 $pad_total))"
 
-          cat /tmp/.rish_cron_tmp
+          printf '%s\n' "$cron_content"
 
           printf "%s\n\n" "$(printf '─%.0s' $(seq 1 $line_width))"
         fi
@@ -70,11 +88,16 @@ function cron_users() {
     done
 
     if [ "$any_jobs" -eq 0 ]; then
-      echo -e "Не создано ни одного ${YELLOW}cron-задания${WHITE} у root и пользователей из /home."
-      echo
+      if [[ "$read_errors" -eq 0 ]]; then
+        echo -e "Не создано ни одного ${YELLOW}cron-задания${WHITE} у root и пользователей из /home."
+        echo
+      fi
     fi
 
-    rm -f /tmp/.rish_cron_tmp /tmp/.rish_cron_tmp_filtered
+    if [[ "$read_errors" -eq 1 ]]; then
+      echo -e "${YELLOW}Список CRON может быть неполным из-за ошибок чтения.${WHITE}"
+      echo
+    fi
 
     echo -e "${WHITE}Выберите действие:${WHITE}"
     local menu_items=("Выход" "Вывести все cron-задания всех пользователей")
@@ -116,7 +139,7 @@ function cron_users() {
       echo "(например, в минутах — каждую минуту, в часах — каждый час)."
       echo
       echo "Пример (вызывает скрипт php в 3:05 ночи каждый день):"
-      echo "5 3 * * * bin/php82 /var/www/siteuser/www/rish.su/cli/joomla.php radicalsitemap:scan --live-site=https://rish.su/"
+      echo "5 3 * * * /bin/php82 /var/www/siteuser/www/rish.su/cli/joomla.php radicalsitemap:scan --live-site=https://rish.su/"
       echo
       echo "Если вы не справитесь самостоятельно, то вот понятный генератор cron в интернете:"
       echo "https://crontab-generator.org/"

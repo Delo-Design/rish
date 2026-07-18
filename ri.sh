@@ -85,6 +85,7 @@ source scripts/mariadb_install.sh
 source create_hotlist.sh
 source scripts/create_swapfile.sh
 source scripts/ssh_authentication.sh
+source scripts/cron_access.sh
 
 if (( lines < 40 || columns < 140 )); then
   echo
@@ -759,6 +760,18 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   if ! check_step "$STEP"; then
     Install pv
     mark_step_completed "$STEP"
+  fi
+
+  STEP="Ограничение пользовательского CRON через cron.allow"
+  if ! check_step "$STEP"; then
+    echo "Разрешаем управление пользовательским CRON только пользователю root."
+    if configure_cron_allow; then
+      mark_step_completed "$STEP"
+    else
+      echo -e "Не удалось настроить ${RED}/etc/cron.allow${WHITE}."
+      RemoveRim
+      exit 1
+    fi
   fi
 
   STEP="Установка httpd mod_ssl"

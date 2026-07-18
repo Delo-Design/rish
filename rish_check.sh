@@ -12,6 +12,7 @@ SILENT=0
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${SCRIPT_DIR}/windows.sh"
+source "${SCRIPT_DIR}/scripts/cron_access.sh"
 TEMPLATE_DIR="${SCRIPT_DIR}/templates"
 NOINDEX_TEMPLATE="${TEMPLATE_DIR}/apache-noindex.html"
 DEFAULT_NOINDEX_TEMPLATE="${TEMPLATE_DIR}/default-apache-noindex.html"
@@ -396,6 +397,12 @@ check_httpd_tmpfiles_override() {
     fi
   elif [[ -f "$HTTPD_TMPFILES_OVERRIDE" ]]; then
     add_issue "$(highlight_path_file "$HTTPD_TMPFILES_OVERRIDE") больше не требуется: пакет httpd не управляет /var/www через tmpfiles" "fix_httpd_tmpfiles_override" ""
+  fi
+}
+
+check_cron_allow() {
+  if ! cron_allow_is_secure; then
+    add_issue "$(highlight_path_file "$RISH_CRON_ALLOW_FILE") должен разрешать управление пользовательским CRON только пользователю ${YELLOW}root${WHITE} и иметь права ${YELLOW}root:root${WHITE} 644" "fix_cron_allow" ""
   fi
 }
 
@@ -951,6 +958,7 @@ collect_issues() {
 
   collect_referenced_pools
   check_httpd_tmpfiles_override
+  check_cron_allow
   check_var_www
   check_noindex
   check_apache_conf_files
@@ -1087,6 +1095,9 @@ apply_issues() {
             ;;
           fix_httpd_tmpfiles_override)
             write_httpd_tmpfiles_override || return 1
+            ;;
+          fix_cron_allow)
+            configure_cron_allow || return 1
             ;;
           fix_user_tmp)
             install -d -m 755 -o "$fix_arg" -g "$fix_arg" "/var/www/${fix_arg}/tmp" || return 1

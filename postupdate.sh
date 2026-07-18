@@ -28,6 +28,7 @@ mark_step_completed() {
 }
 source /root/rish/rish_config.sh
 source /root/rish/scripts/ssh_authentication.sh
+source /root/rish/scripts/cron_access.sh
 LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
@@ -257,6 +258,16 @@ STEP="Установка bind-utils"
 if ! check_step "$STEP"; then
   Install bind-utils
   mark_step_completed "$STEP"
+fi
+
+STEP="Ограничение пользовательского CRON через cron.allow"
+if ! check_step "$STEP"; then
+  echo "Разрешаем управление пользовательским CRON только пользователю root."
+  if configure_cron_allow; then
+    mark_step_completed "$STEP"
+  else
+    echo -e "${YELLOW}Не удалось настроить /etc/cron.allow. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
+  fi
 fi
 
 STEP="Настройка способов авторизации SSH через 00-rish.conf"
