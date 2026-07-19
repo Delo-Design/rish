@@ -211,17 +211,38 @@ function php_multi_install() {
       fi
     fi
 
-    install -d -m 755 "/etc/systemd/system/${selected_version}-php-fpm.service.d"
-    cat >"/etc/systemd/system/${selected_version}-php-fpm.service.d/local.conf" <<EOF
-[Service]
-Restart=on-failure
-RestartSec=180
-EOF
-    systemctl daemon-reload
+    if ! write_php_fpm_systemd_conf "$selected_version"; then
+      echo -e "Не удалось создать защищенную systemd-конфигурацию для ${RED}${selected_version}-php-fpm${WHITE}."
+      exit 1
+    fi
+    if ! systemctl daemon-reload; then
+      echo -e "Не удалось перечитать systemd-конфигурацию для ${RED}${selected_version}-php-fpm${WHITE}."
+      rollback_php_fpm_systemd_conf "$selected_version" || true
+      systemctl daemon-reload || true
+      exit 1
+    fi
+    if ! php_fpm_systemd_security_is_effective "$selected_version"; then
+      echo -e "Systemd не применил ожидаемые параметры защиты для ${RED}${selected_version}-php-fpm${WHITE}."
+      rollback_php_fpm_systemd_conf "$selected_version" || true
+      systemctl daemon-reload || true
+      exit 1
+    fi
 
-    systemctl enable ${selected_version}-php-fpm
+    if ! systemctl enable "${selected_version}-php-fpm"; then
+      echo -e "Не удалось включить автозапуск ${RED}${selected_version}-php-fpm${WHITE}."
+      rollback_php_fpm_systemd_conf "$selected_version" || true
+      systemctl daemon-reload || true
+      exit 1
+    fi
     echo
-    systemctl start ${selected_version}-php-fpm
+    if ! systemctl start "${selected_version}-php-fpm"; then
+      echo -e "Не удалось запустить ${RED}${selected_version}-php-fpm${WHITE}. Новая systemd-конфигурация будет отменена."
+      systemctl disable "${selected_version}-php-fpm" || true
+      rollback_php_fpm_systemd_conf "$selected_version" || true
+      systemctl daemon-reload || true
+      exit 1
+    fi
+    commit_php_fpm_systemd_conf "$selected_version" || true
     echo
 
   done

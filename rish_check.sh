@@ -12,6 +12,7 @@ SILENT=0
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${SCRIPT_DIR}/windows.sh"
+source "${SCRIPT_DIR}/php_helpers.sh"
 source "${SCRIPT_DIR}/scripts/cron_access.sh"
 TEMPLATE_DIR="${SCRIPT_DIR}/templates"
 NOINDEX_TEMPLATE="${TEMPLATE_DIR}/apache-noindex.html"
@@ -19,7 +20,6 @@ DEFAULT_NOINDEX_TEMPLATE="${TEMPLATE_DIR}/default-apache-noindex.html"
 WWW_TEMPLATE="${TEMPLATE_DIR}/php-fpm-www.conf.template"
 DEFAULT_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default.conf"
 DEFAULT_SSL_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default-ssl.conf"
-PHP_FPM_RESTART_CONF="local.conf"
 HTTPD_TMPFILES_VENDOR="/usr/lib/tmpfiles.d/httpd.conf"
 HTTPD_TMPFILES_OVERRIDE="/etc/tmpfiles.d/httpd.conf"
 
@@ -115,7 +115,7 @@ mark_php_fpm_restart_required() {
     fix_disable_file)
       target_file="$fix_arg"
       ;;
-    fix_php_fpm_restart_conf)
+    fix_php_fpm_systemd_conf)
       php_version="$fix_arg"
       ;;
   esac
@@ -127,6 +127,40 @@ mark_php_fpm_restart_required() {
   if [[ "${php_version:-}" =~ ^php[0-9][0-9]$ ]]; then
     PHP_FPM_RESTART_REQUIRED["$php_version"]=1
   fi
+}
+
+rollback_php_fpm_check_change() {
+  local php_version="$1"
+  local restart_service="$2"
+
+  if ! rollback_php_fpm_systemd_conf "$php_version"; then
+    log "  ${RED}${php_version}-php-fpm${WHITE}: не удалось восстановить предыдущий local.conf"
+    return 1
+  fi
+  if ! systemctl daemon-reload; then
+    log "  ${RED}${php_version}-php-fpm${WHITE}: local.conf восстановлен, но systemd не перечитал конфигурацию"
+    return 1
+  fi
+
+  if [[ "$restart_service" -eq 1 ]]; then
+    if ! systemctl restart "${php_version}-php-fpm"; then
+      log "  ${RED}${php_version}-php-fpm${WHITE}: не удалось запустить сервис после отката"
+      return 1
+    fi
+    log "  ${YELLOW}${php_version}-php-fpm${WHITE}: предыдущая конфигурация восстановлена, сервис снова запущен"
+  else
+    log "  ${YELLOW}${php_version}-php-fpm${WHITE}: предыдущая конфигурация восстановлена"
+  fi
+}
+
+rollback_pending_php_fpm_systemd_changes() {
+  local php_version
+  local status=0
+
+  for php_version in "${!PHP_FPM_SYSTEMD_ROLLBACK_PREPARED[@]}"; do
+    rollback_php_fpm_check_change "$php_version" 0 || status=1
+  done
+  return "$status"
 }
 
 restart_required_php_fpm() {
@@ -147,6 +181,9 @@ restart_required_php_fpm() {
 
     if [[ ! -x "$fpm_binary" ]]; then
       log "  ${RED}${php_version}-php-fpm${WHITE}: не найден ${fpm_binary}"
+      if php_fpm_systemd_rollback_is_prepared "$php_version"; then
+        rollback_php_fpm_check_change "$php_version" 0 || status=1
+      fi
       status=1
       continue
     fi
@@ -155,14 +192,26 @@ restart_required_php_fpm() {
     if [[ "$?" -ne 0 ]]; then
       log "  ${RED}${php_version}-php-fpm${WHITE}: ошибка конфигурации, сервис не перезапущен"
       printf '%s\n' "$output"
+      if php_fpm_systemd_rollback_is_prepared "$php_version"; then
+        rollback_php_fpm_check_change "$php_version" 0 || status=1
+      fi
       status=1
       continue
     fi
 
     if systemctl restart "${php_version}-php-fpm"; then
-      log "  ${GREEN}${php_version}-php-fpm${WHITE} перезапущен"
+      if commit_php_fpm_systemd_conf "$php_version"; then
+        log "  ${GREEN}${php_version}-php-fpm${WHITE} перезапущен"
+      else
+        log "  ${YELLOW}${php_version}-php-fpm${WHITE}: сервис перезапущен, но временный rollback-файл не удалён"
+        status=1
+      fi
     else
       log "  ${RED}${php_version}-php-fpm${WHITE}: ошибка перезапуска"
+      if php_fpm_systemd_rollback_is_prepared "$php_version"; then
+        log "  Выполняем откат systemd-конфигурации ${YELLOW}${php_version}-php-fpm${WHITE}."
+        rollback_php_fpm_check_change "$php_version" 1 || status=1
+      fi
       status=1
     fi
   done < <(printf '%s\n' "${!PHP_FPM_RESTART_REQUIRED[@]}" | sort -r)
@@ -270,19 +319,6 @@ write_template_file() {
   fi
 
   mv "$tmp_file" "$target_file"
-}
-
-write_php_fpm_restart_conf() {
-  local php_version="$1"
-  local conf_dir="/etc/systemd/system/${php_version}-php-fpm.service.d"
-  local conf_file="${conf_dir}/${PHP_FPM_RESTART_CONF}"
-
-  install -d -m 755 "$conf_dir" || return 1
-  cat > "$conf_file" <<EOF
-[Service]
-Restart=on-failure
-RestartSec=180
-EOF
 }
 
 httpd_vendor_manages_var_www() {
@@ -578,28 +614,9 @@ check_php_fpm() {
   shopt -u nullglob
 }
 
-get_installed_php_versions() {
-  local fpm_binary
-
-  shopt -s nullglob
-  for fpm_binary in /opt/remi/php[0-9][0-9]/root/usr/sbin/php-fpm; do
-    [[ -x "$fpm_binary" ]] || continue
-    echo "$fpm_binary" | grep -oE 'php[0-9]{2}' | head -n 1
-  done | sort -r | uniq
-  shopt -u nullglob
-}
-
-is_php_fpm_restart_conf_valid() {
-  local conf_file="$1"
-
-  grep -qE '^[[:space:]]*Restart[[:space:]]*=[[:space:]]*on-failure[[:space:]]*$' "$conf_file" || return 1
-  grep -qE '^[[:space:]]*RestartSec[[:space:]]*=[[:space:]]*180[[:space:]]*$' "$conf_file" || return 1
-}
-
-check_php_fpm_restart_policy() {
+check_php_fpm_systemd_policy() {
   local installed_versions
   local php_version
-  local conf_dir
   local conf_file
   local orphan_dir
   local found
@@ -608,13 +625,14 @@ check_php_fpm_restart_policy() {
 
   while IFS= read -r php_version; do
     [[ -n "$php_version" ]] || continue
-    conf_dir="/etc/systemd/system/${php_version}-php-fpm.service.d"
-    conf_file="${conf_dir}/${PHP_FPM_RESTART_CONF}"
+    conf_file="$(php_fpm_systemd_conf_path "$php_version")" || continue
 
     if [[ ! -f "$conf_file" ]]; then
-      add_issue "Для ${YELLOW}${php_version}-php-fpm${WHITE} отсутствует systemd-настройка автоперезапуска ${conf_file}" "fix_php_fpm_restart_conf" "$php_version"
-    elif ! is_php_fpm_restart_conf_valid "$conf_file"; then
-      add_issue "В ${conf_file} нет ожидаемых Restart=on-failure и RestartSec=180" "" ""
+      add_issue "Для ${YELLOW}${php_version}-php-fpm${WHITE} отсутствует защищенная systemd-настройка $(highlight_path_file "$conf_file")" "fix_php_fpm_systemd_conf" "$php_version"
+    elif ! php_fpm_systemd_conf_matches "$php_version"; then
+      add_issue "$(highlight_path_file "$conf_file") не соответствует настройкам автоперезапуска и защиты PHP-FPM" "fix_php_fpm_systemd_conf" "$php_version"
+    elif ! php_fpm_systemd_security_is_effective "$php_version"; then
+      add_issue "Для ${YELLOW}${php_version}-php-fpm${WHITE} systemd-защита записана, но фактически не загружена" "fix_php_fpm_systemd_conf" "$php_version"
     fi
   done <<< "$installed_versions"
 
@@ -965,7 +983,7 @@ collect_issues() {
   check_apache_ssl_conf
   check_vhost_handlers
   check_php_fpm
-  check_php_fpm_restart_policy
+  check_php_fpm_systemd_policy
   check_hotlist
 }
 
@@ -1145,9 +1163,13 @@ apply_issues() {
             source "${SCRIPT_DIR}/create_hotlist.sh" || return 1
             create_hotlist || return 1
             ;;
-          fix_php_fpm_restart_conf)
-            write_php_fpm_restart_conf "$fix_arg" || return 1
-            systemctl daemon-reload || return 1
+          fix_php_fpm_systemd_conf)
+            write_php_fpm_systemd_conf "$fix_arg" || return 1
+            if ! systemctl daemon-reload; then
+              rollback_php_fpm_systemd_conf "$fix_arg" || true
+              systemctl daemon-reload || true
+              return 1
+            fi
             ;;
           fix_remove_php_fpm_restart_dir)
             rm -rf "$fix_arg" || return 1
@@ -1256,7 +1278,8 @@ if [[ "$MODE" == "fix" ]]; then
   if run_final_configtests; then
     restart_required_php_fpm || status=1
     reload_required_apache || status=1
-  elif [[ "$status" -eq 0 ]]; then
+  else
+    rollback_pending_php_fpm_systemd_changes || status=1
     status=1
   fi
   exit $status

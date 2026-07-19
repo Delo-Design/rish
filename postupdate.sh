@@ -27,6 +27,7 @@ mark_step_completed() {
   echo "$step" >>"$LOG_FILE"
 }
 source /root/rish/rish_config.sh
+source /root/rish/php_helpers.sh
 source /root/rish/scripts/ssh_authentication.sh
 source /root/rish/scripts/cron_access.sh
 LocalServer="${LocalServer:-false}"
@@ -235,6 +236,30 @@ configure_httpd_tmpfiles_override() {
   systemd-tmpfiles --create "$override_conf"
 }
 
+rollback_php_fpm_hardening_update() {
+  local php_version="$1"
+  local restart_service="$2"
+
+  if ! rollback_php_fpm_systemd_conf "$php_version"; then
+    echo -e "  ${RED}${php_version}-php-fpm${WHITE}: не удалось восстановить предыдущий local.conf"
+    return 1
+  fi
+  if ! systemctl daemon-reload; then
+    echo -e "  ${RED}${php_version}-php-fpm${WHITE}: local.conf восстановлен, но systemd не перечитал конфигурацию"
+    return 1
+  fi
+
+  if [[ "$restart_service" -eq 1 ]]; then
+    if ! systemctl restart "${php_version}-php-fpm"; then
+      echo -e "  ${RED}${php_version}-php-fpm${WHITE}: не удалось запустить сервис после отката"
+      return 1
+    fi
+    echo -e "  ${YELLOW}${php_version}-php-fpm${WHITE}: предыдущая конфигурация восстановлена, сервис снова запущен"
+  else
+    echo -e "  ${YELLOW}${php_version}-php-fpm${WHITE}: предыдущая конфигурация восстановлена"
+  fi
+}
+
 STEP="Установка dnf-utils"
 if ! check_step "$STEP"; then
   Install dnf-utils
@@ -258,6 +283,93 @@ STEP="Установка bind-utils"
 if ! check_step "$STEP"; then
   Install bind-utils
   mark_step_completed "$STEP"
+fi
+
+STEP="Усиление изоляции PHP-FPM через systemd"
+if ! check_step "$STEP"; then
+  mapfile -t php_fpm_hardening_versions < <(get_installed_php_versions)
+
+  if [[ "${#php_fpm_hardening_versions[@]}" -eq 0 ]]; then
+    mark_step_completed "$STEP"
+  else
+    echo
+    echo -e "Предлагаем усилить изоляцию ${GREEN}PHP-FPM${WHITE} средствами systemd."
+    echo "PHP-процессы потеряют доступ к /home, /root, /run/user, обычным устройствам"
+    echo "и возможностям повышения привилегий через SUID/SGID."
+    echo "Каталоги сайтов RISH в /var/www останутся доступны."
+    echo
+    echo -e "Для применения настроек потребуется последовательный ${YELLOW}перезапуск PHP-FPM${WHITE}."
+    echo "Применить защиту сейчас?"
+
+    if vertical_menu "current" 2 0 13 "Да" "Нет"; then
+      php_fpm_hardening_failed=0
+
+      for php_fpm_hardening_version in "${php_fpm_hardening_versions[@]}"; do
+        php_fpm_hardening_was_active=0
+        if systemctl is-active --quiet "${php_fpm_hardening_version}-php-fpm"; then
+          php_fpm_hardening_was_active=1
+        fi
+
+        if ! write_php_fpm_systemd_conf "$php_fpm_hardening_version"; then
+          echo -e "  ${RED}${php_fpm_hardening_version}-php-fpm${WHITE}: не удалось записать systemd-настройки"
+          php_fpm_hardening_failed=1
+          continue
+        fi
+
+        if ! systemctl daemon-reload; then
+          echo -e "  ${RED}${php_fpm_hardening_version}-php-fpm${WHITE}: systemd не перечитал новую конфигурацию"
+          rollback_php_fpm_hardening_update "$php_fpm_hardening_version" 0
+          php_fpm_hardening_failed=1
+          continue
+        fi
+
+        if ! php_fpm_systemd_security_is_effective "$php_fpm_hardening_version"; then
+          echo -e "  ${RED}${php_fpm_hardening_version}-php-fpm${WHITE}: systemd не применил ожидаемые параметры защиты"
+          rollback_php_fpm_hardening_update "$php_fpm_hardening_version" 0
+          php_fpm_hardening_failed=1
+          continue
+        fi
+
+        php_fpm_hardening_binary="/opt/remi/${php_fpm_hardening_version}/root/usr/sbin/php-fpm"
+        if ! "$php_fpm_hardening_binary" -t; then
+          echo -e "  ${RED}${php_fpm_hardening_version}-php-fpm${WHITE}: конфигурация PHP-FPM содержит ошибку, сервис не перезапущен"
+          rollback_php_fpm_hardening_update "$php_fpm_hardening_version" 0
+          php_fpm_hardening_failed=1
+          continue
+        fi
+
+        if [[ "$php_fpm_hardening_was_active" -eq 1 ]]; then
+          if systemctl restart "${php_fpm_hardening_version}-php-fpm"; then
+            if ! commit_php_fpm_systemd_conf "$php_fpm_hardening_version"; then
+              echo -e "  ${YELLOW}${php_fpm_hardening_version}-php-fpm${WHITE}: защита применена, но временный rollback-файл не удалён"
+              php_fpm_hardening_failed=1
+              continue
+            fi
+            echo -e "  ${GREEN}${php_fpm_hardening_version}-php-fpm${WHITE}: защита применена"
+          else
+            echo -e "  ${RED}${php_fpm_hardening_version}-php-fpm${WHITE}: ошибка перезапуска, выполняем откат"
+            rollback_php_fpm_hardening_update "$php_fpm_hardening_version" 1
+            php_fpm_hardening_failed=1
+          fi
+        else
+          if ! commit_php_fpm_systemd_conf "$php_fpm_hardening_version"; then
+            echo -e "  ${YELLOW}${php_fpm_hardening_version}-php-fpm${WHITE}: защита записана, но временный rollback-файл не удалён"
+            php_fpm_hardening_failed=1
+            continue
+          fi
+          echo -e "  ${YELLOW}${php_fpm_hardening_version}-php-fpm${WHITE}: сервис не запущен, защита применится при следующем запуске"
+        fi
+      done
+
+      if [[ "$php_fpm_hardening_failed" -eq 0 ]]; then
+        mark_step_completed "$STEP"
+      else
+        echo -e "${YELLOW}Защита применена не полностью. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
+      fi
+    else
+      echo -e "${YELLOW}Защита PHP-FPM не применена. Шаг будет предложен при следующем обновлении RISH.${WHITE}"
+    fi
+  fi
 fi
 
 STEP="Ограничение пользовательского CRON через cron.allow"
