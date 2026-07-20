@@ -88,7 +88,7 @@ UserManagementMenu() {
     if [[ -n "$context_user" ]]; then
       options+=("Удалить пользователя ${context_user}")
     fi
-    options+=("Создать пользователя" "Удалить пользователя")
+    options+=("Создать пользователя" "Удалить пользователя" "Выйти")
 
     clear
     echo "Пользователи сервера:"
