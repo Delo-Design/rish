@@ -13,6 +13,7 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${SCRIPT_DIR}/windows.sh"
 source "${SCRIPT_DIR}/php_helpers.sh"
+source "${SCRIPT_DIR}/scripts/ssh_authentication.sh"
 source "${SCRIPT_DIR}/scripts/cron_access.sh"
 TEMPLATE_DIR="${SCRIPT_DIR}/templates"
 NOINDEX_TEMPLATE="${TEMPLATE_DIR}/apache-noindex.html"
@@ -763,6 +764,36 @@ print_ssh_password_auth_warning() {
   fi
 }
 
+check_sftp_security() {
+  local effective_settings
+  local password_authentication
+  local user
+  local issue_found=0
+
+  effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
+  read -r password_authentication _ <<<"$effective_settings"
+  if [[ "$password_authentication" != "yes" && "$password_authentication" != "no" ]]; then
+    add_issue "Не удалось определить фактические настройки SSH/SFTP через sshd -T" "" ""
+    return
+  fi
+
+  rish_ssh_config_matches "$password_authentication" || issue_found=1
+  sftp_authorized_keys_are_secure || issue_found=1
+  legacy_rish_sftp_match_is_at_end && issue_found=1
+
+  while IFS= read -r user; do
+    [[ -n "$user" ]] || continue
+    if ! sftp_security_is_effective "$user"; then
+      issue_found=1
+      break
+    fi
+  done < <(get_sftp_users)
+
+  if [[ "$issue_found" -eq 1 ]]; then
+    add_issue "Ограничения SFTP или каталог $(highlight_path_file "${RISH_SFTP_AUTHORIZED_KEYS_DIR}") не соответствуют настройкам RISH" "fix_sftp_security" "$password_authentication"
+  fi
+}
+
 print_kernel_default_fix_hint() {
   local latest_kernel_path="$1"
 
@@ -977,6 +1008,7 @@ collect_issues() {
   collect_referenced_pools
   check_httpd_tmpfiles_override
   check_cron_allow
+  check_sftp_security
   check_var_www
   check_noindex
   check_apache_conf_files
@@ -1116,6 +1148,9 @@ apply_issues() {
             ;;
           fix_cron_allow)
             configure_cron_allow || return 1
+            ;;
+          fix_sftp_security)
+            configure_ssh_password_authentication "$fix_arg" || return 1
             ;;
           fix_user_tmp)
             install -d -m 755 -o "$fix_arg" -g "$fix_arg" "/var/www/${fix_arg}/tmp" || return 1

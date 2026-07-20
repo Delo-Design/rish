@@ -86,6 +86,7 @@ source create_hotlist.sh
 source scripts/create_swapfile.sh
 source scripts/ssh_authentication.sh
 source scripts/cron_access.sh
+source scripts/create_user.sh
 
 if (( lines < 40 || columns < 140 )); then
   echo
@@ -325,211 +326,6 @@ OpenFirewall() {
   else
     echo -e "Сервис ${GREEN}ispmanager${WHITE} в зоне ${ZoneName} отключён."
   fi
-}
-
-# shellcheck disable=SC2120
-check_user_dirs_exist() {
-  local count=0
-  local dir
-  for dir in /var/www/*/; do
-    [[ -d "$dir" ]] || continue
-    local name
-    name=$(basename "$dir")
-    case "$name" in
-    cgi-bin|html)
-      continue
-      ;;
-    *)
-      ((count++))
-      ;;
-    esac
-  done
-
-  (( count > 0 ))
-}
-
-CreateUser() {
-  local NAME
-  local default_username="$1"  # Получаем первый параметр, переданный в функцию
-  # try to create user
-
-  while true; do
-    echo -e "При создании пользователя используйте только латинские буквы."
-    echo -e -n "${WHITE}Введите имя пользователя (пустая строка для выхода):${GREEN}"
-    if [[ -z "$default_username" ]]; then
-      read -r -e -p " " NAME  # Не задаем значение по умолчанию, если параметр пустой
-    else
-      read -r -e -p " " -i "$default_username" NAME  # Используем переданный параметр как значение по умолчанию
-    fi
-
-    if [[ -z "$NAME" || "$NAME" == "EXIT" || "$NAME" == "exit" ]]; then
-      echo -e "${WHITE}"
-      if ! check_user_dirs_exist; then
-        echo -e "${RED}Нельзя выйти${WHITE}, пока не создан ни один пользователь."
-        echo -e "Создайте хотя бы одного пользователя."
-        continue
-      fi
-      echo -e "${WHITE}"
-      return 0
-    fi
-
-    if [[ "$NAME" == "html" || "$NAME" == "HTML" ]]; then
-      echo -e "${WHITE}Имя ${RED}html${WHITE} запрещено. Выберите другое."
-      continue
-    fi
-
-    NAME=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
-    echo -e "${WHITE}Будет создан пользователь с именем: ${VIOLET}${NAME}${WHITE}"
-    if vertical_menu "current" 2 0 5 "Да" "Нет"
-    then
-      if id -u ${NAME} >/dev/null 2>&1
-      then
-        echo -e "${WHITE}Такой пользователь уже есть ${LRED}${NAME}${WHITE}"
-      else
-        break
-      fi
-    fi
-  done
-
-  if  [[ ${NAME} == "EXIT" ]] || [[ ${NAME} == "exit" ]]
-  then
-    echo -e ${WHITE}
-    return 0
-  else
-    echo -e "${WHITE}Создаем пользователя ${GREEN}${NAME}${WHITE}"
-  fi
-  echo -e "${WHITE}"
-  echo "При создании новых сайтов Joomla требуется указать учетную запись для администратора."
-  echo "Вы можете указать имя этой учетной записи, чтобы в дальнейшем не тратить время на ее изменение."
-  echo -e "Если вы не укажете имя сейчас - оно будет создано автоматически. "
-  echo -e "Изменить его можно будет в файле ${GREEN}/home/${NAME}/.pass.txt${WHITE}"
-  echo
-  echo "Введите имя учетной записи для создания сайтов по умолчанию (Обычно это ваш E-mail)"
-  read -e -p "(Можно не заполнять - нажмите Enter)" DEFAULTSITEACCOUNT
-
-  if id -u ${NAME} >/dev/null 2>&1
-  then
-    echo -e "${WHITE}Такой пользователь уже есть ${LRED}${NAME}${WHITE}"
-    return 1
-  fi
-  useradd -s /sbin/nologin ${NAME}
-  pass=$( tr -dc A-Za-z0-9 < /dev/urandom | head -c 16 | xargs )
-  echo ${NAME}:${pass} | chpasswd
-  pass2=$( tr -dc A-Za-z0-9 < /dev/urandom | head -c 16 | xargs )
-  echo "Database: ${pass2}" > /home/${NAME}/.pass.txt
-  echo -e "Пароль пользователя ${NAME}: ${GREEN}"${pass}${WHITE}
-  echo "${NAME}: ${pass}" >> /home/${NAME}/.pass.txt
-  echo -e "Пароль для баз данных ${NAME}: ${GREEN}"${pass2}${WHITE}
-  pass3=$( tr -dc A-Za-z0-9 < /dev/urandom | head -c 16 | xargs )
-  if [[ -z ${DEFAULTSITEACCOUNT} ]]
-  then
-    DEFAULTSITEACCOUNT="info@${NAME}.com"
-  fi
-  echo -e "Учетная запись по умолчанию: ${GREEN}${DEFAULTSITEACCOUNT}${WHITE}"
-  echo "defaultsiteaccount ${DEFAULTSITEACCOUNT} ${pass3}" >> /home/${NAME}/.pass.txt
-
-  chmod 600 "/home/${NAME}/.pass.txt"
-  chown "${NAME}:${NAME}" "/home/${NAME}/.pass.txt"
-
-  echo -e "Пароли записаны в файл ${GREEN}/home/${NAME}/.pass.txt${WHITE}"
-  usermod -a -G sftp "${NAME}"
-  usermod -aG "${NAME}" apache
-
-  install -d -m 750 -o root -g "${NAME}" "/var/www/${NAME}"
-  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/www"
-  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/logs"
-  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/session"
-  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/wsdlcache"
-  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/slowlog"
-  install -d -m 755 -o "${NAME}" -g "${NAME}" "/var/www/${NAME}/tmp"
-
-  install -d -m 700 -o "${NAME}" -g "${NAME}" "/home/${NAME}/.ssh"
-
-  # создаем файл /home/siteuser/.ssh/authorized_keys для ключей доступа для юзера
-  : > "/home/${NAME}/.ssh/authorized_keys"
-  chown "${NAME}":"${NAME}" "/home/${NAME}/.ssh/authorized_keys"
-  chmod 600 "/home/${NAME}/.ssh/authorized_keys"
-
-  # Удаляем конфигурацию php по умолчанию (это файлы типа php74-php.conf)
-  find /etc/httpd/conf.d -type f -name 'php[0-9][0-9]-php.conf' -exec rm -f {} +
-
-  create_hotlist
-
-  if mariadb  -e "CREATE USER ${NAME}@localhost IDENTIFIED BY '${pass2}';"
-  then
-    echo -e "пользователь ${GREEN}${NAME}${WHITE} успешно создан"
-  else
-    echo -e "во время создания пользователя ${RED}${NAME}${WHITE} MySQL произошла ошибка"
-  fi
-}
-
-DeleteUser() {
-  # Если папка не пуста, то отказываться удалять пользователя
-  if [[ -n $( ls -A /var/www/${1}/www ) ]]
-  then
-    echo "У пользователя есть неудаленные сайты. Вначале удалите их."
-    echo -e -n "${RED}"
-    cd /var/www/${1}/www
-    # Выводим директории
-    ls -d */ | cut -f1 -d'/'
-    # и файлы
-    echo -e -n "${LRED}"
-    ls -Sp | grep -v '/'
-    echo -e "${WHITE}"
-    return 1
-  fi
-  # Проверим на предмет неудаленных баз данных
-  SiteuserMysqlPass=`cat /home/${1}/.pass.txt | grep Database | awk '{ print $2}'`
-  bases=( `mariadb -u${1} -p${SiteuserMysqlPass}  --batch -e "SHOW DATABASES" | tail -n +3` )
-  if (( ${#bases[@]} > 0 ))
-  then
-    echo "У пользователя есть неудаленные базы данных:"
-    echo -e "${LRED}"
-    for i in "${bases[@]}"; do
-      echo "${i}"
-    done
-    echo -e "${WHITE}"
-    echo "Вначале удалите их"
-    return 1
-  fi
-  echo -e "Удалить пользователя ${RED}${1}${WHITE}?"
-
-  if vertical_menu "current" 2 0 5 "Нет" "Да"
-  then
-    echo -e "${CURSORUP}Пользователь ${GREEN}$1${WHITE} не удален."
-    return 1
-  fi
-  rm -rf "/var/www/${1}"
-
-  # Удаляем пользователя изо всех php пулов
-  mapfile -t installed_versions < <(rpm -qa | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
-  for installed in "${installed_versions[@]}"; do
-    rm -f /etc/opt/remi/${installed}/php-fpm.d/${1}*
-    if [ -z "$(find /etc/opt/remi/${installed}/php-fpm.d -maxdepth 1 -type f -name '*.conf')" ]; then
-    # Если файлов .conf нет, проверяем наличие файла www.conf.old для переименования
-      if [ -f "/etc/opt/remi/${installed}/php-fpm.d/www.conf.old" ]; then
-          # Переименовываем файл www.conf.old в www.conf
-          mv "/etc/opt/remi/${installed}/php-fpm.d/www.conf.old" "/etc/opt/remi/${installed}/php-fpm.d/www.conf"
-          echo -e "Файл ${GREEN}www.conf${WHITE} восстановлен по умолчанию, так как все пулы этой версии php удалены."
-      else
-          echo -e "Файла ${RED}www.conf.old${WHITE} в папке пула ${RED}/etc/opt/remi/${installed}/php-fpm.d/${WHITE} нет!."
-          echo "Невозможно восстановить его автоматически."
-          echo -e "Нужно восстановить этот файл вручную, иначе ${installed} перестанет работать."
-      fi
-    fi
-    if ! /opt/remi/${installed}/root/usr/sbin/php-fpm -t
-    then
-      echo "Ошибка в настройках. ${installed}-fpm не был перезагружен"
-    else
-      systemctl restart "${installed}-php-fpm"
-      echo "${installed}-fpm был перезагружен"
-    fi
-  done
-  gpasswd -d apache ${1}
-  userdel --remove ${1}
-  create_hotlist
-  mariadb  -e "DROP USER IF EXISTS ${1}@localhost;"
-  echo -e "Пользователь ${RED}$1${WHITE} был удален."
 }
 
 echo -e "${GREEN}System memory:${WHITE}"
@@ -1269,30 +1065,30 @@ EOF
 
   STEP="Настройка ssh config для sftp пользователя на сайте"
   if ! check_step "$STEP"; then
+    effective_settings=""
+    password_authentication=""
 
     if [[ $(getent group sftp) ]]; then
       echo ""
     else
-      groupadd sftp
+      groupadd sftp || exit 1
     fi
 
-    # редактируем /etc/ssh/sshd_config.
-    ## override default of no subsystems
-    ##Subsystem<---->sftp<-->/usr/libexec/openssh/sftp-server
-    #Subsystem sftp internal-sftp -u 022
-    #Match Group sftp
-    #ChrootDirectory /var/www/%u
-    #ForceCommand internal-sftp -u 022
+    effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
+    read -r password_authentication _ <<<"$effective_settings"
+    if [[ "$password_authentication" != "yes" && "$password_authentication" != "no" ]]; then
+      echo -e "${RED}Не удалось определить фактическое значение PasswordAuthentication.${WHITE}"
+      echo "Настройка SFTP остановлена."
+      exit 1
+    fi
 
-    sed -i '/Match Group sftp/d' /etc/ssh/sshd_config
-    sed -i '/ChrootDirectory \/var\/www\/%u/d' /etc/ssh/sshd_config
-    sed -i '/ForceCommand internal-sftp -u 022/d' /etc/ssh/sshd_config
-    r="Subsystem sftp internal-sftp -u 022\n"
-    r=${r}"Match Group sftp\n"
-    r=${r}"ChrootDirectory /var/www/%u\n"
-    r=${r}"ForceCommand internal-sftp -u 022"
-    sed -i "s&^Subsystem.*&${r}&" /etc/ssh/sshd_config
-    systemctl restart sshd
+    echo "Записываем обязательные ограничения SFTP в /etc/ssh/sshd_config.d/00-rish.conf."
+    if ! configure_ssh_password_authentication "$password_authentication"; then
+      echo -e "${RED}Не удалось применить обязательные ограничения SFTP.${WHITE}"
+      exit 1
+    fi
+    mark_step_completed "$STEP"
+    mark_step_completed "Усиление ограничений SFTP и перенос ключей"
 
   fi
 
@@ -1303,8 +1099,12 @@ EOF
     echo -e "Теперь ${GREEN}создаем${WHITE} пользователя для работы с сайтом. "
     echo "Имя пользователя набирается латинскими буквами без спецсимволов, тире и точек."
 
-    CreateUser "siteuser"
-    mark_step_completed "$STEP"
+    if CreateUser "siteuser"; then
+      mark_step_completed "$STEP"
+    else
+      echo -e "${RED}Не удалось создать первого пользователя сайта.${WHITE}"
+      exit 1
+    fi
   fi
 
   STEP="Предлагаем создать ключ доступ к серверу и вывести его на экран для копирования."
@@ -1349,13 +1149,17 @@ EOF
       echo -e -n "${CURSORUP}"
       if configure_ssh_password_authentication no; then
         echo -e "Авторизация по паролю для SSH ${GREEN}запрещена${WHITE}.${ERASEUNTILLENDOFLINE}"
+        echo -e "SFTP-пользователи подключаются только по ключам из ${GREEN}/etc/ssh/authorized_keys${WHITE}."
         mark_step_completed "$STEP"
+        mark_step_completed "Усиление ограничений SFTP и перенос ключей"
       fi
     else
       echo -e -n "${CURSORUP}"
       if configure_ssh_password_authentication yes; then
         echo -e "Авторизация по паролю для SSH ${YELLOW}разрешена${WHITE}.${ERASEUNTILLENDOFLINE}"
+        echo -e "Для SFTP-пользователей пароль всё равно запрещён: они подключаются только по ключам."
         mark_step_completed "$STEP"
+        mark_step_completed "Усиление ограничений SFTP и перенос ключей"
       fi
     fi
   fi

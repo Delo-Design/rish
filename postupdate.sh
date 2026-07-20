@@ -293,7 +293,8 @@ if ! check_step "$STEP"; then
     mark_step_completed "$STEP"
   else
     echo
-    echo -e "Предлагаем усилить изоляцию ${GREEN}PHP-FPM${WHITE} средствами systemd."
+    echo -e "${GREEN}PHP-FPM${WHITE} — усиление изоляции"
+    echo
     echo "PHP-процессы потеряют доступ к /home, /root, /run/user, обычным устройствам"
     echo "и возможностям повышения привилегий через SUID/SGID."
     echo "Каталоги сайтов RISH в /var/www останутся доступны."
@@ -303,6 +304,8 @@ if ! check_step "$STEP"; then
 
     if vertical_menu "current" 2 0 13 "Да" "Нет"; then
       php_fpm_hardening_failed=0
+      echo
+      echo "Применение защиты:"
 
       for php_fpm_hardening_version in "${php_fpm_hardening_versions[@]}"; do
         php_fpm_hardening_was_active=0
@@ -331,7 +334,11 @@ if ! check_step "$STEP"; then
         fi
 
         php_fpm_hardening_binary="/opt/remi/${php_fpm_hardening_version}/root/usr/sbin/php-fpm"
-        if ! "$php_fpm_hardening_binary" -t; then
+        if php_fpm_hardening_test_output="$("$php_fpm_hardening_binary" -t 2>&1)"; then
+          php_fpm_hardening_test_output="$(printf '%s\n' "$php_fpm_hardening_test_output" | sed '/NOTICE: configuration file .* test is successful$/d')"
+          [[ -z "$php_fpm_hardening_test_output" ]] || printf '%s\n' "$php_fpm_hardening_test_output"
+        else
+          [[ -z "$php_fpm_hardening_test_output" ]] || printf '%s\n' "$php_fpm_hardening_test_output"
           echo -e "  ${RED}${php_fpm_hardening_version}-php-fpm${WHITE}: конфигурация PHP-FPM содержит ошибку, сервис не перезапущен"
           rollback_php_fpm_hardening_update "$php_fpm_hardening_version" 0
           php_fpm_hardening_failed=1
@@ -345,7 +352,7 @@ if ! check_step "$STEP"; then
               php_fpm_hardening_failed=1
               continue
             fi
-            echo -e "  ${GREEN}${php_fpm_hardening_version}-php-fpm${WHITE}: защита применена"
+            echo -e "  ${GREEN}${php_fpm_hardening_version}-php-fpm${WHITE}: защита применена, сервис перезапущен"
           else
             echo -e "  ${RED}${php_fpm_hardening_version}-php-fpm${WHITE}: ошибка перезапуска, выполняем откат"
             rollback_php_fpm_hardening_update "$php_fpm_hardening_version" 1
@@ -362,11 +369,15 @@ if ! check_step "$STEP"; then
       done
 
       if [[ "$php_fpm_hardening_failed" -eq 0 ]]; then
+        echo
+        echo -e "Защита PHP-FPM ${GREEN}применена${WHITE}."
         mark_step_completed "$STEP"
       else
+        echo
         echo -e "${YELLOW}Защита применена не полностью. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
       fi
     else
+      echo
       echo -e "${YELLOW}Защита PHP-FPM не применена. Шаг будет предложен при следующем обновлении RISH.${WHITE}"
     fi
   fi
@@ -374,8 +385,12 @@ fi
 
 STEP="Ограничение пользовательского CRON через cron.allow"
 if ! check_step "$STEP"; then
-  echo "Разрешаем управление пользовательским CRON только пользователю root."
+  echo
+  echo "CRON — ограничение доступа"
+  echo
+  echo -e "Теперь управление пользовательским CRON разрешено только пользователю ${YELLOW}root${WHITE}."
   if configure_cron_allow; then
+    echo -e "Файл ${YELLOW}/etc/cron.allow${WHITE} настроен."
     mark_step_completed "$STEP"
   else
     echo -e "${YELLOW}Не удалось настроить /etc/cron.allow. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
@@ -388,18 +403,68 @@ if ! check_step "$STEP"; then
   read -r password_authentication _ <<<"$effective_settings"
 
   if [[ "$password_authentication" == "yes" || "$password_authentication" == "no" ]]; then
+    echo
+    echo "SFTP — усиление ограничений"
+    echo
     echo "Переносим настройки авторизации SSH в /etc/ssh/sshd_config.d/00-rish.conf."
     if configure_ssh_password_authentication "$password_authentication"; then
+      echo
+      echo "Фактические параметры SSH:"
       print_effective_ssh_authentication
+      echo
+      echo -e "Ограничения SFTP ${GREEN}применены${WHITE}."
       if [[ "$password_authentication" == "yes" ]]; then
         echo
         echo -e "Авторизация по паролю для SSH ${YELLOW}разрешена${WHITE}."
         echo "Это повышает риск подбора учётных данных и несанкционированного доступа."
         echo "Рекомендуется использовать SSH-ключи и запретить авторизацию по паролю через меню управления сервером."
       fi
+      echo
+      echo "Расположение ключей SFTP изменилось:"
+      echo -e "  Каталог: ${YELLOW}/etc/ssh/authorized_keys${WHITE}"
+      echo -e "  Добавление и замена: ${YELLOW}/etc/ssh/authorized_keys/<имя пользователя>${WHITE}"
+      if [[ "${SFTP_KEYS_MIGRATED:-0}" -eq 1 ]]; then
+        echo
+        echo "Проверьте, кому принадлежат перенесённые ключи."
+        echo -e "Особенно внимательно проверьте ключи ${YELLOW}без комментария${WHITE}."
+      fi
       mark_step_completed "$STEP"
+      mark_step_completed "Усиление ограничений SFTP и перенос ключей"
     else
       echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+    fi
+  else
+    echo -e "${YELLOW}Не удалось определить PasswordAuthentication через sshd -T.${WHITE}"
+    echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+  fi
+fi
+
+STEP="Усиление ограничений SFTP и перенос ключей"
+if ! check_step "$STEP"; then
+  effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
+  read -r password_authentication _ <<<"$effective_settings"
+
+  if [[ "$password_authentication" == "yes" || "$password_authentication" == "no" ]]; then
+    echo
+    echo "SFTP — усиление ограничений"
+    echo
+    echo "Закрываем для SFTP-пользователей парольный вход, forwarding, TTY и пользовательские команды."
+    echo "Проверяем существующие публичные ключи SFTP и при наличии переносим их в /etc/ssh/authorized_keys."
+    if configure_ssh_password_authentication "$password_authentication"; then
+      echo
+      echo -e "Ограничения SFTP ${GREEN}применены${WHITE}."
+      echo
+      echo "Расположение ключей SFTP изменилось:"
+      echo -e "  Каталог: ${YELLOW}/etc/ssh/authorized_keys${WHITE}"
+      echo -e "  Добавление и замена: ${YELLOW}/etc/ssh/authorized_keys/<имя пользователя>${WHITE}"
+      if [[ "${SFTP_KEYS_MIGRATED:-0}" -eq 1 ]]; then
+        echo
+        echo "Проверьте, кому принадлежат перенесённые ключи."
+        echo -e "Особенно внимательно проверьте ключи ${YELLOW}без комментария${WHITE}."
+      fi
+      mark_step_completed "$STEP"
+    else
+      echo -e "${YELLOW}Не удалось применить ограничения SFTP. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
     fi
   else
     echo -e "${YELLOW}Не удалось определить PasswordAuthentication через sshd -T.${WHITE}"

@@ -4,9 +4,7 @@
 # shellcheck disable=SC2154
 ServerManagementMenu() {
   source $config_file
-  options=("Создать пользователя"
-    "Удалить пользователя"
-    "Установка новых версий PHP"
+  options=("Установка новых версий PHP"
     "Включить/отключить авторизацию по паролю по SSH"
     "Включить/отключить управление DNS"
     "Выйти")
@@ -30,27 +28,6 @@ ServerManagementMenu() {
 
     case "$choice" in
     0)
-      clear
-      CreateUser
-      ;;
-    1)
-      clear
-      mapfile -t usrs < <(
-        awk -F: '$6 ~ /^\/home\// { print $1 }' /etc/passwd | sort
-      )
-      if ((${#usrs[@]} > 0)); then
-        echo "Выберите пользователя для удаления из системы"
-        vertical_menu "current" 2 0 30 "${usrs[@]}"
-        choice=$?
-        echo -e ${CURSORUP}
-        if ((choice < 255)); then
-          DeleteUser ${usrs[${choice}]}
-        fi
-      else
-        echo "В системе нет ни одного пользователя"
-      fi
-      ;;
-    2)
       echo -e "Выбор и установка нужных версий ${GREEN}PHP${WHITE}"
       clear
       # Рисуем разделительную линию
@@ -67,7 +44,7 @@ ServerManagementMenu() {
       repl "─" $((${columns}))
       cursor_to $((${rim} + 2)) 1
       ;;
-    3)
+    1)
       effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
       read -r password_authentication kbd_interactive_authentication <<<"$effective_settings"
 
@@ -101,7 +78,7 @@ ServerManagementMenu() {
         echo
       fi
       ;;
-    4)
+    2)
       if [[ -d /root/rish/dns ]]; then
         if [[ -d /root/rish/dns_bak ]]; then
           dns_domains=0

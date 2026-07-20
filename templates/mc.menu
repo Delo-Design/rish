@@ -51,10 +51,20 @@ i       IP адрес сервера
   bash /root/rish/scripts/fix_permissions.sh "%d" "%f"
 
 R  Управление сервером
-	r=$( pwd )
-  cd /root/rish
-	./ri.sh
-	cd ${r}
+  r=$(pwd)
+  if cd /root/rish; then
+    ./ri.sh
+  fi
+  if ! cd "$r" 2>/dev/null; then
+    cd /var/www || cd /
+  fi
+
+U  Пользователи сервера
+  r=$(pwd)
+  bash /root/rish/scripts/user_management.sh "%d" "%f"
+  if ! cd "$r" 2>/dev/null; then
+    cd /var/www || cd /
+  fi
 
 O  Oбнoвлeниe/прoверкa RISH {VER}
   bash /root/rish/update.sh

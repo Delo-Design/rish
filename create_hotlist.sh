@@ -37,7 +37,7 @@ function create_hotlist() {
 ENDGROUP
 ENTRY "/etc" URL "/etc"
 ENTRY "/root" URL "/root"
-ENTRY "Ключи SFTP тут – /home" URL "/home"
+ENTRY "Ключи SFTP – /etc/ssh/authorized_keys" URL "/etc/ssh/authorized_keys"
 ENTRY "Путь к пользователям /var/www" URL "/var/www"
 ENTRY "Путь к конфигам сайтов apache /etc/httpd/conf.d" URL "/etc/httpd/conf.d"
 GROUP "Пути к настройкам php"
