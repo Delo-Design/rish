@@ -36,7 +36,12 @@ function create_hotlist() {
   cat >>"$hotlist_file" <<EOF
 ENDGROUP
 ENTRY "/etc" URL "/etc"
-ENTRY "/root" URL "/root"
+ENTRY "RISH – /root/rish" URL "/root/rish"
+EOF
+  if [[ -d /root/rish/credentials && ! -L /root/rish/credentials ]]; then
+    echo 'ENTRY "Учетные данные – /root/rish/credentials" URL "/root/rish/credentials"' >>"$hotlist_file"
+  fi
+  cat >>"$hotlist_file" <<EOF
 ENTRY "Ключи SFTP – /etc/ssh/authorized_keys" URL "/etc/ssh/authorized_keys"
 ENTRY "Путь к пользователям /var/www" URL "/var/www"
 ENTRY "Путь к конфигам сайтов apache /etc/httpd/conf.d" URL "/etc/httpd/conf.d"

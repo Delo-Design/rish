@@ -30,6 +30,7 @@ source /root/rish/rish_config.sh
 source /root/rish/php_helpers.sh
 source /root/rish/scripts/ssh_authentication.sh
 source /root/rish/scripts/cron_access.sh
+source /root/rish/scripts/user_credentials.sh
 LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
@@ -285,11 +286,34 @@ if ! check_step "$STEP"; then
   mark_step_completed "$STEP"
 fi
 
+STEP="Перенос учетных данных пользователей в /root/rish/credentials"
+if ! check_step "$STEP"; then
+  if ! legacy_user_credentials_exist; then
+    mark_step_completed "$STEP"
+  else
+    echo
+    echo -e "${GREEN}Учетные данные пользователей${WHITE} — перенос в защищенное хранение"
+    echo
+    if migrate_all_legacy_user_credentials; then
+      mark_step_completed "$STEP"
+    else
+      echo -e "${YELLOW}Перенос выполнен не полностью. Исходные файлы сохранены; шаг будет повторен при следующем обновлении RISH.${WHITE}"
+    fi
+  fi
+fi
+
 STEP="Усиление изоляции PHP-FPM через systemd"
 if ! check_step "$STEP"; then
   mapfile -t php_fpm_hardening_versions < <(get_installed_php_versions)
+  php_fpm_hardening_pending_versions=()
 
-  if [[ "${#php_fpm_hardening_versions[@]}" -eq 0 ]]; then
+  for php_fpm_hardening_version in "${php_fpm_hardening_versions[@]}"; do
+    if ! php_fpm_systemd_conf_matches "$php_fpm_hardening_version" || ! php_fpm_systemd_security_is_effective "$php_fpm_hardening_version"; then
+      php_fpm_hardening_pending_versions+=("$php_fpm_hardening_version")
+    fi
+  done
+
+  if [[ "${#php_fpm_hardening_pending_versions[@]}" -eq 0 ]]; then
     mark_step_completed "$STEP"
   else
     echo
@@ -307,7 +331,7 @@ if ! check_step "$STEP"; then
       echo
       echo "Применение защиты:"
 
-      for php_fpm_hardening_version in "${php_fpm_hardening_versions[@]}"; do
+      for php_fpm_hardening_version in "${php_fpm_hardening_pending_versions[@]}"; do
         php_fpm_hardening_was_active=0
         if systemctl is-active --quiet "${php_fpm_hardening_version}-php-fpm"; then
           php_fpm_hardening_was_active=1
@@ -385,120 +409,154 @@ fi
 
 STEP="Ограничение пользовательского CRON через cron.allow"
 if ! check_step "$STEP"; then
-  echo
-  echo "CRON — ограничение доступа"
-  echo
-  echo -e "Теперь управление пользовательским CRON разрешено только пользователю ${YELLOW}root${WHITE}."
-  if configure_cron_allow; then
-    echo -e "Файл ${YELLOW}/etc/cron.allow${WHITE} настроен."
+  if cron_allow_is_secure; then
     mark_step_completed "$STEP"
   else
-    echo -e "${YELLOW}Не удалось настроить /etc/cron.allow. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
+    echo
+    echo -e "${GREEN}CRON${WHITE} — ограничение доступа"
+    echo
+    echo -e "Теперь управление пользовательским CRON разрешено только пользователю ${YELLOW}root${WHITE}."
+    if configure_cron_allow; then
+      echo -e "Файл ${YELLOW}/etc/cron.allow${WHITE} настроен."
+      mark_step_completed "$STEP"
+    else
+      echo -e "${YELLOW}Не удалось настроить /etc/cron.allow. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
+    fi
   fi
 fi
 
 STEP="Настройка способов авторизации SSH через 00-rish.conf"
 if ! check_step "$STEP"; then
-  effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
-  read -r password_authentication _ <<<"$effective_settings"
-
-  if [[ "$password_authentication" == "yes" || "$password_authentication" == "no" ]]; then
-    echo
-    echo "SFTP — усиление ограничений"
-    echo
-    echo "Переносим настройки авторизации SSH в /etc/ssh/sshd_config.d/00-rish.conf."
-    if configure_ssh_password_authentication "$password_authentication"; then
-      echo
-      echo "Фактические параметры SSH:"
-      print_effective_ssh_authentication
-      echo
-      echo -e "Ограничения SFTP ${GREEN}применены${WHITE}."
-      if [[ "$password_authentication" == "yes" ]]; then
-        echo
-        echo -e "Авторизация по паролю для SSH ${YELLOW}разрешена${WHITE}."
-        echo "Это повышает риск подбора учётных данных и несанкционированного доступа."
-        echo "Рекомендуется использовать SSH-ключи и запретить авторизацию по паролю через меню управления сервером."
-      fi
-      echo
-      echo "Расположение ключей SFTP изменилось:"
-      echo -e "  Каталог: ${YELLOW}/etc/ssh/authorized_keys${WHITE}"
-      echo -e "  Добавление и замена: ${YELLOW}/etc/ssh/authorized_keys/<имя пользователя>${WHITE}"
-      if [[ "${SFTP_KEYS_MIGRATED:-0}" -eq 1 ]]; then
-        echo
-        echo "Проверьте, кому принадлежат перенесённые ключи."
-        echo -e "Особенно внимательно проверьте ключи ${YELLOW}без комментария${WHITE}."
-      fi
-      mark_step_completed "$STEP"
+  if rish_sftp_configuration_is_secure; then
+    mark_step_completed "$STEP"
+    if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
       mark_step_completed "Усиление ограничений SFTP и перенос ключей"
-    else
-      echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
     fi
   else
-    echo -e "${YELLOW}Не удалось определить PasswordAuthentication через sshd -T.${WHITE}"
-    echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+    effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
+    read -r password_authentication _ <<<"$effective_settings"
+
+    if [[ "$password_authentication" == "yes" || "$password_authentication" == "no" ]]; then
+      echo
+      echo -e "${GREEN}SFTP${WHITE} — усиление ограничений"
+      echo
+      echo "Переносим настройки авторизации SSH в /etc/ssh/sshd_config.d/00-rish.conf."
+      if configure_ssh_password_authentication "$password_authentication"; then
+        echo
+        echo "Фактические параметры SSH:"
+        print_effective_ssh_authentication
+        echo
+        echo -e "Ограничения SFTP ${GREEN}применены${WHITE}."
+        if [[ "$password_authentication" == "yes" ]]; then
+          echo
+          echo -e "Авторизация по паролю для SSH ${YELLOW}разрешена${WHITE}."
+          echo "Это повышает риск подбора учётных данных и несанкционированного доступа."
+          echo "Рекомендуется использовать SSH-ключи и запретить авторизацию по паролю через меню управления сервером."
+        fi
+        echo
+        echo "Расположение ключей SFTP изменилось:"
+        echo -e "  Каталог: ${YELLOW}/etc/ssh/authorized_keys${WHITE}"
+        echo -e "  Добавление и замена: ${YELLOW}/etc/ssh/authorized_keys/<имя пользователя>${WHITE}"
+        echo "  Быстрый переход в Midnight Commander: нажмите Ctrl+\ и выберите «Ключи SFTP»."
+        if [[ "${SFTP_KEYS_MIGRATED:-0}" -eq 1 ]]; then
+          echo
+          echo "Проверьте, кому принадлежат перенесённые ключи."
+          echo -e "Особенно внимательно проверьте ключи ${YELLOW}без комментария${WHITE}."
+        fi
+        mark_step_completed "$STEP"
+        if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
+          mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+        fi
+      else
+        echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+      fi
+    else
+      echo -e "${YELLOW}Не удалось определить PasswordAuthentication через sshd -T.${WHITE}"
+      echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+    fi
   fi
 fi
 
 STEP="Усиление ограничений SFTP и перенос ключей"
 if ! check_step "$STEP"; then
-  effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
-  read -r password_authentication _ <<<"$effective_settings"
-
-  if [[ "$password_authentication" == "yes" || "$password_authentication" == "no" ]]; then
-    echo
-    echo "SFTP — усиление ограничений"
-    echo
-    echo "Закрываем для SFTP-пользователей парольный вход, forwarding, TTY и пользовательские команды."
-    echo "Проверяем существующие публичные ключи SFTP и при наличии переносим их в /etc/ssh/authorized_keys."
-    if configure_ssh_password_authentication "$password_authentication"; then
-      echo
-      echo -e "Ограничения SFTP ${GREEN}применены${WHITE}."
-      echo
-      echo "Расположение ключей SFTP изменилось:"
-      echo -e "  Каталог: ${YELLOW}/etc/ssh/authorized_keys${WHITE}"
-      echo -e "  Добавление и замена: ${YELLOW}/etc/ssh/authorized_keys/<имя пользователя>${WHITE}"
-      if [[ "${SFTP_KEYS_MIGRATED:-0}" -eq 1 ]]; then
-        echo
-        echo "Проверьте, кому принадлежат перенесённые ключи."
-        echo -e "Особенно внимательно проверьте ключи ${YELLOW}без комментария${WHITE}."
-      fi
-      mark_step_completed "$STEP"
-    else
-      echo -e "${YELLOW}Не удалось применить ограничения SFTP. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
-    fi
+  if rish_sftp_configuration_is_secure; then
+    mark_step_completed "$STEP"
   else
-    echo -e "${YELLOW}Не удалось определить PasswordAuthentication через sshd -T.${WHITE}"
-    echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+    effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
+    read -r password_authentication _ <<<"$effective_settings"
+
+    if [[ "$password_authentication" == "yes" || "$password_authentication" == "no" ]]; then
+      echo
+      echo -e "${GREEN}SFTP${WHITE} — усиление ограничений"
+      echo
+      echo "Закрываем для SFTP-пользователей парольный вход, forwarding, TTY и пользовательские команды."
+      echo "Проверяем существующие публичные ключи SFTP и при наличии переносим их в /etc/ssh/authorized_keys."
+      if configure_ssh_password_authentication "$password_authentication"; then
+        echo
+        echo -e "Ограничения SFTP ${GREEN}применены${WHITE}."
+        echo
+        echo "Расположение ключей SFTP изменилось:"
+        echo -e "  Каталог: ${YELLOW}/etc/ssh/authorized_keys${WHITE}"
+        echo -e "  Добавление и замена: ${YELLOW}/etc/ssh/authorized_keys/<имя пользователя>${WHITE}"
+        echo "  Быстрый переход в Midnight Commander: нажмите Ctrl+\ и выберите «Ключи SFTP»."
+        if [[ "${SFTP_KEYS_MIGRATED:-0}" -eq 1 ]]; then
+          echo
+          echo "Проверьте, кому принадлежат перенесённые ключи."
+          echo -e "Особенно внимательно проверьте ключи ${YELLOW}без комментария${WHITE}."
+        fi
+        mark_step_completed "$STEP"
+      else
+        echo -e "${YELLOW}Не удалось применить ограничения SFTP. Шаг будет повторен при следующем обновлении RISH.${WHITE}"
+      fi
+    else
+      echo -e "${YELLOW}Не удалось определить PasswordAuthentication через sshd -T.${WHITE}"
+      echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
+    fi
   fi
 fi
 
 STEP="Настройка hard_delete для Yandex remote"
 if ! check_step "$STEP"; then
-  echo -e "Проверяем параметр hard_delete для Yandex-подключений ${GREEN}rclone${WHITE}..."
-  rclone_config_dump="$(rclone config dump 2>/dev/null || true)"
+  rclone_config_dump=""
+  yandex_remotes_output=""
   yandex_total=0
   yandex_updated=0
   yandex_skipped=0
   yandex_failed=0
 
-  if [ -z "$rclone_config_dump" ]; then
+  if ! rclone_config_dump="$(rclone config dump 2>/dev/null)"; then
     yandex_failed=1
+    echo -e "Проверяем параметр hard_delete для Yandex-подключений ${GREEN}rclone${WHITE}..."
     echo -e "${YELLOW}Не удалось прочитать конфигурацию rclone (config dump).${WHITE}"
+  elif [ -z "$rclone_config_dump" ]; then
+    yandex_failed=1
+    echo -e "Проверяем параметр hard_delete для Yandex-подключений ${GREEN}rclone${WHITE}..."
+    echo -e "${YELLOW}Конфигурация rclone прочитана, но получен пустой результат.${WHITE}"
+  elif ! yandex_remotes_output="$(
+    printf '%s' "$rclone_config_dump" \
+      | jq -r 'to_entries[] | select((.value.type // "") == "yandex") | .key'
+  )"; then
+    yandex_failed=1
+    echo -e "Проверяем параметр hard_delete для Yandex-подключений ${GREEN}rclone${WHITE}..."
+    echo -e "${YELLOW}Не удалось разобрать конфигурацию rclone с помощью jq.${WHITE}"
   else
-    mapfile -t yandex_remotes < <(
-      printf '%s' "$rclone_config_dump" \
-        | jq -r 'to_entries[] | select((.value.type // "") == "yandex") | .key'
-    )
+    yandex_remotes=()
+    if [ -n "$yandex_remotes_output" ]; then
+      mapfile -t yandex_remotes <<<"$yandex_remotes_output"
+    fi
 
-    if [ "${#yandex_remotes[@]}" -eq 0 ]; then
-      echo -e "${YELLOW}Yandex-подключения rclone не найдены, настройка hard_delete не требуется.${WHITE}"
-    else
+    if [ "${#yandex_remotes[@]}" -gt 0 ]; then
+      echo -e "Проверяем параметр hard_delete для Yandex-подключений ${GREEN}rclone${WHITE}..."
       for remote_name in "${yandex_remotes[@]}"; do
         yandex_total=$((yandex_total + 1))
-        hard_delete_value="$(
+        if ! hard_delete_value="$(
           printf '%s' "$rclone_config_dump" \
             | jq -r --arg remote "$remote_name" '.[$remote].hard_delete // ""'
-        )"
+        )"; then
+          yandex_failed=$((yandex_failed + 1))
+          echo -e "Для ${YELLOW}${remote_name}${WHITE}: не удалось прочитать параметр hard_delete"
+          continue
+        fi
         hard_delete_value="$(printf '%s' "$hard_delete_value" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
 
         case "$hard_delete_value" in
@@ -789,7 +847,7 @@ if printf '%s\n' "$cron_jobs" | grep -Eq '^[[:space:]]*[^#].*/root/rish/backup\.
   echo "Старая система основана на утилите ydcmd, которая уже "
   echo "не поддерживается автором и в любой момент может перестать работать."
   echo
-  echo "Переключитесь на новую систему бэкапов - в cron замените  backup.sh на backup2.sh."
+  echo "Переключитесь на новую систему бэкапов: в CRON замените /root/rish/backup.sh на /root/rish/backup2.sh auto."
   echo
 fi
 

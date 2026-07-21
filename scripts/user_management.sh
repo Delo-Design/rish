@@ -18,6 +18,7 @@ CURSORUP='\033[1A'
 source "${RISH_HOME}/windows.sh"
 source "${RISH_HOME}/create_hotlist.sh"
 source "${RISH_HOME}/scripts/ssh_authentication.sh"
+source "${RISH_HOME}/scripts/user_credentials.sh"
 source "${RISH_HOME}/scripts/create_user.sh"
 source "${RISH_HOME}/scripts/delete_user.sh"
 

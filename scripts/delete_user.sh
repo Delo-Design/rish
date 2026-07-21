@@ -8,6 +8,7 @@ DeleteUser() {
   local sites_dir
   local home_dir
   local sftp_authorized_keys_file
+  local credentials_file
   local user_sql
   local database_output
   local global_privilege_output
@@ -84,10 +85,17 @@ DeleteUser() {
   user_root="/var/www/${user}"
   sites_dir="${user_root}/www"
   sftp_authorized_keys_file="${RISH_SFTP_AUTHORIZED_KEYS_DIR}/${user}"
+  credentials_file="$(rish_credentials_file "$user")" || return 1
   if [[ ! -d "$user_root" || -L "$user_root" || ! -d "$sites_dir" || -L "$sites_dir" ]]; then
     echo -e "Каталоги пользователя ${RED}${user}${WHITE} не соответствуют структуре RISH."
     echo -e "Ожидается обычный каталог ${YELLOW}${sites_dir}${WHITE}."
     return 1
+  fi
+  if [[ -e "$credentials_file" || -L "$credentials_file" ]]; then
+    if [[ ! -f "$credentials_file" || -L "$credentials_file" ]]; then
+      echo -e "Файл учетных данных имеет неожиданный тип: ${RED}${credentials_file}${WHITE}."
+      return 1
+    fi
   fi
 
   mapfile -t site_entries < <(find "$sites_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
@@ -249,6 +257,9 @@ DeleteUser() {
   echo -e "  - учетная запись MariaDB ${YELLOW}'${user}'@'localhost'${WHITE}"
   if [[ -e "$sftp_authorized_keys_file" || -L "$sftp_authorized_keys_file" ]]; then
     echo -e "  - ключи SFTP ${YELLOW}${sftp_authorized_keys_file}${WHITE}"
+  fi
+  if [[ -f "$credentials_file" && ! -L "$credentials_file" ]]; then
+    echo -e "  - учетные данные ${YELLOW}${credentials_file}${WHITE}"
   fi
   for pool_file in "${affected_pool_files[@]}"; do
     echo -e "  - PHP-пул ${YELLOW}${pool_file}${WHITE}"
@@ -512,8 +523,14 @@ DeleteUser() {
     echo -e "Не удалось удалить файл ключей SFTP ${RED}${sftp_authorized_keys_file}${WHITE}."
     deletion_errors=1
   fi
-  if ! mariadb -e "DROP USER IF EXISTS '${user_sql}'@'localhost';"; then
+  if mariadb -e "DROP USER IF EXISTS '${user_sql}'@'localhost';"; then
+    if ! remove_user_credentials "$user"; then
+      echo -e "Не удалось удалить файл учетных данных ${RED}${credentials_file}${WHITE}."
+      deletion_errors=1
+    fi
+  else
     echo -e "Не удалось удалить учетную запись MariaDB ${RED}'${user}'@'localhost'${WHITE}."
+    echo -e "Файл учетных данных ${YELLOW}${credentials_file}${WHITE} сохранен для ручного восстановления."
     deletion_errors=1
   fi
   if ! create_hotlist; then

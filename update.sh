@@ -160,4 +160,4 @@ else
 fi
 rm -f /root/rish2.tar.gz > /dev/null
 rm -rf "${UPDATE_TMP_DIR}"
-vertical_menu "current" 2 0 5 "Нажмите Enter"
+vertical_menu "current" 2 0 5 nomouse "Нажмите Enter"

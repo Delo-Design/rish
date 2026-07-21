@@ -86,6 +86,7 @@ source create_hotlist.sh
 source scripts/create_swapfile.sh
 source scripts/ssh_authentication.sh
 source scripts/cron_access.sh
+source scripts/user_credentials.sh
 source scripts/create_user.sh
 
 if (( lines < 40 || columns < 140 )); then
@@ -144,6 +145,16 @@ cursor_to $(( ${rim} +1 )) 1
 repl "─" $(( ${columns} ))
 cursor_to $(( ${rim} +2 )) 1
 Up
+
+if [[ -s "${RISH_HOME}/version" ]]; then
+  RISH_VERSION=$(tr -d '\r' < "${RISH_HOME}/version" | awk '{$1=$1; print; exit}')
+fi
+
+if [[ -n "${RISH_VERSION}" ]]; then
+  echo -e "Устанавливаемая версия RISH: ${GREEN}${RISH_VERSION}${WHITE}"
+else
+  echo -e "Устанавливаемая версия RISH: ${YELLOW}не определена${WHITE}"
+fi
 
 if command -v lsb_release >/dev/null 2>&1; then
   CURRENT_OS=$(lsb_release -d -s)
@@ -665,6 +676,9 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       install -m 644 "${RISH_HOME}/templates/default-apache-noindex.html" "${RISH_HOME}/templates/apache-noindex.html" &>>"$LOG_FILE" || exit 1
     fi
     install -D -m 644 "${RISH_HOME}/templates/apache-noindex.html" /usr/share/httpd/noindex/index.html &>>"$LOG_FILE" || exit 1
+    if ! check_step "Инициализация шаблона заглушки Apache"; then
+      mark_step_completed "Инициализация шаблона заглушки Apache"
+    fi
     mark_step_completed "$STEP"
   fi
   STEP="Проверка на наличие ServerName и исправление если его нет."
@@ -716,6 +730,9 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     echo -e "Идет получение списка доступных версий ${GREEN}PHP${WHITE}. Ждите."
     php_multi_install
     Up
+    if ! check_step "Усиление изоляции PHP-FPM через systemd"; then
+      mark_step_completed "Усиление изоляции PHP-FPM через systemd"
+    fi
     mark_step_completed "$STEP"
     echo -e "Установка выбранных версий ${GREEN}PHP${WHITE} завершена."
   fi
@@ -788,6 +805,9 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     Install jq
     Install rclone
     mark_step_completed "$STEP"
+    if ! check_step "Настройка hard_delete для Yandex remote"; then
+      mark_step_completed "Настройка hard_delete для Yandex remote"
+    fi
   fi
 
   STEP="Установка bind-utils"
@@ -1088,7 +1108,9 @@ EOF
       exit 1
     fi
     mark_step_completed "$STEP"
-    mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+    if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
+      mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+    fi
 
   fi
 
@@ -1101,6 +1123,9 @@ EOF
 
     if CreateUser "siteuser"; then
       mark_step_completed "$STEP"
+      if ! legacy_user_credentials_exist && ! check_step "Перенос учетных данных пользователей в /root/rish/credentials"; then
+        mark_step_completed "Перенос учетных данных пользователей в /root/rish/credentials"
+      fi
     else
       echo -e "${RED}Не удалось создать первого пользователя сайта.${WHITE}"
       exit 1
@@ -1151,7 +1176,14 @@ EOF
         echo -e "Авторизация по паролю для SSH ${GREEN}запрещена${WHITE}.${ERASEUNTILLENDOFLINE}"
         echo -e "SFTP-пользователи подключаются только по ключам из ${GREEN}/etc/ssh/authorized_keys${WHITE}."
         mark_step_completed "$STEP"
-        mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+        if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
+          mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+        fi
+      else
+        echo -e "${RED}Не удалось применить выбранные настройки авторизации SSH.${WHITE}"
+        echo "Установка остановлена. После устранения ошибки запустите /root/rish/ri.sh повторно."
+        RemoveRim
+        exit 1
       fi
     else
       echo -e -n "${CURSORUP}"
@@ -1159,7 +1191,14 @@ EOF
         echo -e "Авторизация по паролю для SSH ${YELLOW}разрешена${WHITE}.${ERASEUNTILLENDOFLINE}"
         echo -e "Для SFTP-пользователей пароль всё равно запрещён: они подключаются только по ключам."
         mark_step_completed "$STEP"
-        mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+        if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
+          mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+        fi
+      else
+        echo -e "${RED}Не удалось применить выбранные настройки авторизации SSH.${WHITE}"
+        echo "Установка остановлена. После устранения ошибки запустите /root/rish/ri.sh повторно."
+        RemoveRim
+        exit 1
       fi
     fi
   fi

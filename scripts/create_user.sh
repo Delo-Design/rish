@@ -30,6 +30,7 @@ rollback_failed_user_creation() {
   local authorized_keys_file_existed="$4"
   local private_group_existed="$5"
   local mariadb_user_created="$6"
+  local credentials_created="$7"
   local authorized_keys_file="/etc/ssh/authorized_keys/${user}"
   local group_members
   local rollback_failed=0
@@ -40,6 +41,13 @@ rollback_failed_user_creation() {
   fi
 
   echo "Отменяем создание пользователя ${user}."
+
+  if ((credentials_created)); then
+    if ! remove_user_credentials "$user"; then
+      echo -e "Не удалось удалить файл учетных данных пользователя ${RED}${user}${WHITE}."
+      rollback_failed=1
+    fi
+  fi
 
   if ((mariadb_user_created)); then
     if ! mariadb -e "DROP USER IF EXISTS '${user}'@'localhost';"; then
@@ -120,12 +128,13 @@ fail_user_creation() {
 CreateUser() {
   local NAME
   local default_username="$1"  # Получаем первый параметр, переданный в функцию
-  local pass_file
+  local credentials_file
   local home_existed=0
   local user_root_existed=0
   local authorized_keys_file_existed=0
   local private_group_existed=0
   local mariadb_user_created=0
+  local credentials_created=0
   local -a rollback_args=()
   # try to create user
 
@@ -184,7 +193,7 @@ CreateUser() {
   echo "При создании новых сайтов Joomla требуется указать учетную запись для администратора."
   echo "Вы можете указать имя этой учетной записи, чтобы в дальнейшем не тратить время на ее изменение."
   echo -e "Если вы не укажете имя сейчас - оно будет создано автоматически. "
-  echo -e "Изменить его можно будет в файле ${GREEN}/home/${NAME}/.pass.txt${WHITE}"
+  echo -e "Изменить его можно будет в файле ${GREEN}${RISH_CREDENTIALS_DIR}/${NAME}${WHITE}"
   echo
   echo "Введите имя учетной записи для создания сайтов по умолчанию (Обычно это ваш E-mail)"
   read -r -e -p "(Можно не заполнять - нажмите Enter)" DEFAULTSITEACCOUNT
@@ -199,8 +208,13 @@ CreateUser() {
   [[ -e "/var/www/${NAME}" || -L "/var/www/${NAME}" ]] && user_root_existed=1
   [[ -e "/etc/ssh/authorized_keys/${NAME}" || -L "/etc/ssh/authorized_keys/${NAME}" ]] && authorized_keys_file_existed=1
   getent group "$NAME" >/dev/null 2>&1 && private_group_existed=1
+  credentials_file="$(rish_credentials_file "$NAME")" || return 1
+  if [[ -e "$credentials_file" || -L "$credentials_file" ]]; then
+    echo -e "Файл учетных данных ${RED}${credentials_file}${WHITE} уже существует."
+    return 1
+  fi
   rollback_args=("$NAME" "$home_existed" "$user_root_existed" \
-    "$authorized_keys_file_existed" "$private_group_existed" "$mariadb_user_created")
+    "$authorized_keys_file_existed" "$private_group_existed" "$mariadb_user_created" "$credentials_created")
 
   if ! useradd -s /sbin/nologin "$NAME"; then
     fail_user_creation "создание учётной записи Linux" "${rollback_args[@]}"
@@ -209,11 +223,11 @@ CreateUser() {
 
   pass=$(tr -dc A-Za-z0-9 < /dev/urandom | head -c 16 | xargs)
   if ((${#pass} != 16)); then
-    fail_user_creation "генерация пароля Linux" "${rollback_args[@]}"
+    fail_user_creation "генерация пароля SFTP-пользователя" "${rollback_args[@]}"
     return 1
   fi
   if ! printf '%s:%s\n' "$NAME" "$pass" | chpasswd; then
-    fail_user_creation "установка пароля Linux" "${rollback_args[@]}"
+    fail_user_creation "установка пароля SFTP-пользователя" "${rollback_args[@]}"
     return 1
   fi
 
@@ -233,25 +247,18 @@ CreateUser() {
     DEFAULTSITEACCOUNT="info@${NAME}.com"
   fi
 
-  pass_file="/home/${NAME}/.pass.txt"
-  if ! {
-    printf 'Database: %s\n' "$pass2"
-    printf '%s: %s\n' "$NAME" "$pass"
-    printf 'defaultsiteaccount %s %s\n' "$DEFAULTSITEACCOUNT" "$pass3"
-  } >"$pass_file"; then
-    fail_user_creation "запись файла ${pass_file}" "${rollback_args[@]}"
+  if ! write_user_credentials "$NAME" "$pass" "$pass2" "$DEFAULTSITEACCOUNT" "$pass3"; then
+    fail_user_creation "запись файла ${credentials_file}" "${rollback_args[@]}"
     return 1
   fi
+  credentials_created=1
+  rollback_args=("$NAME" "$home_existed" "$user_root_existed" \
+    "$authorized_keys_file_existed" "$private_group_existed" "$mariadb_user_created" "$credentials_created")
 
-  if ! chmod 600 "$pass_file" || ! chown "${NAME}:${NAME}" "$pass_file"; then
-    fail_user_creation "настройка прав файла ${pass_file}" "${rollback_args[@]}"
-    return 1
-  fi
-
-  echo -e "Пароль пользователя ${NAME}: ${GREEN}${pass}${WHITE}"
+  echo -e "Пароль SFTP-пользователя ${NAME}: ${GREEN}${pass}${WHITE}"
   echo -e "Пароль для баз данных ${NAME}: ${GREEN}${pass2}${WHITE}"
   echo -e "Учетная запись по умолчанию: ${GREEN}${DEFAULTSITEACCOUNT}${WHITE}"
-  echo -e "Пароли записаны в файл ${GREEN}${pass_file}${WHITE}"
+  echo -e "Учетные данные записаны в файл ${GREEN}${credentials_file}${WHITE}"
 
   if ! usermod -aG sftp "$NAME"; then
     fail_user_creation "добавление пользователя в группу sftp" "${rollback_args[@]}"

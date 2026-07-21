@@ -5,6 +5,9 @@ RED="${RED:-$'\033[0;31m'}"
 WHITE="${WHITE:-$'\033[0m'}"
 YELLOW="${YELLOW:-$'\033[0;33m'}"
 
+RISH_HOME="${RISH_HOME:-/root/rish}"
+source "${RISH_HOME}/scripts/user_credentials.sh"
+
 function normalize_relative_document_root() {
   local document_root="$1"
 
@@ -98,13 +101,12 @@ function fix_joomla_configuration() {
   local user="${site_path#/var/www/}"
   user="${user%%/*}"
 
-  local pass_file="/home/${user}/.pass.txt"
   local database_pass=""
+  local credentials_file
 
-  if [[ -f "$pass_file" ]]; then
-    database_pass="$(awk '/^Database:/ { print $2 }' "$pass_file")"
-  else
-    echo -e "${RED}Файл с паролем базы данных не найден:${WHITE} ${pass_file}"
+  credentials_file="$(rish_credentials_file "$user")" || return 1
+  if ! database_pass="$(read_user_credential "$user" "MariaDB" "Password")" || [[ -z "$database_pass" ]]; then
+    echo -e "${RED}Не удалось прочитать пароль базы данных:${WHITE} ${credentials_file}"
     return 1
   fi
 

@@ -443,6 +443,15 @@ check_cron_allow() {
   fi
 }
 
+check_legacy_backup_cron() {
+  local cron_jobs
+
+  cron_jobs="$(crontab -l 2>/dev/null || true)"
+  if printf '%s\n' "$cron_jobs" | grep -Eq '^[[:space:]]*[^#].*/root/rish/backup\.sh([[:space:]]|$)'; then
+    add_issue "В CRON пользователя ${YELLOW}root${WHITE} используется устаревший $(highlight_path_file "/root/rish/backup.sh"). Замените его вручную на $(highlight_path_file "/root/rish/backup2.sh") auto" "" ""
+  fi
+}
+
 check_user_tmp_dir() {
   local user_name="$1"
   local tmp_dir="/var/www/${user_name}/tmp"
@@ -1008,6 +1017,7 @@ collect_issues() {
   collect_referenced_pools
   check_httpd_tmpfiles_override
   check_cron_allow
+  check_legacy_backup_cron
   check_sftp_security
   check_var_www
   check_noindex

@@ -52,6 +52,7 @@ get_site_php_bin() {
 get_site_user() {
   local path="$1"
   local user
+  local credentials_file
 
   if [[ "$path" =~ ^/var/www/([^/]+)/www(/.*)?$ ]]; then
     user="${BASH_REMATCH[1]}"
@@ -59,7 +60,8 @@ get_site_user() {
     return 1
   fi
 
-  if id -u "$user" > /dev/null 2>&1 && [[ -f "/home/${user}/.pass.txt" ]]; then
+  credentials_file="$(rish_credentials_file "$user")" || return 1
+  if id -u "$user" > /dev/null 2>&1 && [[ -f "$credentials_file" && ! -L "$credentials_file" ]]; then
     echo "$user"
     return 0
   fi
@@ -161,11 +163,11 @@ install_joomla() {
     exit 1
   fi
 
-  db_password=$( awk '/^Database:/ { print $2 }' "/home/${user}/.pass.txt" )
-  admin_email=$( awk '/^defaultsiteaccount / { print $2 }' "/home/${user}/.pass.txt" )
-  admin_password=$( awk '/^defaultsiteaccount / { print $3 }' "/home/${user}/.pass.txt" )
+  db_password="$(read_user_credential "$user" "MariaDB" "Password")"
+  admin_email="$(read_user_credential "$user" "Default site administrator" "Login")"
+  admin_password="$(read_user_credential "$user" "Default site administrator" "Password")"
   if [[ -z "$db_password" || -z "$admin_email" || -z "$admin_password" ]]; then
-    echo -e "Не удалось прочитать учетные данные из ${RED}/home/${user}/.pass.txt${WHITE}."
+    echo -e "Не удалось прочитать учетные данные из ${RED}${RISH_CREDENTIALS_DIR}/${user}${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -767,11 +769,11 @@ install_opencart() {
     exit 1
   fi
 
-  db_password=$( awk '/^Database:/ { print $2 }' "/home/${user}/.pass.txt" )
-  admin_email=$( awk '/^defaultsiteaccount / { print $2 }' "/home/${user}/.pass.txt" )
-  admin_password=$( awk '/^defaultsiteaccount / { print $3 }' "/home/${user}/.pass.txt" )
+  db_password="$(read_user_credential "$user" "MariaDB" "Password")"
+  admin_email="$(read_user_credential "$user" "Default site administrator" "Login")"
+  admin_password="$(read_user_credential "$user" "Default site administrator" "Password")"
   if [[ -z "$db_password" || -z "$admin_email" || -z "$admin_password" ]]; then
-    echo -e "Не удалось прочитать учетные данные из ${RED}/home/${user}/.pass.txt${WHITE}."
+    echo -e "Не удалось прочитать учетные данные из ${RED}${RISH_CREDENTIALS_DIR}/${user}${WHITE}."
     wait_for_enter
     exit 1
   fi
@@ -1009,11 +1011,11 @@ install_wordpress() {
     exit 1
   fi
 
-  db_password=$( awk '/^Database:/ { print $2 }' "/home/${user}/.pass.txt" )
-  admin_email=$( awk '/^defaultsiteaccount / { print $2 }' "/home/${user}/.pass.txt" )
-  admin_password=$( awk '/^defaultsiteaccount / { print $3 }' "/home/${user}/.pass.txt" )
+  db_password="$(read_user_credential "$user" "MariaDB" "Password")"
+  admin_email="$(read_user_credential "$user" "Default site administrator" "Login")"
+  admin_password="$(read_user_credential "$user" "Default site administrator" "Password")"
   if [[ -z "$db_password" || -z "$admin_email" || -z "$admin_password" ]]; then
-    echo -e "Не удалось прочитать учетные данные из ${RED}/home/${user}/.pass.txt${WHITE}."
+    echo -e "Не удалось прочитать учетные данные из ${RED}${RISH_CREDENTIALS_DIR}/${user}${WHITE}."
     wait_for_enter
     exit 1
   fi

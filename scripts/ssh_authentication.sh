@@ -314,6 +314,28 @@ legacy_rish_sftp_match_is_at_end() {
   write_sshd_config_without_trailing_legacy_rish_match /etc/ssh/sshd_config /dev/null
 }
 
+rish_sftp_configuration_is_secure() {
+  local effective_settings
+  local password_authentication
+  local kbd_interactive_authentication
+  local user
+
+  effective_settings="$(get_effective_ssh_authentication)" || return 1
+  read -r password_authentication kbd_interactive_authentication <<<"$effective_settings"
+  [[ "$password_authentication" == "yes" || "$password_authentication" == "no" ]] || return 1
+  [[ "$kbd_interactive_authentication" == "no" ]] || return 1
+  rish_ssh_config_matches "$password_authentication" || return 1
+  sftp_authorized_keys_are_secure || return 1
+  legacy_rish_sftp_match_is_at_end && return 1
+
+  while IFS= read -r user; do
+    [[ -n "$user" ]] || continue
+    sftp_security_is_effective "$user" || return 1
+  done < <(get_sftp_users)
+
+  return 0
+}
+
 restore_rish_ssh_files() {
   local had_config="$1"
   local backup_file="$2"
