@@ -231,11 +231,12 @@ certs() {
   echo
 
   # ---- 5) Меню ----
-  vertical_menu "current" 2 0 5 \
+  vertical_menu "current" 2 0 6 \
     "Получить для www.${site_name} и ${site_name}" \
     "Получить только для ${site_name}" \
     "Получить для всех алиасов и ${site_name}" \
     "Получить самоподписанный для всех алиасов" \
+    "Сертификат Selectel" \
     "Отозвать сертификат для ${site_name}"
 
   local choice=$?
@@ -265,6 +266,17 @@ certs() {
     echo
     ;;
   4)
+    local selectel_certificate_script="/root/rish/scripts/certificates/selectel.sh"
+    if [[ ! -f "$selectel_certificate_script" ]]; then
+      selectel_certificate_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/certificates/selectel.sh"
+    fi
+    if [[ ! -f "$selectel_certificate_script" ]]; then
+      echo -e "Не найден скрипт управления сертификатами Selectel: ${YELLOW}${selectel_certificate_script}${WHITE}."
+      return 1
+    fi
+    bash "$selectel_certificate_script" menu "$site_name"
+    ;;
+  5)
     echo -e "Отзыв сертификата ${GREEN}${site_name}${WHITE}"
     local cert_path="/etc/letsencrypt/live/${site_name}/cert.pem"
     if [[ ! -f "$cert_path" ]]; then
