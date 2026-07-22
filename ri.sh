@@ -60,6 +60,8 @@ upperY=1
 downY=$((${lines}/2))
 rim=$(( ${downY} - 2 ))
 whereCursorIs="down"
+SYSTEM_UPDATE_MARKER="/run/rish/system-update-performed"
+EARLY_REBOOT_REASONS=()
 
 # save the home dir
 declare _script_name=${BASH_SOURCE[0]}
@@ -216,16 +218,24 @@ Install() {
     Down
 }
 
+GetRebootStatus() {
+  if ! command -v needs-restarting >/dev/null 2>&1; then
+    return 2
+  fi
+
+  needs-restarting -r >/dev/null 2>&1
+  case "$?" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 CheckRebootRequired() {
   local reboot_status
 
   echo -n "Проверяем необходимость перезагрузки сервера... "
-  if ! command -v needs-restarting >/dev/null 2>&1; then
-    echo -e "${YELLOW}needs-restarting не найден${WHITE}"
-    return 0
-  fi
-
-  needs-restarting -r >/dev/null 2>&1
+  GetRebootStatus
   reboot_status=$?
 
   case "$reboot_status" in
@@ -236,13 +246,13 @@ CheckRebootRequired() {
     1)
       echo -e "${YELLOW}требуется перезагрузка${WHITE}"
       tet=$(pwd)
+      echo "/root/rish/ri.sh" >> /root/.bash_history
       echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
       echo -e "Или войдите на сервер и нажмите стрелку ${GREEN}↑${WHITE} два раза: команда ${GREEN}/root/rish/ri.sh${WHITE} уже будет в истории команд."
       Down
       echo "Перезагрузить сервер?"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
         echo "Перезагрузка сервера начата..."
-        echo "/root/rish/ri.sh" >> /root/.bash_history
         reboot
         exit 0
       else
@@ -257,6 +267,84 @@ CheckRebootRequired() {
       return 0
       ;;
   esac
+}
+
+RequestEarlyRebootIfNeeded() {
+  local reboot_status
+  local reason
+
+  GetRebootStatus
+  reboot_status=$?
+  case "$reboot_status" in
+    0)
+      if [[ -e "$SYSTEM_UPDATE_MARKER" ]] && ! rm -f -- "$SYSTEM_UPDATE_MARKER"; then
+        echo -e "${RED}Не удалось удалить временный маркер обновления ${SYSTEM_UPDATE_MARKER}.${WHITE}"
+        RemoveRim
+        exit 1
+      fi
+      ;;
+    1)
+      EARLY_REBOOT_REASONS+=("установлены системные обновления, требующие перезагрузки")
+      ;;
+    2)
+      if [[ -f "$SYSTEM_UPDATE_MARKER" ]]; then
+        EARLY_REBOOT_REASONS+=("после обновления не удалось надежно исключить необходимость перезагрузки")
+      else
+        echo -e "${YELLOW}Не удалось проверить необходимость перезагрузки через needs-restarting.${WHITE}"
+      fi
+      ;;
+  esac
+
+  ((${#EARLY_REBOOT_REASONS[@]} > 0)) || return 0
+
+  echo
+  echo "Для продолжения установки требуется перезагрузка:"
+  echo
+  for reason in "${EARLY_REBOOT_REASONS[@]}"; do
+    echo "  - ${reason}"
+  done
+  echo
+  echo "/root/rish/ri.sh" >> /root/.bash_history
+  echo -e "После перезагрузки повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+  echo -e "Или войдите на сервер и нажмите стрелку ${GREEN}↑${WHITE} два раза: команда ${GREEN}/root/rish/ri.sh${WHITE} уже будет в истории команд."
+  Down
+  echo "Перезагрузить сервер сейчас?"
+  if vertical_menu "current" 2 0 5 "Да" "Нет"; then
+    echo "Перезагрузка сервера начата..."
+    reboot
+    exit 0
+  else
+    RemoveRim
+    echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}."
+    echo -e "После перезагрузки повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+    exit 0
+  fi
+}
+
+GetSELinuxState() {
+  local state=""
+  local enforce_value=""
+
+  if command -v getenforce >/dev/null 2>&1; then
+    state="$(getenforce 2>/dev/null || true)"
+    case "$state" in
+      Enforcing|Permissive|Disabled)
+        printf '%s\n' "$state"
+        return 0
+        ;;
+    esac
+  fi
+
+  if [[ -r /sys/fs/selinux/enforce ]]; then
+    enforce_value="$(< /sys/fs/selinux/enforce)"
+    case "$enforce_value" in
+      1) echo "Enforcing" ;;
+      0) echo "Permissive" ;;
+      *) return 1 ;;
+    esac
+  else
+    echo "Disabled"
+  fi
 }
 
 configure_httpd_tmpfiles_override() {
@@ -377,6 +465,12 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         echo
         echo -e "Идет обновление сервера..."${ERASEUNTILLENDOFLINE}
         Down
+        if ! install -d -m 700 /run/rish || ! install -m 600 /dev/null "$SYSTEM_UPDATE_MARKER"; then
+          RemoveRim
+          echo -e "${RED}Не удалось создать временный маркер обновления ${SYSTEM_UPDATE_MARKER}.${WHITE}"
+          echo "Обновление сервера не начато. Повторите установку после исправления ошибки."
+          exit 1
+        fi
         if ! dnf update -y; then
           RemoveRim
           echo -e "${RED}Обновить сервер не удалось.${WHITE}"
@@ -391,7 +485,6 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       echo "Повторите установку после исправления ошибки проверки обновлений."
       exit 1
     fi
-    CheckRebootRequired
     mark_step_completed "$STEP"
   fi
   STEP="Установка языковых пакетов"
@@ -410,59 +503,60 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       echo
       echo -e "Кодировка консоли уже установлена правильно - ${GREEN}UTF-8${WHITE}."
     else
-      localectl set-locale LANG=en_US.UTF-8
-      echo
-      echo -e "${VIOLET}\nБыла установлена кодировка UTF-8 для консоли.${WHITE}${RED} Надо перезагрузить сервер.${WHITE} "
-      tet=$(pwd)
-      echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
-      echo -e "Или войдите на сервер и нажмите стрелку ${GREEN}↑${WHITE} два раза: команда ${GREEN}/root/rish/ri.sh${WHITE} уже будет в истории команд."
-      Down
-      echo "Перезагрузить сервер?"
-      if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-        echo "Перезагрузка сервера начата..."
-        echo "/root/rish/ri.sh" >> /root/.bash_history
-        reboot
-        exit 0
-      else
+      if ! localectl set-locale LANG=en_US.UTF-8; then
+        echo -e "${RED}Не удалось установить кодировку консоли UTF-8.${WHITE}"
         RemoveRim
-        echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}"
-        exit 0
+        exit 1
       fi
+      echo
+      echo -e "Кодировка консоли ${GREEN}UTF-8${WHITE} установлена и будет использоваться в новых сеансах."
     fi
     mark_step_completed "$STEP"
   fi
 
   STEP="Проверка и отключение SELinux если понадобится"
   if ! check_step "$STEP"; then
-    if command -v sestatus >/dev/null 2>&1; then
-      SELINUX_STATE=$(getenforce)
-      if [ "$SELINUX_STATE" == "Enforcing" ] || [ "$SELINUX_STATE" == "Permissive" ]; then
-        echo "SELinux is enabled"
-        sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config
-        echo
-        echo -e "Включен ${RED}selinux${WHITE}."
-        echo "Мы установили значение в конфигурационном файле для отключения selinux"
-        echo "Вам остается только выполнить перезагрузку сервера."
-        tet=$(pwd)
-        Down
-        echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
-        echo -e "Или войдите на сервер и нажмите стрелку ${GREEN}↑${WHITE} два раза: команда ${GREEN}/root/rish/ri.sh${WHITE} уже будет в истории команд."
-        echo "Перезагрузить сервер?"
-        if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-          echo "Перезагрузка сервера начата..."
-          echo "/root/rish/ri.sh" >> /root/.bash_history
-          reboot
-          exit 0
-        else
-          RemoveRim
-          echo -e "Перезагрузите сервер самостоятельно командой ${GREEN}reboot${WHITE}"
-          echo -e "После перезагрузки запустите скрипт заново командой ${GREEN}${tet}/ri.sh${WHITE}"
-          exit 0
-        fi
-      fi
+    if ! SELINUX_STATE="$(GetSELinuxState)"; then
+      echo -e "${RED}Не удалось определить фактическое состояние SELinux.${WHITE}"
+      RemoveRim
+      exit 1
     fi
-    mark_step_completed "$STEP"
+
+    case "$SELINUX_STATE" in
+      Enforcing|Permissive)
+        if [[ ! -f /etc/selinux/config || -L /etc/selinux/config ]]; then
+          echo -e "${RED}SELinux активен, но /etc/selinux/config отсутствует или имеет недопустимый тип.${WHITE}"
+          RemoveRim
+          exit 1
+        fi
+        if grep -Eq '^[[:space:]]*SELINUX=' /etc/selinux/config; then
+          if ! sed -i 's/^[[:space:]]*SELINUX=.*/SELINUX=disabled/' /etc/selinux/config; then
+            echo -e "${RED}Не удалось настроить отключение SELinux.${WHITE}"
+            RemoveRim
+            exit 1
+          fi
+        elif ! printf '\nSELINUX=disabled\n' >> /etc/selinux/config; then
+          echo -e "${RED}Не удалось записать настройку отключения SELinux.${WHITE}"
+          RemoveRim
+          exit 1
+        fi
+        if ! grep -qx 'SELINUX=disabled' /etc/selinux/config; then
+          echo -e "${RED}Не удалось подтвердить настройку отключения SELinux.${WHITE}"
+          RemoveRim
+          exit 1
+        fi
+        echo
+        echo -e "SELinux сейчас работает в режиме ${YELLOW}${SELINUX_STATE}${WHITE}."
+        echo "После перезагрузки SELinux будет отключен."
+        EARLY_REBOOT_REASONS+=("SELinux настроен на отключение")
+        ;;
+      Disabled)
+        mark_step_completed "$STEP"
+        ;;
+    esac
   fi
+
+  RequestEarlyRebootIfNeeded
 
   STEP="Проверка и включение swap файла, если нужно"
   if ! check_step "$STEP"; then
