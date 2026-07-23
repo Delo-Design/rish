@@ -2,6 +2,59 @@
 
 # This module is sourced by ri.sh and uses its functions and globals.
 # shellcheck disable=SC2154
+RISH_DNS_RUNTIME_DIR="/root/rish/dns"
+RISH_DNS_LEGACY_DISABLED_DIR="/root/rish/dns_bak"
+RISH_DNS_MANAGEMENT_MARKER="${RISH_DNS_RUNTIME_DIR}/.enabled"
+RISH_DNS_MANAGEMENT_MIGRATION_STEP="Переход на отдельный признак управления DNS"
+
+rish_dns_management_is_enabled() {
+  [[ -x "$RISH_DNS_MANAGEMENT_MARKER" ]]
+}
+
+rish_dns_management_enable() {
+  mkdir -p "$RISH_DNS_RUNTIME_DIR" || return 1
+  install -m 700 /dev/null "$RISH_DNS_MANAGEMENT_MARKER"
+}
+
+rish_dns_management_disable() {
+  rm -f -- "$RISH_DNS_MANAGEMENT_MARKER"
+}
+
+rish_dns_management_migrate_legacy_state() {
+  if [[ -d "$RISH_DNS_RUNTIME_DIR" && -d "$RISH_DNS_LEGACY_DISABLED_DIR" ]]; then
+    return 2
+  fi
+  if [[ -e "$RISH_DNS_MANAGEMENT_MARKER" ]]; then
+    chmod 700 "$RISH_DNS_MANAGEMENT_MARKER"
+    return
+  fi
+  if [[ -d "$RISH_DNS_LEGACY_DISABLED_DIR" ]]; then
+    mv -- "$RISH_DNS_LEGACY_DISABLED_DIR" "$RISH_DNS_RUNTIME_DIR"
+    return
+  fi
+  if [[ -d "$RISH_DNS_RUNTIME_DIR" ]]; then
+    rish_dns_management_enable
+  fi
+}
+
+rish_dns_management_mark_migration_completed() {
+  if declare -F check_step >/dev/null 2>&1 &&
+    declare -F mark_step_completed >/dev/null 2>&1 &&
+    ! check_step "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"; then
+    mark_step_completed "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"
+  fi
+}
+
+rish_dns_domain_count() {
+  local domain_dir
+  local count=0
+
+  for domain_dir in "$1"/domains/*; do
+    [[ -d "$domain_dir" ]] && ((count++))
+  done
+  printf '%s' "$count"
+}
+
 ServerManagementMenu() {
   source $config_file
   options=("Установка новых версий PHP"
@@ -79,128 +132,111 @@ ServerManagementMenu() {
       fi
       ;;
     2)
-      if [[ -d /root/rish/dns ]]; then
-        if [[ -d /root/rish/dns_bak ]]; then
-          dns_domains=0
-          dns_bak_domains=0
-          for domain_dir in /root/rish/dns/domains/*; do
-            [[ -d "$domain_dir" ]] && ((dns_domains++))
-          done
-          for domain_dir in /root/rish/dns_bak/domains/*; do
-            [[ -d "$domain_dir" ]] && ((dns_bak_domains++))
-          done
+      if [[ -d "$RISH_DNS_RUNTIME_DIR" && -d "$RISH_DNS_LEGACY_DISABLED_DIR" ]]; then
+        dns_domains="$(rish_dns_domain_count "$RISH_DNS_RUNTIME_DIR")"
+        dns_bak_domains="$(rish_dns_domain_count "$RISH_DNS_LEGACY_DISABLED_DIR")"
 
-          clear
-          echo -e "Одновременно найдены текущие и резервные настройки ${GREEN}DNS${WHITE}."
-          echo
-          echo -e "Текущие настройки: ${YELLOW}/root/rish/dns${WHITE}"
-          echo -e "Папок доменов: ${GREEN}${dns_domains}${WHITE}"
-          echo
-          echo -e "Резервные настройки: ${YELLOW}/root/rish/dns_bak${WHITE}"
-          echo -e "Папок доменов: ${GREEN}${dns_bak_domains}${WHITE}"
-          echo
-          echo "Для отключения управления DNS должна остаться одна папка dns_bak."
-          echo "Выберите, какие настройки сохранить:"
-          vertical_menu "current" 2 0 48 \
-            "Сохранить текущие настройки (доменов: ${dns_domains})" \
-            "Сохранить резервные настройки (доменов: ${dns_bak_domains})" \
-            "Отмена"
-          dns_choice=$?
+        clear
+        echo -e "Одновременно найдены текущие и резервные настройки ${GREEN}DNS${WHITE}."
+        echo
+        echo -e "Текущие настройки: ${YELLOW}${RISH_DNS_RUNTIME_DIR}${WHITE}"
+        echo -e "Папок доменов: ${GREEN}${dns_domains}${WHITE}"
+        echo
+        echo -e "Резервные настройки: ${YELLOW}${RISH_DNS_LEGACY_DISABLED_DIR}${WHITE}"
+        echo -e "Папок доменов: ${GREEN}${dns_bak_domains}${WHITE}"
+        echo
+        echo "Выберите, какие настройки сохранить в постоянном каталоге DNS:"
+        vertical_menu "current" 2 0 48 \
+          "Сохранить текущие настройки (доменов: ${dns_domains})" \
+          "Сохранить резервные настройки (доменов: ${dns_bak_domains})" \
+          "Отмена"
+        dns_choice=$?
 
-          case "$dns_choice" in
-          0)
-            echo
-            echo -e "Резервные настройки ${YELLOW}/root/rish/dns_bak${WHITE} будут удалены."
-            echo -e "Текущие настройки будут сохранены как ${YELLOW}/root/rish/dns_bak${WHITE}."
-            echo "Продолжить?"
-            vertical_menu "current" 2 0 5 "Нет" "Да"
-            if (($? == 1)); then
-              if rm -rf -- /root/rish/dns_bak && mv -- /root/rish/dns /root/rish/dns_bak; then
-                echo -e "Управление ${GREEN}DNS${WHITE} отключено."
-                echo -e "Текущие настройки сохранены в ${YELLOW}/root/rish/dns_bak${WHITE}."
-              else
-                echo -e "Не удалось отключить управление ${RED}DNS${WHITE}." >&2
-              fi
-            else
-              echo "Настройки DNS не изменены."
-            fi
-            ;;
-          1)
-            echo
-            echo -e "Текущие настройки ${YELLOW}/root/rish/dns${WHITE} будут удалены."
-            echo -e "Будут сохранены резервные настройки из ${YELLOW}/root/rish/dns_bak${WHITE}."
-            echo "Продолжить?"
-            vertical_menu "current" 2 0 5 "Нет" "Да"
-            if (($? == 1)); then
-              if rm -rf -- /root/rish/dns; then
-                echo -e "Управление ${GREEN}DNS${WHITE} отключено."
-                echo -e "Резервные настройки сохранены в ${YELLOW}/root/rish/dns_bak${WHITE}."
-              else
-                echo -e "Не удалось отключить управление ${RED}DNS${WHITE}." >&2
-              fi
-            else
-              echo "Настройки DNS не изменены."
-            fi
-            ;;
-          *)
-            echo "Настройки DNS не изменены."
-            ;;
-          esac
-        else
-          dns_domains=0
-          for domain_dir in /root/rish/dns/domains/*; do
-            [[ -d "$domain_dir" ]] && ((dns_domains++))
-          done
-
-          clear
-          echo -e "Управление ${GREEN}DNS${WHITE} включено."
-          echo -e "Папок доменов: ${GREEN}${dns_domains}${WHITE}"
+        case "$dns_choice" in
+        0)
           echo
-          echo -e "Отключить управление ${RED}DNS${WHITE}?"
-          echo -e "Настройки будут сохранены в ${YELLOW}/root/rish/dns_bak${WHITE}."
+          echo -e "Резервные настройки ${YELLOW}${RISH_DNS_LEGACY_DISABLED_DIR}${WHITE} будут удалены."
+          echo "Продолжить?"
           vertical_menu "current" 2 0 5 "Нет" "Да"
           if (($? == 1)); then
-            if mv -- /root/rish/dns /root/rish/dns_bak; then
-              echo -e "Управление ${GREEN}DNS${WHITE} отключено."
-              echo -e "Настройки сохранены в ${YELLOW}/root/rish/dns_bak${WHITE}."
+            if rm -rf -- "$RISH_DNS_LEGACY_DISABLED_DIR" &&
+              rish_dns_management_disable; then
+              rish_dns_management_mark_migration_completed
+              echo -e "Текущие настройки сохранены в ${YELLOW}${RISH_DNS_RUNTIME_DIR}${WHITE}."
             else
-              echo -e "Не удалось отключить управление ${RED}DNS${WHITE}." >&2
+              echo -e "Не удалось привести настройки ${RED}DNS${WHITE} к единому состоянию." >&2
             fi
           else
             echo "Настройки DNS не изменены."
           fi
+          ;;
+        1)
+          echo
+          echo -e "Текущие настройки ${YELLOW}${RISH_DNS_RUNTIME_DIR}${WHITE} будут удалены."
+          echo -e "Резервные настройки будут перенесены в ${YELLOW}${RISH_DNS_RUNTIME_DIR}${WHITE}."
+          echo "Продолжить?"
+          vertical_menu "current" 2 0 5 "Нет" "Да"
+          if (($? == 1)); then
+            if rm -rf -- "$RISH_DNS_RUNTIME_DIR" &&
+              mv -- "$RISH_DNS_LEGACY_DISABLED_DIR" "$RISH_DNS_RUNTIME_DIR" &&
+              rish_dns_management_disable; then
+              rish_dns_management_mark_migration_completed
+              echo -e "Резервные настройки сохранены в ${YELLOW}${RISH_DNS_RUNTIME_DIR}${WHITE}."
+            else
+              echo -e "Не удалось привести настройки ${RED}DNS${WHITE} к единому состоянию." >&2
+            fi
+          else
+            echo "Настройки DNS не изменены."
+          fi
+          ;;
+        *)
+          echo "Настройки DNS не изменены."
+          ;;
+        esac
+      elif [[ -d "$RISH_DNS_LEGACY_DISABLED_DIR" ]]; then
+        if mv -- "$RISH_DNS_LEGACY_DISABLED_DIR" "$RISH_DNS_RUNTIME_DIR"; then
+          rish_dns_management_disable
+          rish_dns_management_mark_migration_completed
+        else
+          echo -e "Не удалось восстановить настройки DNS в ${RED}${RISH_DNS_RUNTIME_DIR}${WHITE}." >&2
         fi
-      elif [[ -d /root/rish/dns_bak ]]; then
-        dns_bak_domains=0
-        for domain_dir in /root/rish/dns_bak/domains/*; do
-          [[ -d "$domain_dir" ]] && ((dns_bak_domains++))
-        done
+      fi
 
-        clear
-        echo -e "Управление ${GREEN}DNS${WHITE} отключено."
-        echo -e "В резервной копии папок доменов: ${GREEN}${dns_bak_domains}${WHITE}"
+      if [[ -d "$RISH_DNS_LEGACY_DISABLED_DIR" ]]; then
+        vertical_menu "current" 2 0 5 "Нажмите Enter"
+        continue
+      fi
+
+      dns_domains="$(rish_dns_domain_count "$RISH_DNS_RUNTIME_DIR")"
+      clear
+      if rish_dns_management_is_enabled; then
+        echo -e "Управление ${GREEN}DNS${WHITE} включено."
+        echo -e "Папок доменов: ${GREEN}${dns_domains}${WHITE}"
         echo
-        echo -e "Включить управление ${GREEN}DNS${WHITE} и восстановить настройки?"
+        echo -e "Отключить управление ${RED}DNS${WHITE}?"
+        echo "Настройки и credentials останутся в постоянном каталоге."
         vertical_menu "current" 2 0 5 "Нет" "Да"
         if (($? == 1)); then
-          if mv -- /root/rish/dns_bak /root/rish/dns; then
-            echo -e "Управление ${GREEN}DNS${WHITE} включено."
-            echo -e "Настройки восстановлены из ${YELLOW}/root/rish/dns_bak${WHITE}."
-            echo -e "Пункт ${GREEN}DNS${WHITE} появится в меню MC для каталогов сайтов."
+          if rish_dns_management_disable; then
+            echo -e "Управление ${GREEN}DNS${WHITE} отключено."
+            echo -e "Настройки сохранены в ${YELLOW}${RISH_DNS_RUNTIME_DIR}${WHITE}."
           else
-            echo -e "Не удалось включить управление ${RED}DNS${WHITE}." >&2
+            echo -e "Не удалось отключить управление ${RED}DNS${WHITE}." >&2
           fi
         else
           echo "Настройки DNS не изменены."
         fi
       else
-        clear
         echo -e "Управление ${GREEN}DNS${WHITE} отключено."
+        if [[ -d "$RISH_DNS_RUNTIME_DIR" ]]; then
+          echo -e "Сохранено папок доменов: ${GREEN}${dns_domains}${WHITE}"
+        fi
         echo
         echo -e "Включить управление ${GREEN}DNS${WHITE}?"
         vertical_menu "current" 2 0 5 "Нет" "Да"
         if (($? == 1)); then
-          if mkdir -p /root/rish/dns; then
+          if rish_dns_management_enable; then
+            rish_dns_management_mark_migration_completed
             echo -e "Управление ${GREEN}DNS${WHITE} включено."
             echo -e "Пункт ${GREEN}DNS${WHITE} появится в меню MC для каталогов сайтов."
           else

@@ -90,6 +90,25 @@ source scripts/ssh_authentication.sh
 source scripts/cron_access.sh
 source scripts/user_credentials.sh
 source scripts/create_user.sh
+source scripts/server_management.sh
+
+if ! check_step "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"; then
+  rish_dns_management_migrate_legacy_state
+  dns_migration_status=$?
+  case "$dns_migration_status" in
+    0)
+      mark_step_completed "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"
+      ;;
+    2)
+      echo -e "${YELLOW}Одновременно найдены /root/rish/dns и /root/rish/dns_bak.${WHITE}"
+      echo "Выберите сохраняемые настройки через меню управления сервером."
+      ;;
+    *)
+      echo -e "${RED}Не удалось перенести состояние управления DNS.${WHITE}"
+      exit 1
+      ;;
+  esac
+fi
 
 if (( lines < 40 || columns < 140 )); then
   echo
@@ -1323,6 +1342,5 @@ EOF
   fi
 
 else
-  source "${RISH_HOME}/scripts/server_management.sh"
   ServerManagementMenu
 fi

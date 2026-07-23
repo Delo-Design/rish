@@ -1,0 +1,10 @@
+[Unit]
+Description=RISH Selectel certificates synchronization
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/bash /root/rish/scripts/certificates/selectel_sync.sh run
+TimeoutStartSec=15min

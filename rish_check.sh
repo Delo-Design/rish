@@ -23,6 +23,10 @@ DEFAULT_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default.conf"
 DEFAULT_SSL_VHOST_TEMPLATE="${TEMPLATE_DIR}/000-default-ssl.conf"
 HTTPD_TMPFILES_VENDOR="/usr/lib/tmpfiles.d/httpd.conf"
 HTTPD_TMPFILES_OVERRIDE="/etc/tmpfiles.d/httpd.conf"
+RISH_SELECTEL_CERT_SYNC_SERVICE="rish-selectel-certificates-sync.service"
+RISH_SELECTEL_CERT_SYNC_TIMER="rish-selectel-certificates-sync.timer"
+CERTBOT_RENEW_SERVICE="certbot-renew.service"
+CERTBOT_RENEW_TIMER="certbot-renew.timer"
 
 declare -a ISSUE_MESSAGES=()
 declare -a ISSUE_FIXES=()
@@ -773,6 +777,143 @@ print_ssh_password_auth_warning() {
   fi
 }
 
+selectel_certificate_sites() {
+  local site_name
+  local vhost_file
+  declare -A seen_sites=()
+
+  for vhost_file in /etc/httpd/conf.d/*-selectel-ssl.conf; do
+    [[ -f "$vhost_file" ]] || continue
+    if grep -Fqx '# Managed by RISH Selectel certificate integration.' "$vhost_file" &&
+      grep -Eq '^[[:space:]]*SSLCertificateFile[[:space:]]+/etc/pki/tls/rish/selectel/' "$vhost_file" &&
+      grep -Eq '^[[:space:]]*SSLCertificateKeyFile[[:space:]]+/etc/pki/tls/rish/selectel/' "$vhost_file"; then
+      site_name="$(awk 'tolower($1)=="servername" && NF>1 {print $2; exit}' "$vhost_file")"
+      [[ -n "$site_name" ]] || site_name="${vhost_file##*/}"
+      site_name="${site_name%-selectel-ssl.conf}"
+      if [[ -z "${seen_sites[${site_name,,}]:-}" ]]; then
+        printf '%s\n' "$site_name"
+        seen_sites["${site_name,,}"]=1
+      fi
+    fi
+  done
+}
+
+format_certificate_sites() {
+  local limit=5
+  local index
+  local result=""
+  local -a sites=("$@")
+
+  for ((index = 0; index < ${#sites[@]} && index < limit; index++)); do
+    [[ -z "$result" ]] || result+=", "
+    result+="${sites[$index]}"
+  done
+  if ((${#sites[@]} > limit)); then
+    result+=", и ещё $((${#sites[@]} - limit))"
+  fi
+  printf '%s' "$result"
+}
+
+print_selectel_certificate_sync_warning() {
+  local followup_message=""
+  local sites_text
+  local -a selectel_sites=()
+
+  [[ "$SILENT" -eq 1 ]] && return
+  mapfile -t selectel_sites < <(selectel_certificate_sites)
+  ((${#selectel_sites[@]} > 0)) || return
+
+  if command -v systemctl >/dev/null 2>&1 &&
+    systemctl is-enabled --quiet "$RISH_SELECTEL_CERT_SYNC_TIMER" 2>/dev/null &&
+    systemctl is-active --quiet "$RISH_SELECTEL_CERT_SYNC_TIMER" 2>/dev/null &&
+    ! systemctl is-failed --quiet "$RISH_SELECTEL_CERT_SYNC_SERVICE" 2>/dev/null; then
+    return
+  fi
+
+  log
+  if command -v systemctl >/dev/null 2>&1 &&
+    systemctl is-failed --quiet "$RISH_SELECTEL_CERT_SYNC_SERVICE" 2>/dev/null; then
+    log "Последняя автоматическая синхронизация сертификатов Selectel ${YELLOW}завершилась ошибкой${WHITE}."
+    followup_message="Подробности: journalctl -u ${RISH_SELECTEL_CERT_SYNC_SERVICE}"
+  elif command -v systemctl >/dev/null 2>&1 &&
+    systemctl is-enabled --quiet "$RISH_SELECTEL_CERT_SYNC_TIMER" 2>/dev/null; then
+    log "Автоматическая синхронизация сертификатов Selectel ${YELLOW}включена, но timer не активен${WHITE}."
+  else
+    log "Для установленных сертификатов Selectel автоматическая синхронизация ${YELLOW}не включена${WHITE}."
+    followup_message="Синхронизацию можно включить в основном меню сертификатов любого сайта."
+  fi
+  sites_text="$(format_certificate_sites "${selectel_sites[@]}")"
+  log "SSL-конфигурации Selectel найдены для: ${YELLOW}${sites_text}${WHITE}."
+  log "Новые версии сертификатов не будут загружаться автоматически."
+  [[ -z "$followup_message" ]] || log "$followup_message"
+}
+
+certbot_certificate_sites() {
+  local site_name
+  local vhost_file
+  local fullchain_file
+  local private_key_file
+  local lineage_dir
+  declare -A seen_sites=()
+
+  for vhost_file in /etc/httpd/conf.d/*.conf; do
+    [[ -f "$vhost_file" ]] || continue
+    fullchain_file="$(awk 'tolower($1)=="sslcertificatefile" && NF>1 {print $2; exit}' "$vhost_file")"
+    private_key_file="$(awk 'tolower($1)=="sslcertificatekeyfile" && NF>1 {print $2; exit}' "$vhost_file")"
+    [[ "$fullchain_file" == /etc/letsencrypt/live/*/fullchain.pem ]] || continue
+    lineage_dir="${fullchain_file%/fullchain.pem}"
+    [[ "$private_key_file" == "${lineage_dir}/privkey.pem" ]] || continue
+
+    site_name="$(awk 'tolower($1)=="servername" && NF>1 {print $2; exit}' "$vhost_file")"
+    [[ -n "$site_name" ]] || site_name="${vhost_file##*/}"
+    site_name="${site_name%.conf}"
+    if [[ -z "${seen_sites[${site_name,,}]:-}" ]]; then
+      printf '%s\n' "$site_name"
+      seen_sites["${site_name,,}"]=1
+    fi
+  done
+}
+
+print_certbot_certificate_renewal_warning() {
+  local followup_message=""
+  local sites_text
+  local -a certbot_sites=()
+
+  [[ "$SILENT" -eq 1 ]] && return
+  mapfile -t certbot_sites < <(certbot_certificate_sites)
+  ((${#certbot_sites[@]} > 0)) || return
+
+  if command -v certbot >/dev/null 2>&1 &&
+    command -v systemctl >/dev/null 2>&1 &&
+    systemctl cat "$CERTBOT_RENEW_TIMER" >/dev/null 2>&1 &&
+    systemctl is-enabled --quiet "$CERTBOT_RENEW_TIMER" 2>/dev/null &&
+    systemctl is-active --quiet "$CERTBOT_RENEW_TIMER" 2>/dev/null &&
+    ! systemctl is-failed --quiet "$CERTBOT_RENEW_SERVICE" 2>/dev/null; then
+    return
+  fi
+
+  log
+  if ! command -v certbot >/dev/null 2>&1; then
+    log "Для установленных сертификатов Let’s Encrypt команда ${YELLOW}certbot не найдена${WHITE}."
+  elif ! command -v systemctl >/dev/null 2>&1; then
+    log "Не удалось проверить автоматическое обновление Certbot: команда ${YELLOW}systemctl не найдена${WHITE}."
+  elif ! systemctl cat "$CERTBOT_RENEW_TIMER" >/dev/null 2>&1; then
+    log "Для установленных сертификатов Let’s Encrypt timer ${YELLOW}${CERTBOT_RENEW_TIMER} не найден${WHITE}."
+  elif systemctl is-failed --quiet "$CERTBOT_RENEW_SERVICE" 2>/dev/null; then
+    log "Последнее автоматическое обновление сертификатов Certbot ${YELLOW}завершилось ошибкой${WHITE}."
+    followup_message="Подробности: journalctl -u ${CERTBOT_RENEW_SERVICE}"
+  elif systemctl is-enabled --quiet "$CERTBOT_RENEW_TIMER" 2>/dev/null; then
+    log "Автоматическое обновление сертификатов Certbot ${YELLOW}включено, но timer не активен${WHITE}."
+  else
+    log "Для установленных сертификатов Certbot автоматическое обновление ${YELLOW}не включено${WHITE}."
+    followup_message="Включить timer: systemctl enable --now ${CERTBOT_RENEW_TIMER}"
+  fi
+  sites_text="$(format_certificate_sites "${certbot_sites[@]}")"
+  log "SSL-конфигурации Certbot найдены для: ${YELLOW}${sites_text}${WHITE}."
+  log "Автоматическое обновление этих сертификатов требует внимания."
+  [[ -z "$followup_message" ]] || log "$followup_message"
+}
+
 check_sftp_security() {
   local effective_settings
   local password_authentication
@@ -1035,6 +1176,8 @@ run_final_configtests() {
   [[ "$SILENT" -eq 1 ]] && return
 
   print_ssh_password_auth_warning
+  print_selectel_certificate_sync_warning
+  print_certbot_certificate_renewal_warning
   log
   check_apache_configtest || status=1
   check_php_fpm_configtests || status=1

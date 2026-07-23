@@ -3033,13 +3033,22 @@ dns_domain_menu() {
     if ! load_records_cache; then
       echo -e "Не удалось получить список DNS-записей." >&2
       echo
-      vertical_menu "current" 2 0 32 "Повторить" "Сменить DNS-провайдера" "Выйти"
+      vertical_menu "current" 2 0 42 \
+        "Повторить" \
+        "Сменить DNS-провайдера" \
+        "Удалить подключение к DNS-провайдеру" \
+        "Выйти"
       choice=$?
       if ((choice == 0)); then
         invalidate_records_cache
         continue
       elif ((choice == 1)); then
         change_dns_provider "$domain"
+        continue
+      elif ((choice == 2)); then
+        if delete_dns_provider_connection "$domain"; then
+          return
+        fi
         continue
       fi
       return

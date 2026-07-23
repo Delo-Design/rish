@@ -31,6 +31,7 @@ source /root/rish/php_helpers.sh
 source /root/rish/scripts/ssh_authentication.sh
 source /root/rish/scripts/cron_access.sh
 source /root/rish/scripts/user_credentials.sh
+source /root/rish/scripts/server_management.sh
 LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
@@ -182,6 +183,24 @@ for archive in /root/rish/phpMyAdmin-*-all-languages.tar.gz; do
     rm -f "$archive"
   fi
 done
+
+if ! check_step "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"; then
+  rish_dns_management_migrate_legacy_state
+  dns_migration_status=$?
+  case "$dns_migration_status" in
+    0)
+      mark_step_completed "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"
+      ;;
+    2)
+      echo -e "${YELLOW}Одновременно найдены /root/rish/dns и /root/rish/dns_bak.${WHITE}"
+      echo "Выберите сохраняемые настройки через меню управления сервером."
+      ;;
+    *)
+      echo -e "${RED}Не удалось перенести состояние управления DNS.${WHITE}"
+      exit 1
+      ;;
+  esac
+fi
 
 # Обновление меню Midnight Commander
 if ! UpdateMcMenu; then

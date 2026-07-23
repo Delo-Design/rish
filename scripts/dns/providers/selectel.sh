@@ -6,6 +6,8 @@ SELECTEL_PROJECTS_API_BASE="${SELECTEL_PROJECTS_API_BASE:-https://api.selectel.r
 SELECTEL_TOKEN="${SELECTEL_TOKEN:-}"
 SELECTEL_TOKEN_EXPIRES_EPOCH="${SELECTEL_TOKEN_EXPIRES_EPOCH:-0}"
 SELECTEL_TOKEN_REFRESH_MARGIN="${SELECTEL_TOKEN_REFRESH_MARGIN:-60}"
+SELECTEL_API_CONNECT_TIMEOUT="${SELECTEL_API_CONNECT_TIMEOUT:-10}"
+SELECTEL_API_MAX_TIME="${SELECTEL_API_MAX_TIME:-120}"
 
 selectel_config_has_credentials() {
   local config_file="$1"
@@ -452,7 +454,10 @@ selectel_fetch_token() {
     return 1
   }
 
-  http_code="$(curl -sS -D "$headers_file" -o "$body_file" -w "%{http_code}" \
+  http_code="$(curl -sS \
+    --connect-timeout "$SELECTEL_API_CONNECT_TIMEOUT" \
+    --max-time "$SELECTEL_API_MAX_TIME" \
+    -D "$headers_file" -o "$body_file" -w "%{http_code}" \
     -X POST \
     -H "Content-Type: application/json" \
     -d "$body" \
@@ -527,6 +532,8 @@ selectel_identity_api_get() {
   local path="$2"
 
   curl -fsS \
+    --connect-timeout "$SELECTEL_API_CONNECT_TIMEOUT" \
+    --max-time "$SELECTEL_API_MAX_TIME" \
     -H "X-Auth-Token: ${token}" \
     -H "Accept: application/json" \
     "$(selectel_identity_base)${path}"
@@ -544,6 +551,8 @@ selectel_projects_api() {
   response_file="$(mktemp)" || return 1
   curl_args=(
     -sS
+    --connect-timeout "$SELECTEL_API_CONNECT_TIMEOUT"
+    --max-time "$SELECTEL_API_MAX_TIME"
     -o "$response_file"
     -w "%{http_code}"
     -X "$method"
@@ -940,7 +949,7 @@ selectel_api() {
   local retry_auth="${4:-1}"
   local response_file
   local http_code
-  local curl_args
+  local -a curl_args
 
   if [[ -z "$SELECTEL_TOKEN" ]]; then
     echo -e "${YELLOW}Selectel token${WHITE} не получен." >&2
@@ -950,6 +959,8 @@ selectel_api() {
   response_file="$(mktemp)" || return 1
   curl_args=(
     -sS
+    --connect-timeout "$SELECTEL_API_CONNECT_TIMEOUT"
+    --max-time "$SELECTEL_API_MAX_TIME"
     -o "$response_file"
     -w "%{http_code}"
     -X "$method"

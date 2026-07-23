@@ -20,8 +20,12 @@ source "$DNS_SCRIPT"
 
 SELECTEL_LE_CERT_API_BASE="${SELECTEL_LE_CERT_API_BASE:-https://api.selectel.ru/certs/le}"
 SELECTEL_CERT_API_BASE="${SELECTEL_CERT_API_BASE:-https://cloud.api.selcloud.ru/certificate-manager/v1}"
+SELECTEL_CERT_API_CONNECT_TIMEOUT="${SELECTEL_CERT_API_CONNECT_TIMEOUT:-10}"
+SELECTEL_CERT_API_MAX_TIME="${SELECTEL_CERT_API_MAX_TIME:-120}"
 RISH_SELECTEL_CERT_CONFIG_DIR="${RISH_SELECTEL_CERT_CONFIG_DIR:-${RISH_HOME}/certificates/selectel}"
 RISH_SELECTEL_CERT_STORAGE_DIR="${RISH_SELECTEL_CERT_STORAGE_DIR:-/etc/pki/tls/rish/selectel}"
+RISH_SELECTEL_CERT_LOCK_FILE="${RISH_SELECTEL_CERT_LOCK_FILE:-/run/lock/rish-selectel-certificates.lock}"
+RISH_SELECTEL_CERT_SYNC_TIMER="rish-selectel-certificates-sync.timer"
 SELECTEL_CERT_ZONE=""
 SELECTEL_CERT_DNS_CONFIG=""
 SELECTEL_CERT_SELECTED_JSON=""
@@ -40,6 +44,77 @@ selectel_cert_require_commands() {
       return 1
     fi
   done
+}
+
+selectel_cert_sync_script_path() {
+  local sync_script="${RISH_HOME}/scripts/certificates/selectel_sync.sh"
+
+  if [[ ! -f "$sync_script" ]]; then
+    sync_script="${CERTIFICATE_SCRIPT_DIR}/selectel_sync.sh"
+  fi
+  printf '%s' "$sync_script"
+}
+
+selectel_cert_sync_is_enabled() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl is-enabled --quiet "$RISH_SELECTEL_CERT_SYNC_TIMER" 2>/dev/null
+}
+
+selectel_cert_sync_is_active() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl is-active --quiet "$RISH_SELECTEL_CERT_SYNC_TIMER" 2>/dev/null
+}
+
+selectel_cert_sync_is_ready() {
+  selectel_cert_sync_is_enabled && selectel_cert_sync_is_active
+}
+
+selectel_cert_manage_sync() {
+  local action="$1"
+  local sync_script
+
+  sync_script="$(selectel_cert_sync_script_path)"
+  if [[ ! -f "$sync_script" ]]; then
+    echo -e "Не найден скрипт синхронизации сертификатов Selectel: ${YELLOW}${sync_script}${WHITE}." >&2
+    return 1
+  fi
+  bash "$sync_script" "$action"
+}
+
+selectel_cert_run_locked() {
+  local lock_fd
+  local status
+
+  selectel_cert_require_commands flock || return 1
+  exec {lock_fd}> "$RISH_SELECTEL_CERT_LOCK_FILE" || {
+    echo -e "Не удалось открыть lock-файл ${YELLOW}${RISH_SELECTEL_CERT_LOCK_FILE}${WHITE}." >&2
+    return 1
+  }
+  if ! flock -n "$lock_fd"; then
+    exec {lock_fd}>&-
+    echo "Сейчас выполняется другая операция с сертификатами Selectel. Повторите позже." >&2
+    return 1
+  fi
+
+  "$@"
+  status=$?
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
+  return "$status"
+}
+
+selectel_cert_offer_enable_sync() {
+  local choice
+
+  selectel_cert_sync_is_ready && return 0
+
+  echo
+  echo "Автоматическая синхронизация сертификатов Selectel не включена."
+  echo "Включить ежедневную синхронизацию через systemd timer?"
+  vertical_menu "current" 2 0 52 "Включить синхронизацию" "Не включать"
+  choice=$?
+  [[ "$choice" == "0" ]] || return 0
+  selectel_cert_manage_sync enable
 }
 
 selectel_cert_vhost_file() {
@@ -65,6 +140,34 @@ selectel_cert_is_owned_vhost() {
 
   [[ -f "$vhost_file" ]] || return 1
   grep -Fqx '# Managed by RISH Selectel certificate integration.' "$vhost_file"
+}
+
+selectel_cert_has_installed_vhosts() {
+  local vhost_file
+
+  for vhost_file in /etc/httpd/conf.d/*-selectel-ssl.conf; do
+    [[ -f "$vhost_file" ]] || continue
+    selectel_cert_is_owned_vhost "$vhost_file" || continue
+    if awk -v storage_prefix="${RISH_SELECTEL_CERT_STORAGE_DIR}/" '
+      tolower($1)=="sslcertificatefile" && index($2, storage_prefix)==1 {certificate=1}
+      tolower($1)=="sslcertificatekeyfile" && index($2, storage_prefix)==1 {private_key=1}
+      END {exit !(certificate && private_key)}
+    ' "$vhost_file"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+selectel_cert_disable_sync_if_unused() {
+  selectel_cert_has_installed_vhosts && return 0
+  if ! selectel_cert_sync_is_enabled && ! selectel_cert_sync_is_active; then
+    return 0
+  fi
+
+  echo "Установленных сертификатов Selectel больше нет. Автоматическая синхронизация будет выключена."
+  selectel_cert_manage_sync disable
 }
 
 selectel_cert_is_owned_metadata() {
@@ -132,7 +235,10 @@ selectel_cert_api_to_file() {
   local retry_auth="${5:-1}"
   local http_code
 
-  http_code="$(curl -sS -o "$output_file" -w '%{http_code}' \
+  http_code="$(curl -sS \
+    --connect-timeout "$SELECTEL_CERT_API_CONNECT_TIMEOUT" \
+    --max-time "$SELECTEL_CERT_API_MAX_TIME" \
+    -o "$output_file" -w '%{http_code}' \
     -X "$method" \
     -H "X-Auth-Token: ${SELECTEL_TOKEN}" \
     -H 'Accept: application/json, application/x-pem-file, application/octet-stream' \
@@ -512,13 +618,15 @@ selectel_cert_validate_download() {
     return 1
   fi
 
-  if [[ -s "$chain_file" ]]; then
-    openssl crl2pkcs7 -nocrl -certfile "$chain_file" 2>/dev/null |
-      openssl pkcs7 -print_certs -noout >/dev/null 2>&1 || {
-        echo "Selectel вернул некорректную цепочку сертификатов." >&2
-        return 1
-      }
-  fi
+  [[ -s "$chain_file" ]] || {
+    echo "Selectel не вернул цепочку удостоверяющих центров." >&2
+    return 1
+  }
+  openssl crl2pkcs7 -nocrl -certfile "$chain_file" 2>/dev/null |
+    openssl pkcs7 -print_certs -noout >/dev/null 2>&1 || {
+      echo "Selectel вернул некорректную цепочку сертификатов." >&2
+      return 1
+    }
 
   selectel_cert_collect_vhost_names "$source_vhost" vhost_names
   for host in "${vhost_names[@]}"; do
@@ -557,7 +665,10 @@ selectel_cert_download() {
   selectel_cert_api_to_file GET "$SELECTEL_CERT_API_BASE" "/cert/${knox_cert_id}/private_key" "$key_response" || return 1
 
   selectel_cert_extract_certificate_blocks "$certificate_response" "$certificate_blocks" || true
-  selectel_cert_extract_certificate_blocks "$chain_response" "$chain_blocks" || true
+  selectel_cert_extract_certificate_blocks "$chain_response" "$chain_blocks" || {
+    echo "В ответе Selectel не найдена цепочка удостоверяющих центров." >&2
+    return 1
+  }
 
   if ! selectel_cert_first_certificate "$certificate_blocks" "$certificate_file"; then
     selectel_cert_first_certificate "$chain_blocks" "$certificate_file" || {
@@ -728,18 +839,31 @@ selectel_cert_write_metadata() {
 selectel_cert_count_other_references() {
   local fullchain_file="$1"
   local excluded_vhost="$2"
-  local config_file
-  local count=0
+  local -a other_vhosts=()
 
+  selectel_cert_collect_other_references "$fullchain_file" "$excluded_vhost" other_vhosts
+  printf '%s' "${#other_vhosts[@]}"
+}
+
+selectel_cert_collect_other_references() {
+  local fullchain_file="$1"
+  local excluded_vhost="$2"
+  local result_var="$3"
+  local -n result_ref="$result_var"
+  local config_file
+
+  result_ref=()
   for config_file in /etc/httpd/conf.d/*-selectel-ssl.conf; do
     [[ -f "$config_file" ]] || continue
     [[ "$config_file" != "$excluded_vhost" ]] || continue
     selectel_cert_is_owned_vhost "$config_file" || continue
-    if grep -Fq -- "SSLCertificateFile ${fullchain_file}" "$config_file"; then
-      ((count++))
+    if awk -v fullchain_file="$fullchain_file" '
+      tolower($1)=="sslcertificatefile" && $2==fullchain_file {found=1}
+      END {exit !found}
+    ' "$config_file"; then
+      result_ref+=("$config_file")
     fi
   done
-  printf '%s' "$count"
 }
 
 selectel_cert_restore_file() {
@@ -777,6 +901,9 @@ selectel_cert_install_selected() {
   local fullchain_file
   local private_key_file
   local rc=0
+  local rollback_status=0
+  local -a other_vhosts=()
+  local -a other_vhost_names=()
 
   selectel_cert_require_commands curl jq openssl apachectl systemctl install sha256sum base64 || return 1
   own_vhost="$(selectel_cert_vhost_file "$site_name")"
@@ -832,14 +959,24 @@ selectel_cert_install_selected() {
   fi
 
   selected_certificate_id="$(jq -r '.id // empty' <<< "$SELECTEL_CERT_SELECTED_JSON")"
+  selectel_cert_collect_other_references "$fullchain_file" "$own_vhost" other_vhosts
+  other_references="${#other_vhosts[@]}"
   if [[ -n "$existing_certificate_id" && "$existing_certificate_id" != "$selected_certificate_id" ]]; then
-    other_references="$(selectel_cert_count_other_references "$fullchain_file" "$own_vhost")"
     if ((other_references > 0)); then
       echo "Этот локальный комплект используется другими vhost и не может быть заменен другим сертификатом." >&2
       rm -rf -- "$temp_dir"
       return 1
     fi
   fi
+  for other_vhost in "${other_vhosts[@]}"; do
+    selectel_cert_collect_vhost_names "$other_vhost" other_vhost_names
+    if ! selectel_cert_json_covers_names "$SELECTEL_CERT_SELECTED_JSON" other_vhost_names; then
+      echo -e "Выбранный сертификат больше не покрывает все имена ${YELLOW}${other_vhost}${WHITE}." >&2
+      echo "Общий комплект оставлен без изменений." >&2
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+  done
 
   selectel_cert_print_uncovered_aliases "$SELECTEL_CERT_SELECTED_JSON" "$source_vhost"
   echo -e "Скачиваем сертификат для ${GREEN}${site_name}${WHITE} из Selectel."
@@ -847,6 +984,19 @@ selectel_cert_install_selected() {
     rm -rf -- "$temp_dir"
     return 1
   }
+  for other_vhost in "${other_vhosts[@]}"; do
+    if ! selectel_cert_validate_download \
+      "${temp_dir}/cert.pem" \
+      "${temp_dir}/chain.pem" \
+      "${temp_dir}/privkey.pem" \
+      "$other_vhost" \
+      "$SELECTEL_CERT_SELECTED_JSON"; then
+      echo -e "Скачанный сертификат не подходит для ${YELLOW}${other_vhost}${WHITE}." >&2
+      echo "Общий комплект оставлен без изменений." >&2
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+  done
   selectel_cert_render_vhost "$source_vhost" "${temp_dir}/vhost.conf" "$fullchain_file" "$private_key_file" "$SELECTEL_CERT_SELECTED_JSON" || {
     rm -rf -- "$temp_dir"
     return 1
@@ -897,15 +1047,34 @@ selectel_cert_install_selected() {
   fi
 
   if ((rc != 0)); then
-    selectel_cert_restore_file "${temp_dir}/backup/cert.pem" "${storage_dir}/cert.pem" 644
-    selectel_cert_restore_file "${temp_dir}/backup/chain.pem" "${storage_dir}/chain.pem" 644
-    selectel_cert_restore_file "${temp_dir}/backup/fullchain.pem" "$fullchain_file" 644
-    selectel_cert_restore_file "${temp_dir}/backup/privkey.pem" "$private_key_file" 600
-    selectel_cert_restore_file "${temp_dir}/backup/metadata.conf" "$metadata_file" 600
-    selectel_cert_restore_file "${temp_dir}/backup/vhost.conf" "$own_vhost" 644
-    apachectl configtest >/dev/null 2>&1 && systemctl reload httpd >/dev/null 2>&1 || true
-    rmdir "$storage_dir" 2>/dev/null || true
-    rm -rf -- "$temp_dir"
+    selectel_cert_restore_file "${temp_dir}/backup/cert.pem" "${storage_dir}/cert.pem" 644 || rollback_status=1
+    selectel_cert_restore_file "${temp_dir}/backup/chain.pem" "${storage_dir}/chain.pem" 644 || rollback_status=1
+    selectel_cert_restore_file "${temp_dir}/backup/fullchain.pem" "$fullchain_file" 644 || rollback_status=1
+    selectel_cert_restore_file "${temp_dir}/backup/privkey.pem" "$private_key_file" 600 || rollback_status=1
+    selectel_cert_restore_file "${temp_dir}/backup/metadata.conf" "$metadata_file" 600 || rollback_status=1
+    selectel_cert_restore_file "${temp_dir}/backup/vhost.conf" "$own_vhost" 644 || rollback_status=1
+    if ((rollback_status == 0)) && command -v restorecon >/dev/null 2>&1; then
+      if [[ -e "$storage_dir" ]] && ! restorecon -R "$storage_dir" >/dev/null 2>&1; then
+        rollback_status=1
+      fi
+      if [[ -e "$own_vhost" ]] && ! restorecon "$own_vhost" >/dev/null 2>&1; then
+        rollback_status=1
+      fi
+    fi
+    if ((rollback_status == 0)); then
+      if ! apachectl configtest >/dev/null 2>&1 ||
+        ! systemctl reload httpd >/dev/null 2>&1; then
+        rollback_status=1
+      fi
+    fi
+    if ((rollback_status == 0)); then
+      rmdir "$storage_dir" 2>/dev/null || true
+      rm -rf -- "$temp_dir"
+      echo "Прежнее состояние сертификата восстановлено." >&2
+    else
+      echo "Откат выполнен не полностью; автоматическая перезагрузка Apache остановлена." >&2
+      echo -e "Резервные копии сохранены в ${YELLOW}${temp_dir}/backup${WHITE}." >&2
+    fi
     return 1
   fi
 
@@ -923,6 +1092,124 @@ selectel_cert_apache_directive_value() {
   awk -v directive="$directive" 'tolower($1) == tolower(directive) {print $2; exit}' "$vhost_file"
 }
 
+selectel_cert_cleanup_local_files_from_vhost() {
+  local vhost_file="$1"
+  local zone
+  local fullchain_file
+  local private_key_file
+  local storage_dir
+  local metadata_file
+  local other_references
+
+  if ! selectel_cert_is_owned_vhost "$vhost_file"; then
+    echo "SSL-конфигурация не принадлежит интеграции RISH Selectel. Локальные файлы оставлены без изменений." >&2
+    return 1
+  fi
+
+  fullchain_file="$(selectel_cert_apache_directive_value "$vhost_file" SSLCertificateFile)"
+  private_key_file="$(selectel_cert_apache_directive_value "$vhost_file" SSLCertificateKeyFile)"
+  if [[ "$fullchain_file" != "${RISH_SELECTEL_CERT_STORAGE_DIR}/"*/fullchain.pem ]]; then
+    echo "Путь сертификата в SSL-конфигурации не принадлежит каталогу RISH. Локальные файлы оставлены без изменений." >&2
+    return 1
+  fi
+
+  storage_dir="${fullchain_file%/fullchain.pem}"
+  zone="${storage_dir#"${RISH_SELECTEL_CERT_STORAGE_DIR}/"}"
+  if ! validate_domain "$zone" || [[ "$zone" == .* || "$zone" == *. || "$zone" == *..* ]]; then
+    echo "В SSL-конфигурации указан некорректный домен. Локальные файлы оставлены без изменений." >&2
+    return 1
+  fi
+  if [[ "$private_key_file" != "${storage_dir}/privkey.pem" ]]; then
+    echo "Путь приватного ключа в SSL-конфигурации не соответствует каталогу RISH. Локальные файлы оставлены без изменений." >&2
+    return 1
+  fi
+
+  metadata_file="$(selectel_cert_metadata_file "$zone")"
+  other_references="$(selectel_cert_count_other_references "$fullchain_file" "$vhost_file")"
+  if ((other_references > 0)); then
+    echo "Локальные файлы сертификата Selectel сохранены: их используют другие vhost."
+    return 0
+  fi
+
+  if ! rm -f -- \
+    "${storage_dir}/cert.pem" \
+    "${storage_dir}/chain.pem" \
+    "${storage_dir}/fullchain.pem" \
+    "${storage_dir}/privkey.pem" \
+    "$metadata_file"; then
+    echo "Не удалось полностью удалить локальные файлы сертификата Selectel." >&2
+    return 1
+  fi
+  rmdir "$storage_dir" 2>/dev/null || true
+  echo "Локальные файлы сертификата Selectel удалены."
+}
+
+selectel_cert_cleanup_local_files_and_sync() {
+  local vhost_file="$1"
+  local status=0
+
+  selectel_cert_cleanup_local_files_from_vhost "$vhost_file" || status=1
+  selectel_cert_disable_sync_if_unused || status=1
+  return "$status"
+}
+
+selectel_cert_dns_config_usage() {
+  local dns_config="$1"
+  local metadata_file
+  local saved_dns_config
+
+  for metadata_file in "${RISH_SELECTEL_CERT_CONFIG_DIR}"/*.conf; do
+    [[ -f "$metadata_file" ]] || continue
+    selectel_cert_is_owned_metadata "$metadata_file" || continue
+    saved_dns_config="$(
+      unset SELECTEL_DNS_CONFIG
+      source "$metadata_file" >/dev/null 2>&1 || exit 1
+      printf '%s' "${SELECTEL_DNS_CONFIG:-}"
+    )" || {
+      echo "Не удалось проверить использование DNS credentials в ${metadata_file}." >&2
+      return 1
+    }
+    if [[ "$saved_dns_config" == "$dns_config" ]]; then
+      printf 'in-use'
+      return 0
+    fi
+  done
+
+  printf 'unused'
+}
+
+selectel_cert_cleanup_dns_if_unused() {
+  local dns_domain_dir="$1"
+  local expected_prefix="${DNS_RUNTIME_DIR}/domains/"
+  local domain
+  local usage
+
+  [[ "$dns_domain_dir" == "${expected_prefix}"* ]] || {
+    echo "Каталог DNS находится вне каталога RISH. Удаление остановлено." >&2
+    return 1
+  }
+  domain="${dns_domain_dir#"${expected_prefix}"}"
+  if ! validate_domain "$domain" || [[ "$dns_domain_dir" != "${expected_prefix}${domain}" ]]; then
+    echo "Некорректный каталог DNS. Удаление остановлено." >&2
+    return 1
+  fi
+  if [[ ! -e "$dns_domain_dir" && ! -L "$dns_domain_dir" ]]; then
+    printf 'absent'
+    return 0
+  fi
+
+  usage="$(selectel_cert_dns_config_usage "${dns_domain_dir}/selectel.sh")" || return 1
+  if [[ "$usage" == "in-use" ]]; then
+    printf 'in-use'
+    return 0
+  fi
+  rm -rf -- "$dns_domain_dir" || {
+    echo "Не удалось удалить локальные настройки DNS." >&2
+    return 1
+  }
+  printf 'removed'
+}
+
 selectel_cert_remove_local() {
   local site_name="$1"
   local own_vhost
@@ -934,6 +1221,7 @@ selectel_cert_remove_local() {
   local temp_dir
   local other_references
   local choice
+  local restore_status=0
 
   selectel_cert_require_commands apachectl systemctl install || return 1
   own_vhost="$(selectel_cert_vhost_file "$site_name")"
@@ -978,21 +1266,36 @@ selectel_cert_remove_local() {
   }
 
   if ! apachectl configtest || ! systemctl reload httpd; then
-    install -m 644 -o root -g root "${temp_dir}/vhost.conf" "$own_vhost"
-    apachectl configtest >/dev/null 2>&1 && systemctl reload httpd >/dev/null 2>&1 || true
-    rm -rf -- "$temp_dir"
-    echo "Не удалось применить удаление SSL-конфигурации; прежний vhost восстановлен." >&2
+    install -m 644 -o root -g root "${temp_dir}/vhost.conf" "$own_vhost" || restore_status=1
+    if ((restore_status == 0)); then
+      if ! apachectl configtest >/dev/null 2>&1 ||
+        ! systemctl reload httpd >/dev/null 2>&1; then
+        restore_status=1
+      fi
+    fi
+    if ((restore_status == 0)); then
+      rm -rf -- "$temp_dir"
+      echo "Не удалось применить удаление SSL-конфигурации; прежний vhost восстановлен." >&2
+    else
+      echo "Не удалось применить удаление SSL-конфигурации и полностью восстановить прежний vhost." >&2
+      echo -e "Резервная копия сохранена: ${YELLOW}${temp_dir}/vhost.conf${WHITE}" >&2
+    fi
     return 1
   fi
 
   other_references="$(selectel_cert_count_other_references "$fullchain_file" "$own_vhost")"
   if ((other_references == 0)); then
-    rm -f -- \
+    if ! rm -f -- \
       "${storage_dir}/cert.pem" \
       "${storage_dir}/chain.pem" \
       "${storage_dir}/fullchain.pem" \
       "${storage_dir}/privkey.pem" \
-      "$metadata_file"
+      "$metadata_file"; then
+      echo "SSL-конфигурация удалена, но локальные файлы сертификата Selectel удалены не полностью." >&2
+      echo -e "Данные для повторной очистки сохранены: ${YELLOW}${temp_dir}/vhost.conf${WHITE}" >&2
+      echo "Повторная очистка: bash ${CERTIFICATE_SCRIPT_DIR}/selectel.sh cleanup-local-files ${temp_dir}/vhost.conf" >&2
+      return 1
+    fi
     rmdir "$storage_dir" 2>/dev/null || true
   fi
 
@@ -1001,60 +1304,54 @@ selectel_cert_remove_local() {
   if ((other_references > 0)); then
     echo "Файлы сертификата сохранены: их используют другие vhost."
   fi
-}
-
-selectel_cert_menu() {
-  local site_name="$1"
-  local source_vhost="/etc/httpd/conf.d/${site_name}.conf"
-  local own_vhost
-  local choice
-  local -a labels=()
-  local -a actions=()
-
-  validate_domain "$site_name" || selectel_cert_fail "Некорректное имя сайта: ${site_name}." || return 1
-  [[ -f "$source_vhost" ]] || selectel_cert_fail "Не найден vhost ${source_vhost}." || return 1
-  own_vhost="$(selectel_cert_vhost_file "$site_name")"
-
-  clear
-  echo -e "Сертификат Selectel для сайта ${GREEN}${site_name}${WHITE}"
-  echo
-  if selectel_cert_is_owned_vhost "$own_vhost"; then
-    echo -e "Установленная SSL-конфигурация: ${YELLOW}${own_vhost}${WHITE}"
-    labels+=("Переустановить сертификат Selectel" "Удалить установленный RISH сертификат Selectel")
-    actions+=(install remove)
-  else
-    labels+=("Скачать и установить сертификат Selectel")
-    actions+=(install)
+  if ! selectel_cert_disable_sync_if_unused; then
+    echo "Сертификат удален, но выключить автоматическую синхронизацию Selectel не удалось." >&2
+    return 1
   fi
-  labels+=("Выйти")
-  actions+=(exit)
-
-  echo
-  vertical_menu "current" 2 0 54 "${labels[@]}"
-  choice=$?
-  if ((choice == 255 || choice >= ${#actions[@]})); then
-    return 0
-  fi
-
-  case "${actions[$choice]}" in
-    install)
-      selectel_cert_install_selected "$site_name"
-      ;;
-    remove)
-      selectel_cert_remove_local "$site_name"
-      ;;
-    exit)
-      return 0
-      ;;
-  esac
 }
 
 main() {
-  local command="${1:-menu}"
+  local command="${1:-}"
+  local status
 
   case "$command" in
-    menu)
-      selectel_cert_menu "${2:-}"
+    install)
+      [[ -n "${2:-}" ]] || selectel_cert_fail "Не указано имя сайта." || return 1
+      validate_domain "$2" || selectel_cert_fail "Некорректное имя сайта: ${2}." || return 1
+      selectel_cert_run_locked selectel_cert_install_selected "$2"
+      status=$?
+      ((status == 0)) || return "$status"
+      selectel_cert_offer_enable_sync
+      ;;
+    sync-enable)
+      if ! selectel_cert_has_installed_vhosts; then
+        selectel_cert_fail "На сервере нет установленных сертификатов Selectel." || return 1
+      fi
+      selectel_cert_manage_sync enable
+      ;;
+    sync-disable)
+      selectel_cert_manage_sync disable
+      ;;
+    cleanup-local-files)
+      [[ -n "${2:-}" ]] || selectel_cert_fail "Не указан файл SSL-конфигурации Selectel." || return 1
+      if [[ "${RISH_SELECTEL_CERT_LOCK_HELD:-0}" == "1" ]]; then
+        selectel_cert_cleanup_local_files_and_sync "$2"
+      else
+        selectel_cert_run_locked selectel_cert_cleanup_local_files_and_sync "$2"
+      fi
+      ;;
+    remove-local)
+      [[ -n "${2:-}" ]] || selectel_cert_fail "Не указано имя сайта." || return 1
+      validate_domain "$2" || selectel_cert_fail "Некорректное имя сайта: ${2}." || return 1
+      selectel_cert_run_locked selectel_cert_remove_local "$2"
+      ;;
+    cleanup-dns-if-unused)
+      [[ -n "${2:-}" ]] || selectel_cert_fail "Не указан каталог DNS." || return 1
+      if [[ "${RISH_SELECTEL_CERT_LOCK_HELD:-0}" == "1" ]]; then
+        selectel_cert_cleanup_dns_if_unused "$2"
+      else
+        selectel_cert_run_locked selectel_cert_cleanup_dns_if_unused "$2"
+      fi
       ;;
     *)
       echo "Неизвестная команда: ${command}." >&2
