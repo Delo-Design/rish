@@ -1103,10 +1103,28 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       echo -e "Регистрация ${GREEN}аккаунта Let's Encrypt${WHITE}..."
       echo -e "Email не требуется, регистрация будет выполнена без него."
       echo "───────────────────────────────────────"
-      certbot register \
+      if ! certbot register \
         --agree-tos \
         --register-unsafely-without-email \
-        --non-interactive
+        --non-interactive; then
+        Up
+        echo -e "Не удалось зарегистрировать ${RED}аккаунт Let's Encrypt${WHITE}."
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      if ! systemctl enable --now certbot-renew.timer; then
+        Up
+        echo -e "Не удалось включить или запустить ${RED}certbot-renew.timer${WHITE}."
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      Up
+      echo -e "${GREEN}certbot-renew.timer${WHITE} включен и запущен."
+      Down
     fi
     mark_step_completed "$STEP"
   fi
