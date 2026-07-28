@@ -58,6 +58,7 @@ rish_dns_domain_count() {
 ServerManagementMenu() {
   source $config_file
   options=("Установка новых версий PHP"
+    "Включить/отключить Composer"
     "Включить/отключить авторизацию по паролю по SSH"
     "Включить/отключить управление DNS"
     "Выйти")
@@ -73,6 +74,12 @@ ServerManagementMenu() {
   for installed in "${installed_versions[@]}"; do
     echo "       "$installed
   done
+  echo
+  if [[ -f /root/rish/scripts/composer_manager.sh ]]; then
+    bash /root/rish/scripts/composer_manager.sh status
+  else
+    echo -e "Управление ${RED}Composer${WHITE}: модуль не найден."
+  fi
 
   while true; do
 
@@ -98,6 +105,14 @@ ServerManagementMenu() {
       cursor_to $((${rim} + 2)) 1
       ;;
     1)
+      if [[ -f /root/rish/scripts/composer_manager.sh ]]; then
+        bash /root/rish/scripts/composer_manager.sh server-menu
+      else
+        echo -e "Модуль управления ${RED}Composer${WHITE} не найден."
+        vertical_menu "current" 2 0 5 "Нажмите Enter"
+      fi
+      ;;
+    2)
       effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
       read -r password_authentication kbd_interactive_authentication <<<"$effective_settings"
 
@@ -131,7 +146,7 @@ ServerManagementMenu() {
         echo
       fi
       ;;
-    2)
+    3)
       if [[ -d "$RISH_DNS_RUNTIME_DIR" && -d "$RISH_DNS_LEGACY_DISABLED_DIR" ]]; then
         dns_domains="$(rish_dns_domain_count "$RISH_DNS_RUNTIME_DIR")"
         dns_bak_domains="$(rish_dns_domain_count "$RISH_DNS_LEGACY_DISABLED_DIR")"

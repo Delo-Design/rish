@@ -22,6 +22,64 @@ function normalize_relative_document_root() {
   printf '%s' "$document_root"
 }
 
+function validate_site_name() {
+  local name="$1"
+
+  echo "$name" | grep -Eq '^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$' || return 1
+
+  if [[ "$name" =~ (^|\.)xn-- ]]; then
+    idn2 -d "$name" > /dev/null 2>&1 || return 1
+  fi
+
+  return 0
+}
+
+function rish_get_site_document_root() {
+  local site_name="$1"
+  local vhost_file="/etc/httpd/conf.d/${site_name}.conf"
+  local document_root
+
+  validate_site_name "$site_name" || return 1
+  [[ -f "$vhost_file" ]] || return 1
+
+  document_root="$(awk '$1 == "DocumentRoot" { print $2; exit }' "$vhost_file")"
+  document_root="$(realpath -e -- "$document_root" 2>/dev/null)" || return 1
+  [[ -d "$document_root" ]] || return 1
+  [[ "$document_root" == /var/www/* ]] || return 1
+
+  printf '%s\n' "$document_root"
+}
+
+function rish_get_site_user() {
+  local site_path="$1"
+  local user
+  local user_id
+  local user_home
+  local credentials_file
+
+  if [[ "$site_path" =~ ^/var/www/([^/]+)/www(/.*)?$ ]]; then
+    user="${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+
+  user_id="$(id -u "$user" 2>/dev/null)" || return 1
+  [[ "$user_id" =~ ^[0-9]+$ ]] || return 1
+  ((user_id > 0)) || return 1
+
+  if ! id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -Fxq sftp; then
+    return 1
+  fi
+
+  user_home="$(getent passwd "$user" | awk -F: '{ print $6; exit }')"
+  [[ "$user_home" == "/home/${user}" && -d "$user_home" && ! -L "$user_home" ]] || return 1
+
+  credentials_file="$(rish_credentials_file "$user")" || return 1
+  rish_credentials_file_is_secure "$credentials_file" || return 1
+
+  printf '%s\n' "$user"
+}
+
 function db_exists() {
   local dbname="$1"
   local found

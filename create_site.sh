@@ -3,6 +3,8 @@
 source /root/rish/windows.sh
 # shellcheck disable=SC1091
 source /root/rish/change_php_version.sh
+# shellcheck disable=SC1091
+source /root/rish/scripts/site_helpers.sh
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -10,18 +12,6 @@ WHITE='\033[0m'
 YELLOW='\033[0;33m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
-
-function validate_site_name() {
-  local name="$1"
-
-  echo "$name" | grep -Eq '^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$' || return 1
-
-  if [[ "$name" =~ (^|\.)xn-- ]]; then
-    idn2 -d "$name" >/dev/null 2>&1 || return 1
-  fi
-
-  return 0
-}
 
 function format_site_name_label() {
   local name="$1"

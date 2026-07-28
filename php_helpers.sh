@@ -19,6 +19,51 @@ get_installed_php_versions() {
   shopt -u nullglob
 }
 
+get_site_php_version() {
+  local site_name="$1"
+  local conf_file
+  local php_version
+
+  for conf_file in \
+    "/etc/httpd/conf.d/${site_name}.conf" \
+    "/etc/httpd/conf.d/${site_name}-ssl.conf" \
+    "/etc/httpd/conf.d/${site_name}-le-ssl.conf"; do
+    [[ -f "$conf_file" ]] || continue
+
+    php_version="$(
+      grep -oE '/var/opt/remi/php[0-9]{2}/run/php-fpm/' "$conf_file" |
+        grep -oE 'php[0-9]{2}' |
+        head -n 1
+    )"
+    if [[ -n "$php_version" ]]; then
+      printf '%s\n' "$php_version"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+get_site_php_bin() {
+  local site_name="$1"
+  local php_version
+  local php_bin
+
+  php_version="$(get_site_php_version "$site_name")" || return 1
+
+  for php_bin in \
+    "/bin/${php_version}" \
+    "/usr/bin/${php_version}" \
+    "/opt/remi/${php_version}/root/usr/bin/php"; do
+    if [[ -x "$php_bin" ]]; then
+      printf '%s\n' "$php_bin"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 get_systemd_version() {
   systemctl --version 2>/dev/null | awk 'NR == 1 && $1 == "systemd" { print $2; exit }'
 }

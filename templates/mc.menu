@@ -11,6 +11,10 @@ shell_patterns=0
 7       Сменить версию PHP для сайта
   bash /root/rish/change_php_version.sh "%f" "%d"
 
++ d /var/www/ & t d & x /root/rish/composer/.enabled
+8       Composer для сайта
+  bash /root/rish/scripts/composer_manager.sh site-menu "%d" "%f"
+
 3  Базы данных
   bash /root/rish/scripts/database_manager.sh "%d" "%f"
 

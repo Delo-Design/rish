@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 source /root/rish/windows.sh
+source /root/rish/php_helpers.sh
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 WHITE='\033[0m'
@@ -85,29 +86,6 @@ function update_site_php_conf() {
     echo -e "Версия PHP в файле ${conf_file} изменена на ${GREEN}${selected_php}${WHITE}."
     echo -e "Сохранен предыдущий конфиг: $(highlight_path_basename "$backup_file")"
   fi
-}
-
-function get_site_php_version() {
-  local site_name="$1"
-  local conf_file
-  local php_version
-
-  for conf_file in \
-    "/etc/httpd/conf.d/${site_name}.conf" \
-    "/etc/httpd/conf.d/${site_name}-ssl.conf" \
-    "/etc/httpd/conf.d/${site_name}-le-ssl.conf"; do
-    [[ -f "$conf_file" ]] || continue
-
-    php_version=$(grep -oE '/var/opt/remi/php[0-9]{2}/run/php-fpm/' "$conf_file" \
-      | grep -oE 'php[0-9]{2}' \
-      | head -n 1)
-    if [[ -n "$php_version" ]]; then
-      echo "$php_version"
-      return 0
-    fi
-  done
-
-  return 1
 }
 
 function change_php_version() {
