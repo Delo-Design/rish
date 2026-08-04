@@ -425,7 +425,7 @@ server_menu() {
   done
 }
 
-run_composer_for_site() {
+run_command_for_site() {
   local site_user="$1"
   local site_home="$2"
   local php_bin="$3"
@@ -458,8 +458,40 @@ run_composer_for_site() {
     cd "$project_path" || exit 1
     runuser -u "$site_user" -- \
       env -i "${clean_environment[@]}" \
-      "$php_bin" "$RISH_COMPOSER_BIN" "$@"
+      "$@"
   )
+}
+
+run_composer_for_site() {
+  local site_user="$1"
+  local site_home="$2"
+  local php_bin="$3"
+  local project_path="$4"
+  shift 4
+
+  run_command_for_site "$site_user" "$site_home" "$php_bin" "$project_path" \
+    "$php_bin" "$RISH_COMPOSER_BIN" "$@"
+}
+
+confirm_site_command() {
+  local site_user="$1"
+  local site_home="$2"
+  local php_bin="$3"
+  local project_path="$4"
+  local action_description="$5"
+  local risk_description="$6"
+  shift 6
+
+  echo "$action_description"
+  echo "$risk_description"
+  echo "Продолжить?"
+  vertical_menu "current" 2 0 5 "Нет" "Да"
+  if (( $? != 1 )); then
+    echo "Действие отменено."
+    return 0
+  fi
+
+  run_command_for_site "$site_user" "$site_home" "$php_bin" "$project_path" "$@"
 }
 
 confirm_composer_project_action() {
@@ -470,16 +502,62 @@ confirm_composer_project_action() {
   local action_description="$5"
   shift 5
 
-  echo "$action_description"
-  echo "Composer plugins и scripts проекта могут выполнить код от имени владельца сайта."
-  echo "Продолжить?"
-  vertical_menu "current" 2 0 5 "Нет" "Да"
-  if (( $? != 1 )); then
-    echo "Действие Composer отменено."
-    return 0
-  fi
+  confirm_site_command \
+    "$site_user" "$site_home" "$php_bin" "$project_path" \
+    "$action_description" \
+    "Composer plugins и scripts проекта могут выполнить код от имени владельца сайта." \
+    "$php_bin" "$RISH_COMPOSER_BIN" "$@"
+}
 
-  run_composer_for_site "$site_user" "$site_home" "$php_bin" "$project_path" "$@"
+get_laravel_app_key_state() {
+  local env_file="$1"
+
+  [[ -f "$env_file" && ! -L "$env_file" ]] || return 1
+
+  awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+
+    /^[[:space:]]*APP_KEY[[:space:]]*=/ {
+      count++
+      line = $0
+      sub(/\r$/, "", line)
+
+      if (line == "APP_KEY=") {
+        line_state = "empty"
+      } else if (line ~ /^APP_KEY=/) {
+        value = trim(substr(line, 9))
+        normalized = tolower(value)
+        if (value == "" ||
+          value == "\"\"" ||
+          value == "\047\047" ||
+          normalized == "null" ||
+          normalized == "(null)" ||
+          normalized == "empty" ||
+          normalized == "(empty)" ||
+          value ~ /^#/) {
+          line_state = "invalid"
+        } else {
+          line_state = "set"
+        }
+      } else {
+        line_state = "invalid"
+      }
+    }
+
+    END {
+      if (count == 0) {
+        print "missing"
+      } else if (count > 1) {
+        print "invalid"
+      } else {
+        print line_state
+      }
+    }
+  ' "$env_file"
 }
 
 site_menu() {
@@ -494,6 +572,10 @@ site_menu() {
   local site_user
   local site_home
   local composer_version
+  local laravel_artisan
+  local laravel_autoload
+  local laravel_env
+  local laravel_key_state
   local choice
   local action
   local -a menu_items
@@ -591,6 +673,9 @@ site_menu() {
     wait_for_enter
     return 1
   fi
+  laravel_artisan="${project_path}/artisan"
+  laravel_autoload="${project_path}/vendor/autoload.php"
+  laravel_env="${project_path}/.env"
   if ! composer_version="$(get_composer_version "$php_bin")"; then
     echo -e "Composer не запускается через PHP сайта ${RED}${php_bin}${WHITE}."
     wait_for_enter
@@ -615,6 +700,30 @@ site_menu() {
       echo -e "Режим сервера: ${YELLOW}локальная разработка${WHITE}"
     else
       echo -e "Режим сервера: ${GREEN}production${WHITE}"
+    fi
+    if [[ -f "$laravel_artisan" && ! -L "$laravel_artisan" ]]; then
+      echo -e "Laravel: ${GREEN}обнаружен${WHITE}"
+      if [[ ! -f "$laravel_autoload" || -L "$laravel_autoload" ]]; then
+        echo -e "Laravel dependencies: ${YELLOW}не установлены${WHITE}"
+        echo "Сначала установите зависимости Composer."
+      fi
+
+      laravel_key_state=""
+      if [[ ! -e "$laravel_env" && ! -L "$laravel_env" ]]; then
+        echo -e "Laravel .env: ${YELLOW}не найден${WHITE}"
+      elif [[ ! -f "$laravel_env" || -L "$laravel_env" ]]; then
+        echo -e "Laravel .env: ${RED}небезопасный тип файла${WHITE}"
+      elif ! laravel_key_state="$(get_laravel_app_key_state "$laravel_env")"; then
+        echo -e "Laravel APP_KEY: ${RED}не удалось проверить${WHITE}"
+      elif [[ "$laravel_key_state" == "set" ]]; then
+        echo -e "Laravel APP_KEY: ${GREEN}задан${WHITE}"
+      elif [[ "$laravel_key_state" == "empty" ]]; then
+        echo -e "Laravel APP_KEY: ${YELLOW}не задан${WHITE}"
+      elif [[ "$laravel_key_state" == "missing" ]]; then
+        echo -e "Laravel APP_KEY: ${YELLOW}строка отсутствует в .env${WHITE}"
+      else
+        echo -e "Laravel APP_KEY: ${RED}некорректный формат в .env${WHITE}"
+      fi
     fi
     if [[ ! -f "${project_path}/composer.lock" ]]; then
       echo
@@ -642,8 +751,19 @@ site_menu() {
       menu_items+=("Установить production-зависимости из composer.lock")
       menu_actions+=("install")
     fi
-    menu_items+=("Пересобрать autoload" "Проверить устаревшие прямые зависимости" "Выйти")
-    menu_actions+=("dump-autoload" "outdated" "exit")
+    menu_items+=("Пересобрать autoload" "Проверить устаревшие прямые зависимости")
+    menu_actions+=("dump-autoload" "outdated")
+    if [[ -f "$laravel_artisan" && ! -L "$laravel_artisan" &&
+      -f "$laravel_autoload" && ! -L "$laravel_autoload" ]]; then
+      if [[ "$laravel_key_state" == "empty" ]]; then
+        menu_items+=("Сгенерировать Laravel APP_KEY")
+        menu_actions+=("laravel-key-generate")
+      fi
+      menu_items+=("Выполнить миграции Laravel")
+      menu_actions+=("laravel-migrate")
+    fi
+    menu_items+=("Выйти")
+    menu_actions+=("exit")
 
     vertical_menu "current" 2 0 54 "${menu_items[@]}"
     choice=$?
@@ -711,6 +831,48 @@ site_menu() {
       outdated)
         run_composer_for_site "$site_user" "$site_home" "$php_bin" "$project_path" \
           --no-interaction --no-plugins --no-scripts outdated --direct
+        ;;
+      laravel-key-generate)
+        if [[ ! -f "$laravel_artisan" || -L "$laravel_artisan" ]]; then
+          echo -e "Файл Laravel artisan ${RED}не найден или небезопасен${WHITE}."
+        elif [[ ! -f "$laravel_autoload" || -L "$laravel_autoload" ]]; then
+          echo -e "Laravel dependencies ${RED}не установлены${WHITE}."
+          echo "Сначала выполните установку зависимостей Composer."
+        elif [[ ! -f "$laravel_env" || -L "$laravel_env" ]]; then
+          echo -e "Обычный файл ${RED}${laravel_env}${WHITE} не найден."
+          echo "Сначала создайте .env на основе конфигурации проекта."
+        elif ! laravel_key_state="$(get_laravel_app_key_state "$laravel_env")"; then
+          echo -e "Не удалось проверить Laravel APP_KEY в ${RED}${laravel_env}${WHITE}."
+        elif [[ "$laravel_key_state" == "set" ]]; then
+          echo -e "Laravel APP_KEY уже ${YELLOW}задан${WHITE}."
+          echo "RISH не будет перезаписывать существующий ключ."
+        elif [[ "$laravel_key_state" == "missing" ]]; then
+          echo -e "В ${RED}${laravel_env}${WHITE} отсутствует строка APP_KEY=."
+          echo "Добавьте пустую строку APP_KEY= и повторите команду."
+        elif [[ "$laravel_key_state" != "empty" ]]; then
+          echo -e "Строка APP_KEY в ${RED}${laravel_env}${WHITE} имеет некорректный формат."
+          echo "Для безопасной генерации ключа должна использоваться точная пустая строка APP_KEY=."
+        else
+          confirm_site_command \
+            "$site_user" "$site_home" "$php_bin" "$project_path" \
+            "Будет сгенерирован Laravel APP_KEY и записан в .env." \
+            "Существующий пустой APP_KEY будет изменен от имени владельца сайта." \
+            "$php_bin" "$laravel_artisan" key:generate
+        fi
+        ;;
+      laravel-migrate)
+        if [[ ! -f "$laravel_artisan" || -L "$laravel_artisan" ]]; then
+          echo -e "Файл Laravel artisan ${RED}не найден или небезопасен${WHITE}."
+        elif [[ ! -f "$laravel_autoload" || -L "$laravel_autoload" ]]; then
+          echo -e "Laravel dependencies ${RED}не установлены${WHITE}."
+          echo "Сначала выполните установку зависимостей Composer."
+        else
+          confirm_site_command \
+            "$site_user" "$site_home" "$php_bin" "$project_path" \
+            "Будут выполнены новые миграции Laravel." \
+            "Команда может изменить структуру и данные базы данных сайта." \
+            "$php_bin" "$laravel_artisan" migrate
+        fi
         ;;
       *)
         return 0

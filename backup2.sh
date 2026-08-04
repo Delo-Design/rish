@@ -570,6 +570,7 @@ configcnf() {
 
 remote_info() {
     local selected_remote="$rclone_remote"
+    local remote_features about_supported about_output
 
     echo
     echo -e "Информация о подключении"
@@ -583,10 +584,33 @@ remote_info() {
         return 1
     fi
 
-    echo "Общая информация о хранилище:"
-    if ! rclone about "${selected_remote}:"; then
-        echo -e "${YELLOW}Команда 'rclone about' недоступна для этого типа подключения.${WHITE}"
+    about_supported=""
+    if remote_features="$(rclone backend features "${selected_remote}:" 2>/dev/null)"; then
+        about_supported="$(
+            printf '%s' "$remote_features" \
+                | jq -r '.Features.About | if . == null then empty else tostring end' 2>/dev/null
+        )"
     fi
+
+    case "$about_supported" in
+        true)
+            echo "Общая информация о хранилище:"
+            if ! rclone about "${selected_remote}:"; then
+                echo -e "${YELLOW}Не удалось получить общую информацию о хранилище.${WHITE}"
+            fi
+            ;;
+        false)
+            echo "Общая квота хранилища не предоставляется этим типом подключения."
+            ;;
+        *)
+            if about_output="$(rclone about "${selected_remote}:" 2>/dev/null)"; then
+                echo "Общая информация о хранилище:"
+                printf '%s\n' "$about_output"
+            else
+                echo "Общая квота хранилища не предоставляется этим типом подключения."
+            fi
+            ;;
+    esac
     echo
     echo "Размер папки бэкапов:"
     if ! rclone size "${selected_remote}:${server}"; then
