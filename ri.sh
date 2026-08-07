@@ -237,6 +237,32 @@ Install() {
     Down
 }
 
+InstallOptional() {
+    local package="$1"
+
+    if command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1; then
+        Up
+        echo -e "${GREEN}${package}${WHITE} уже установлен"
+        Down
+        return 0
+    fi
+
+    Up
+    echo -e "Пытаемся установить необязательный пакет ${GREEN}${package}${WHITE}"
+    Down
+    if yum -y install "$package" && command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1; then
+        Up
+        echo -e "${GREEN}${package}${WHITE} установлен"
+        Down
+        return 0
+    fi
+
+    Up
+    echo -e "Пакет ${YELLOW}${package}${WHITE} недоступен. Шифрование бэкапов предлагаться не будет."
+    Down
+    return 1
+}
+
 GetRebootStatus() {
   if ! command -v needs-restarting >/dev/null 2>&1; then
     return 2
@@ -674,6 +700,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
         Down
     fi
     mark_step_completed "$STEP"
+  fi
+
+  STEP="Установка age для шифрования бэкапов"
+  if ! check_step "$STEP"; then
+    if InstallOptional age; then
+      mark_step_completed "$STEP"
+    fi
   fi
 
   STEP="Установка pv"

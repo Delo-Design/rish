@@ -456,6 +456,36 @@ check_legacy_backup_cron() {
   fi
 }
 
+check_backup_identity_exports() {
+  local identity_file
+  local first_line
+  local last_line
+  local key_summary
+
+  shopt -s nullglob
+  for identity_file in /root/*.age; do
+    [[ -f "$identity_file" && ! -L "$identity_file" ]] || continue
+    IFS= read -r first_line < "$identity_file" || continue
+    [[ "$first_line" == "-----BEGIN AGE ENCRYPTED FILE-----" ]] || continue
+    last_line="$(tail -n 1 -- "$identity_file" 2>/dev/null)" || continue
+    [[ "$last_line" == "-----END AGE ENCRYPTED FILE-----" ]] || continue
+    add_issue "В /root оставлен защищённый приватный ключ бэкапов: $(highlight_path_file "$identity_file"). Скопируйте файл на свой компьютер, убедитесь, что он сохранён, затем удалите серверную копию" "" ""
+  done
+  for identity_file in /root/*; do
+    [[ -f "$identity_file" && ! -L "$identity_file" ]] || continue
+    IFS= read -r first_line < "$identity_file" || continue
+    case "$first_line" in
+      "-----BEGIN OPENSSH PRIVATE KEY-----"|"-----BEGIN RSA PRIVATE KEY-----"|"-----BEGIN PRIVATE KEY-----"|"-----BEGIN ENCRYPTED PRIVATE KEY-----")
+        key_summary="$(LC_ALL=C ssh-keygen -lf "$identity_file" 2>/dev/null)" || continue
+        if [[ "$key_summary" == *" (ED25519)" || "$key_summary" == *" (RSA)" ]]; then
+          add_issue "В /root оставлен файл приватного ключа: $(highlight_path_file "$identity_file"). Если он был загружен для восстановления бэкапа, удалите серверную копию" "" ""
+        fi
+        ;;
+    esac
+  done
+  shopt -u nullglob
+}
+
 check_user_tmp_dir() {
   local user_name="$1"
   local tmp_dir="/var/www/${user_name}/tmp"
@@ -1159,6 +1189,7 @@ collect_issues() {
   check_httpd_tmpfiles_override
   check_cron_allow
   check_legacy_backup_cron
+  check_backup_identity_exports
   check_sftp_security
   check_var_www
   check_noindex

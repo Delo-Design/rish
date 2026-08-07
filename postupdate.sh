@@ -230,6 +230,24 @@ Install() {
   fi
 }
 
+InstallOptional() {
+  local package="$1"
+
+  if command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1; then
+    echo -e "${GREEN}${package}${WHITE} уже установлен"
+    return 0
+  fi
+
+  echo -e "Пытаемся установить необязательный пакет ${GREEN}${package}${WHITE}"
+  if yum -y install "$package" && command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1; then
+    echo -e "${GREEN}${package}${WHITE} установлен"
+    return 0
+  fi
+
+  echo -e "Пакет ${YELLOW}${package}${WHITE} недоступен. Шифрование бэкапов предлагаться не будет."
+  return 1
+}
+
 configure_httpd_tmpfiles_override() {
   local vendor_conf="/usr/lib/tmpfiles.d/httpd.conf"
   local override_conf="/etc/tmpfiles.d/httpd.conf"
@@ -284,6 +302,13 @@ STEP="Установка dnf-utils"
 if ! check_step "$STEP"; then
   Install dnf-utils
   mark_step_completed "$STEP"
+fi
+
+STEP="Установка age для шифрования бэкапов"
+if ! check_step "$STEP"; then
+  if InstallOptional age; then
+    mark_step_completed "$STEP"
+  fi
 fi
 
 STEP="Установка pv"
