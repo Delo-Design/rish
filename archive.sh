@@ -1544,6 +1544,15 @@ decrypt_age_archive() (
     identity_was_pasted=1
   fi
 
+  if [[ "$identity_was_pasted" -eq 1 ]]; then
+    clear
+    echo -e "Зашифрованный архив: ${GREEN}${filename}${WHITE}"
+    if [[ -n "$companion_encrypted" ]]; then
+      echo -e "Найден соседний архив: ${GREEN}$(basename "$companion_encrypted")${WHITE}"
+    fi
+    echo
+  fi
+
   if [[ "$selected_identity_type" == "age" ]]; then
     echo
     echo "Введите пароль приватного ключа."
@@ -1573,16 +1582,7 @@ decrypt_age_archive() (
   fi
   identity_file="$unlocked_identity_file"
 
-  if [[ "$identity_was_pasted" -eq 1 ]]; then
-    clear
-    echo -e "Зашифрованный архив: ${GREEN}${filename}${WHITE}"
-    if [[ -n "$companion_encrypted" ]]; then
-      echo -e "Найден соседний архив: ${GREEN}$(basename "$companion_encrypted")${WHITE}"
-    fi
-    echo
-  else
-    echo
-  fi
+  echo
 
   if [[ "$choice" -eq 0 ]]; then
     echo -e "Открываем ${GREEN}${filename}${WHITE} без создания промежуточного расшифрованного архива..."
