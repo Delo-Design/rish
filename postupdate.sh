@@ -653,6 +653,16 @@ if ! check_step "$STEP"; then
   fi
   mark_step_completed "$STEP"
 fi
+if [[ -f /root/rish/index.html ]]; then
+  if [[ -f /root/rish/templates/apache-noindex.html ]]; then
+    rm -f /root/rish/index.html
+  else
+    echo -e "${RED}Ошибка:${WHITE} установка RISH неполная."
+    echo "Новый файл /root/rish/templates/apache-noindex.html не найден."
+    echo "Повторите установку RISH через обновление."
+    exit 1
+  fi
+fi
 
 declare -A missing_tmp_param # ассоциативный массив: php_version_dir => username
 
