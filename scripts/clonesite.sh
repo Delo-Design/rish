@@ -677,8 +677,8 @@ function offer_local_self_signed_ssl() {
 
   echo
   # shellcheck disable=SC1091
-  if ! source "${RISH_HOME}/certs.sh"; then
-    echo -e "Не удалось подключить скрипт: ${RED}${RISH_HOME}/certs.sh${WHITE}"
+  if ! source "${RISH_HOME}/scripts/certs.sh"; then
+    echo -e "Не удалось подключить скрипт: ${RED}${RISH_HOME}/scripts/certs.sh${WHITE}"
     return 1
   fi
 

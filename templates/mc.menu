@@ -27,7 +27,7 @@ d  DNS
 
 + d /var/www/ & t d
 6  Пoлyчить/Oтoзвaть/Пpoдлить SSL cert.
-	bash /root/rish/certs.sh %f
+	bash /root/rish/scripts/certs.sh %f
 
 r  Перезaпуск и стaтус серверa apache
   bash /root/rish/scripts/apache_restart.sh

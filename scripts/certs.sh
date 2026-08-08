@@ -183,7 +183,7 @@ function selectel_certificate_script_path() {
   local selectel_certificate_script="/root/rish/scripts/certificates/selectel.sh"
 
   if [[ ! -f "$selectel_certificate_script" ]]; then
-    selectel_certificate_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/certificates/selectel.sh"
+    selectel_certificate_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/certificates/selectel.sh"
   fi
   [[ -f "$selectel_certificate_script" ]] || return 1
   printf '%s' "$selectel_certificate_script"
