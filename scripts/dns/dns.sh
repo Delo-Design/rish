@@ -563,11 +563,13 @@ record_menu_row_label() {
   local type="$1"
   local name="$2"
   local value="$3"
+  local name_suffix_width
 
   if ((${#name} > DNS_RECORD_NAME_WIDTH)); then
-    name="${name:0:$((DNS_RECORD_NAME_WIDTH - 3))}..."
+    name_suffix_width=$((DNS_RECORD_NAME_WIDTH - 3))
+    name="...${name: -name_suffix_width}"
   fi
-  printf "%-${DNS_RECORD_TYPE_WIDTH}s │ %-${DNS_RECORD_NAME_WIDTH}s │ %s" "$type" "$name" "$(record_value_label "$value")"
+  printf "%-${DNS_RECORD_TYPE_WIDTH}s │ %${DNS_RECORD_NAME_WIDTH}s │ %s" "$type" "$name" "$(record_value_label "$value")"
 }
 
 has_cname_conflict() {
