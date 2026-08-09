@@ -61,6 +61,42 @@ find_other_vhost_certificate_reference() {
   return 1
 }
 
+remove_site_from_backup_list() {
+  local list_file="/root/rish/backup_list_all"
+  local list_dir list_name temp_file removed_count
+
+  [[ -e "$list_file" || -L "$list_file" ]] || return 0
+  if [[ ! -f "$list_file" || -L "$list_file" ]]; then
+    return 1
+  fi
+
+  removed_count="$(awk -F';' -v user="$user_name" -v site="$site_name" '
+    $1 == user && $2 == site { count++ }
+    END { print count + 0 }
+  ' "$list_file")" || return 1
+  [[ "$removed_count" =~ ^[0-9]+$ ]] || return 1
+  ((removed_count > 0)) || return 0
+
+  list_dir="$(dirname "$list_file")"
+  list_name="$(basename "$list_file")"
+  temp_file="$(mktemp "${list_dir}/.${list_name}.rish-tmp.XXXXXX")" || return 1
+  if ! awk -F';' -v user="$user_name" -v site="$site_name" '
+    $1 != user || $2 != site { print }
+  ' "$list_file" > "$temp_file"; then
+    rm -f -- "$temp_file"
+    return 1
+  fi
+  if ! chmod --reference="$list_file" "$temp_file" ||
+    ! chown --reference="$list_file" "$temp_file" ||
+    ! mv -f -- "$temp_file" "$list_file"; then
+    rm -f -- "$temp_file"
+    return 1
+  fi
+
+  echo -e "Сайт ${GREEN}${site_label}${WHITE} удалён из списка резервного копирования."
+  return 0
+}
+
 directory="$1"
 site_name="$2"
 directory="${directory%/}"
@@ -173,6 +209,12 @@ else
   fail "В процессе удаления папки сайта ${RED}${site_label}${WHITE} возникли проблемы. Apache vhost восстановлен."
 fi
 trap - EXIT
+
+if ! remove_site_from_backup_list; then
+  echo -e "Не удалось удалить сайт ${LRED}${site_label}${WHITE} из списка резервного копирования."
+  echo -e "Проверьте файл ${YELLOW}/root/rish/backup_list_all${WHITE}."
+  delete_site_status=1
+fi
 
 certbot_vhost_backup="${vhost_backup_dir}/${site_name}-le-ssl.conf"
 certbot_fullchain_file=""

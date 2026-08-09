@@ -1227,7 +1227,7 @@ age_identity_file_type() {
 select_age_identity() {
   local temp_dir="$1"
   local choice identity_choice identity_path identity_type line armor_file armor_complete=0 input_cancelled=0 expected_end=""
-  local invalid_identity_format=0
+  local invalid_identity_format=0 typographic_dash=0
   local -a identity_files=() identity_types=() identity_labels=()
 
   AGE_SELECTED_IDENTITY=""
@@ -1287,6 +1287,16 @@ select_age_identity() {
       echo
       : > "$armor_file"
       while IFS= read -r line; do
+        if [[ "$typographic_dash" -eq 1 ]]; then
+          backup_crypto_line_is_key_end "$line" age && break
+          [[ -z "$line" ]] && break
+          continue
+        fi
+        if backup_crypto_has_typographic_dash "$line"; then
+          typographic_dash=1
+          backup_crypto_line_is_key_end "$line" age && break
+          continue
+        fi
         if [[ -z "$line" ]]; then
           [[ ! -s "$armor_file" ]] && input_cancelled=1
           break
@@ -1301,6 +1311,10 @@ select_age_identity() {
           break
         fi
       done
+      if [[ "$typographic_dash" -eq 1 ]]; then
+        backup_crypto_warn_typographic_dash
+        return 2
+      fi
       if [[ "$input_cancelled" -eq 1 ]]; then
         return 1
       fi
@@ -1324,6 +1338,16 @@ select_age_identity() {
       echo
       : > "$armor_file"
       while IFS= read -r line; do
+        if [[ "$typographic_dash" -eq 1 ]]; then
+          backup_crypto_line_is_key_end "$line" ssh && break
+          [[ -z "$line" ]] && break
+          continue
+        fi
+        if backup_crypto_has_typographic_dash "$line"; then
+          typographic_dash=1
+          backup_crypto_line_is_key_end "$line" ssh && break
+          continue
+        fi
         if [[ -z "$line" ]]; then
           [[ ! -s "$armor_file" ]] && input_cancelled=1
           break
@@ -1343,6 +1367,10 @@ select_age_identity() {
           break
         fi
       done
+      if [[ "$typographic_dash" -eq 1 ]]; then
+        backup_crypto_warn_typographic_dash
+        return 2
+      fi
       if [[ "$input_cancelled" -eq 1 ]]; then
         return 1
       fi

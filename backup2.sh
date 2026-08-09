@@ -1125,7 +1125,7 @@ backup_crypto_generate_identity() {
     local challenge_file encrypted_challenge restored_challenge
     local verification_error verification_failure=""
     local export_choice export_file export_name safe_user timestamp verification_identity
-    local line armor_complete=0 input_cancelled=0
+    local line armor_complete=0 input_cancelled=0 typographic_dash=0
     local original_umask
 
     BACKUP_GENERATED_RECIPIENT=""
@@ -1180,6 +1180,7 @@ backup_crypto_generate_identity() {
 
     echo
     echo "Если age создала пароль автоматически, скопируйте и сохраните его сейчас."
+    echo "Если вы ввели пароль самостоятельно, сохраните его в надёжном месте."
     echo "RISH не хранит этот пароль и не сможет показать его повторно."
     backup_crypto_wait nomouse
 
@@ -1233,6 +1234,16 @@ backup_crypto_generate_identity() {
             echo
             : > "$verification_identity"
             while IFS= read -r line; do
+                if [[ "$typographic_dash" -eq 1 ]]; then
+                    backup_crypto_line_is_key_end "$line" age && break
+                    [[ -z "$line" ]] && break
+                    continue
+                fi
+                if backup_crypto_has_typographic_dash "$line"; then
+                    typographic_dash=1
+                    backup_crypto_line_is_key_end "$line" age && break
+                    continue
+                fi
                 if [[ -z "$line" ]]; then
                     input_cancelled=1
                     break
@@ -1243,6 +1254,13 @@ backup_crypto_generate_identity() {
                     break
                 fi
             done
+            if [[ "$typographic_dash" -eq 1 ]]; then
+                backup_crypto_cleanup_identity_temp
+                backup_crypto_warn_typographic_dash
+                echo "Настройка не изменена."
+                backup_crypto_wait
+                return 1
+            fi
             if [[ "$input_cancelled" -eq 1 ]]; then
                 backup_crypto_cleanup_identity_temp
                 echo -e "Проверка ключа ${YELLOW}отменена${WHITE}. Шифрование не включено."
@@ -1327,6 +1345,12 @@ backup_crypto_read_recipient() {
     read -r -e recipient
     recipient="$(backup_crypto_trim "$recipient")"
 
+    if [[ ! "$recipient" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]+$ ]]; then
+        echo
+        echo -e "${LRED}Некорректный публичный ключ age.${WHITE}"
+        backup_crypto_wait
+        return 1
+    fi
     if ! backup_parse_archive_policy "crypto:${recipient}" || ! backup_validate_age_recipients; then
         echo
         echo -e "${LRED}Некорректный публичный ключ:${WHITE} ${BACKUP_ARCHIVE_POLICY_ERROR}"
@@ -1393,6 +1417,132 @@ backup_crypto_choose_ssh_recipient() {
     fi
     printf -v "$result_var" '%s' "${recipients[$choice]}"
 }
+
+backup_crypto_verify_ssh_recipient_ownership() (
+    local recipient="$1"
+    local temp_dir private_key_file line expected_end="" derived_public_key
+    local derived_type derived_data
+    local input_started=0 input_cancelled=0 invalid_format=0 key_complete=0 typographic_dash=0
+
+    if ! command -v ssh-keygen >/dev/null 2>&1; then
+        clear
+        echo -e "Не найдена команда ${LRED}ssh-keygen${WHITE}. Проверить SSH-ключ невозможно."
+        backup_crypto_wait
+        return 1
+    fi
+
+    temp_dir="$(mktemp -d /run/rish-ssh-key-check.XXXXXX)" || {
+        clear
+        echo -e "Не удалось ${LRED}подготовить временный файл${WHITE} для проверки SSH-ключа."
+        backup_crypto_wait
+        return 1
+    }
+    if ! chmod 700 "$temp_dir"; then
+        rm -rf -- "$temp_dir"
+        clear
+        echo -e "Не удалось ${LRED}защитить временный файл${WHITE} для проверки SSH-ключа."
+        backup_crypto_wait
+        return 1
+    fi
+    trap 'rm -rf -- "$temp_dir"' EXIT
+    umask 077
+    private_key_file="${temp_dir}/private-ssh-key"
+    : > "$private_key_file"
+
+    clear
+    echo "Подтверждение владения SSH-ключом"
+    echo -e "Выбранный публичный ключ: ${GREEN}$(backup_crypto_short_recipient "$recipient")${WHITE}"
+    echo
+    echo "Вставьте соответствующий приватный SSH-ключ целиком, начиная со строки BEGIN."
+    echo "Вставляемый блок не скрывается и будет виден на экране."
+    echo "Ввод завершится после строки END и перевода строки за ней."
+    echo "Если ключ защищён паролем, ssh-keygen попросит его после вставки."
+    echo "Для отмены нажмите Enter на пустой строке."
+    echo
+
+    while IFS= read -r line; do
+        if [[ "$typographic_dash" -eq 1 ]]; then
+            backup_crypto_line_is_key_end "$line" ssh && break
+            [[ -z "$line" ]] && break
+            continue
+        fi
+        if backup_crypto_has_typographic_dash "$line"; then
+            typographic_dash=1
+            backup_crypto_line_is_key_end "$line" ssh && break
+            continue
+        fi
+        if [[ -z "$line" ]]; then
+            if [[ "$input_started" -eq 0 ]]; then
+                input_cancelled=1
+            fi
+            break
+        fi
+        if [[ "$input_started" -eq 0 ]]; then
+            case "$line" in
+                "-----BEGIN OPENSSH PRIVATE KEY-----") expected_end="-----END OPENSSH PRIVATE KEY-----" ;;
+                "-----BEGIN RSA PRIVATE KEY-----") expected_end="-----END RSA PRIVATE KEY-----" ;;
+                "-----BEGIN PRIVATE KEY-----") expected_end="-----END PRIVATE KEY-----" ;;
+                "-----BEGIN ENCRYPTED PRIVATE KEY-----") expected_end="-----END ENCRYPTED PRIVATE KEY-----" ;;
+                *) invalid_format=1; break ;;
+            esac
+            input_started=1
+        fi
+        printf '%s\n' "$line" >> "$private_key_file"
+        if [[ "$line" == "$expected_end" ]]; then
+            key_complete=1
+            break
+        fi
+    done
+
+    if [[ "$typographic_dash" -eq 1 ]]; then
+        backup_crypto_warn_typographic_dash
+        echo "Настройка не изменена."
+        backup_crypto_wait
+        return 1
+    fi
+    if [[ "$input_cancelled" -eq 1 ]]; then
+        clear
+        echo -e "Проверка SSH-ключа ${YELLOW}отменена${WHITE}. Настройка не изменена."
+        backup_crypto_wait
+        return 1
+    fi
+    if [[ "$invalid_format" -eq 1 ]]; then
+        clear
+        echo -e "Вставленный текст ${LRED}не является${WHITE} приватным SSH-ключом."
+        echo "Настройка не изменена."
+        backup_crypto_wait
+        return 1
+    fi
+    if [[ "$key_complete" -ne 1 ]]; then
+        clear
+        echo -e "Приватный SSH-ключ вставлен ${LRED}не полностью${WHITE}."
+        echo "Настройка не изменена."
+        backup_crypto_wait
+        return 1
+    fi
+
+    echo
+    echo "Проверяем соответствие приватного и публичного SSH-ключей."
+    if ! derived_public_key="$(LC_ALL=C ssh-keygen -y -f "$private_key_file")"; then
+        clear
+        echo -e "Не удалось ${LRED}прочитать приватный SSH-ключ${WHITE}."
+        echo "Проверьте формат ключа и пароль. Настройка не изменена."
+        backup_crypto_wait
+        return 1
+    fi
+    read -r derived_type derived_data _ <<< "$derived_public_key"
+    if [[ "${derived_type} ${derived_data}" != "$recipient" ]]; then
+        clear
+        echo -e "Приватный SSH-ключ ${LRED}не соответствует${WHITE} выбранному публичному ключу."
+        echo "Настройка не изменена."
+        backup_crypto_wait
+        return 1
+    fi
+
+    clear
+    echo -e "Владение SSH-ключом ${GREEN}подтверждено${WHITE}."
+    return 0
+)
 
 backup_crypto_choose_recipient_index() {
     local result_var="$1"
@@ -1641,7 +1791,8 @@ backup_crypto_object_actions() {
                 "Продолжить"; then
                 return 0
             fi
-            if backup_crypto_choose_ssh_recipient new_recipient; then
+            if backup_crypto_choose_ssh_recipient new_recipient &&
+                backup_crypto_verify_ssh_recipient_ownership "$new_recipient"; then
                 new_policy="$(backup_crypto_policy_value "$new_recipient")"
                 if backup_crypto_apply_policy "$line_no" "$new_policy"; then
                     echo -e "Шифрование для ${GREEN}${target}${WHITE} включено с публичным SSH-ключом."
@@ -1717,6 +1868,9 @@ backup_crypto_object_actions() {
                     backup_crypto_wait
                     return 1
                 fi
+                if ! backup_crypto_verify_ssh_recipient_ownership "$new_recipient"; then
+                    return 0
+                fi
                 new_policy="$(backup_crypto_policy_value "${recipients[0]}" "$new_recipient")"
                 if backup_crypto_apply_policy "$line_no" "$new_policy"; then
                     echo -e "Запасной публичный SSH-ключ для ${GREEN}${target}${WHITE} добавлен."
@@ -1751,6 +1905,9 @@ backup_crypto_object_actions() {
                     "Замена публичного SSH-ключа для ${GREEN}${target}${WHITE}" \
                     "Будет назначен другой готовый SSH-ключ из ${GREEN}/root/.ssh/authorized_keys${WHITE}.\n${YELLOW}Прежний приватный ключ${WHITE} потребуется для ранее созданных архивов." \
                     "Заменить SSH-ключ"; then
+                    return 0
+                fi
+                if ! backup_crypto_verify_ssh_recipient_ownership "$new_recipient"; then
                     return 0
                 fi
                 recipients[selected_index]="$new_recipient"
@@ -1824,7 +1981,7 @@ backup_crypto_object_actions() {
 backup_crypto_management_menu() {
     local default_index=0
     local menu_height choice line_no user target type db remote policy exclude status label details
-    local target_width details_width index normalized_policy
+    local target_width details_width index normalized_policy key_count ssh_key_count key_type recipient
     local menu_y menu_right_x action_x selected_row
     local -a labels=() line_numbers=() users=() targets=() types=() policies=() statuses=()
     local -A policy_validity=()
@@ -1866,8 +2023,21 @@ backup_crypto_management_menu() {
                             fi
                         fi
                         if [[ "${policy_validity[$normalized_policy]}" -eq 1 ]]; then
-                            status="шифрование · ${#BACKUP_AGE_RECIPIENTS[@]} ключ"
-                            (( ${#BACKUP_AGE_RECIPIENTS[@]} == 2 )) && status+="а"
+                            key_count="${#BACKUP_AGE_RECIPIENTS[@]}"
+                            ssh_key_count=0
+                            for recipient in "${BACKUP_AGE_RECIPIENTS[@]}"; do
+                                [[ "$recipient" == ssh-* ]] && ssh_key_count=$((ssh_key_count + 1))
+                            done
+                            if ((ssh_key_count == 0)); then
+                                key_type="age"
+                            elif ((ssh_key_count == key_count)); then
+                                key_type="SSH"
+                            else
+                                key_type="age + SSH"
+                            fi
+                            status="шифрование · ${key_count} ключ"
+                            ((key_count == 2)) && status+="а"
+                            status+=" ${key_type}"
                         else
                             status="ошибка настройки"
                         fi

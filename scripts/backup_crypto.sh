@@ -16,6 +16,37 @@ backup_crypto_trim() {
   printf '%s' "$value"
 }
 
+backup_crypto_has_typographic_dash() {
+  case "$1" in
+    *'‐'*|*'‑'*|*'‒'*|*'–'*|*'—'*|*'−'*|*'－'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+backup_crypto_line_is_key_end() {
+  local line="$1"
+  local key_type="$2"
+
+  case "$key_type" in
+    age)
+      [[ "$line" == *"END AGE ENCRYPTED FILE"* ]]
+      return
+      ;;
+    ssh)
+      case "$line" in
+        *"END OPENSSH PRIVATE KEY"*|*"END RSA PRIVATE KEY"*|*"END PRIVATE KEY"*|*"END ENCRYPTED PRIVATE KEY"*) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+backup_crypto_warn_typographic_dash() {
+  echo -e "В текстовом блоке найдено ${YELLOW}типографское тире${WHITE} вместо обычного дефиса ${YELLOW}-${WHITE}."
+  echo "Мессенджер или редактор изменил строки BEGIN/END."
+  echo "Скопируйте ключ заново как обычный текст либо передайте его как файл без форматирования."
+}
+
 backup_crypto_available() {
   command -v age >/dev/null 2>&1
 }
