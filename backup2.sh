@@ -138,13 +138,19 @@ WHITE='\033[0m'
 
 backupall() {
     local overall_status=0
-    local archive_base age_suffix completion_part completion_prefix completion_remote_path
+    local archive_base age_suffix completion_part completion_prefix completion_remote_path backup_dir
     local USER TARGET TYPE DB REMOTE ARCHIVE_FLAG EXCLUDE_LIST
     local ARCHIVE_NAME dir
     local -a EXCLUDE_OPTS EXCLUDE_DIRS
 
+    if [[ -z "${DIR_BACKUP:-}" ]] || ! backup_dir="$(realpath -m -- "$DIR_BACKUP")" || [[ "$backup_dir" == "/" ]]; then
+        echo -e "Небезопасное значение ${LRED}DIR_BACKUP${WHITE}: временная папка не задана или указывает на корневой каталог."
+        return 1
+    fi
+    DIR_BACKUP="$backup_dir"
+
     mkdir -p "$DIR_BACKUP"
-    rm -rf "$DIR_BACKUP"/*
+    rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
 
     declare -A CLEANUP_TARGETS CLEANUP_REMOTES
     mapfile -t VALID_REMOTES < <(rclone listremotes 2>/dev/null | sed 's/:$//')
@@ -388,20 +394,21 @@ backupall() {
 
         if rclone copy --progress --stats-one-line --stats=1s --exclude "*.end" "$DIR_BACKUP/" "${REMOTE}:"; then
             printf '\033[1A\r\033[K'
-            if rclone copyto --progress --stats-one-line --stats=1s \
-                "$completion_part" "${REMOTE}:${completion_remote_path}"; then
+            if rclone copy --progress --stats-one-line --stats=1s \
+                --include "/${completion_remote_path}" \
+                "$DIR_BACKUP/" "${REMOTE}:"; then
                 printf '\033[1A\r\033[K'
-                rm -rf "$DIR_BACKUP"/*
+                rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
                 CLEANUP_TARGETS["$REMOTE|$USER"]=1
                 CLEANUP_REMOTES["$REMOTE"]=1
             else
                 printf '\033[1A\r\033[K'
-                rm -rf "$DIR_BACKUP"/*
+                rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
                 backup_object_error "Ошибка передачи последней части архива ${TARGET} в подключение '${REMOTE}'. Переданные части сохранены без признака завершения."
             fi
         else
             printf '\033[1A\r\033[K'
-            rm -rf "$DIR_BACKUP"/*
+            rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
             backup_object_error "Ошибка передачи архива ${TARGET} в подключение '${REMOTE}'. Временные файлы очищены."
         fi
     done < "$backupall2"
