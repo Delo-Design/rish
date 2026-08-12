@@ -205,9 +205,20 @@ fi
 
 
 Install() {
-    if ! rpm -q "$@" >/dev/null 2>&1; then
+    local ensure_latest=0
+
+    if [[ "${1:-}" == "--ensure-latest" ]]; then
+        ensure_latest=1
+        shift
+    fi
+
+    if ((ensure_latest == 1)) || ! rpm -q "$@" >/dev/null 2>&1; then
         Up
-        echo -e "Ставим ${GREEN}${*}${WHITE}"
+        if ((ensure_latest == 1)); then
+            echo -e "Устанавливаем или обновляем ${GREEN}${*}${WHITE}"
+        else
+            echo -e "Ставим ${GREEN}${*}${WHITE}"
+        fi
         Down
         if yum -y install "$@"; then
             (( upperY -- ))
@@ -727,14 +738,51 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     fi
   fi
 
-  STEP="Установка httpd mod_ssl"
-  if ! check_step "$STEP"; then
-    Install httpd mod_ssl mod_http2
+  apache_packages_step="Установка httpd mod_ssl"
+  apache_packages_step_pending=0
+  if ! check_step "$apache_packages_step"; then
+    Install --ensure-latest httpd mod_ssl mod_http2 openssl openssl-libs
     Up
     httpd -v
     echo
     Down
-    mark_step_completed "$STEP"
+    apache_packages_step_pending=1
+  fi
+
+  apache_certificate_step="Создание самоподписанного сертификата SSL на 10 лет"
+  apache_certificate_step_pending=0
+  if ! check_step "$apache_certificate_step"; then
+    Up
+    echo -e "Генерируем ${GREEN}самоподписанный сертификат${WHITE} SSL на 10 лет"
+    Down
+    openssl req -new -days 3650 -x509 \
+      -subj "/C=RU/ST=Moscow/L=Springfield/O=Dis/CN=www.example.com" \
+      -nodes -out /etc/pki/tls/certs/localhost.crt \
+      -keyout /etc/pki/tls/private/localhost.key
+    apache_certificate_step_pending=1
+  fi
+
+  if ((apache_packages_step_pending == 1 || apache_certificate_step_pending == 1)); then
+    apache_configtest_output="$(apachectl configtest 2>&1)"
+    apache_configtest_status=$?
+    printf '%s\n' "$apache_configtest_output"
+    if ((apache_configtest_status != 0)); then
+      RemoveRim
+      echo -e "Конфигурация ${RED}Apache${WHITE} содержит ошибки. Установка остановлена."
+      exit 1
+    fi
+    if grep -q 'AH01882' <<< "$apache_configtest_output"; then
+      RemoveRim
+      echo -e "${RED}mod_ssl${WHITE} собран для другой версии OpenSSL. Установка остановлена."
+      exit 1
+    fi
+
+    if ((apache_packages_step_pending == 1)); then
+      mark_step_completed "$apache_packages_step"
+    fi
+    if ((apache_certificate_step_pending == 1)); then
+      mark_step_completed "$apache_certificate_step"
+    fi
   fi
 
   Down
@@ -959,33 +1007,6 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP="Установка bind-utils"
   if ! check_step "$STEP"; then
     Install bind-utils
-    mark_step_completed "$STEP"
-  fi
-
-  STEP="Установка openssl"
-  if ! check_step "$STEP"; then
-    Up
-    echo -e "Устанавливаем ${GREEN}OpenSSL${WHITE}:"
-    if ! rpm -q openssl >/dev/null 2>&1; then
-      Down
-      Install openssl
-      Up
-      mark_step_completed "$STEP"
-    else
-      echo -e "${GREEN}openssl${WHITE} уже установлен, пропускаем установку."
-      mark_step_completed "$STEP"
-    fi
-  fi
-
-  STEP="Создание самоподписанного сертификата SSL на 10 лет"
-  if ! check_step "$STEP"; then
-    Up
-    echo -e "Генерируем ${GREEN}самоподписанный сертификат${WHITE} SSL на 10 лет"
-    Down
-    openssl req -new -days 3650 -x509 \
-      -subj "/C=RU/ST=Moscow/L=Springfield/O=Dis/CN=www.example.com" \
-      -nodes -out /etc/pki/tls/certs/localhost.crt \
-      -keyout /etc/pki/tls/private/localhost.key
     mark_step_completed "$STEP"
   fi
 

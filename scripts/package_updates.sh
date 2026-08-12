@@ -32,6 +32,61 @@ PrintPackageUpdates() {
   done
 }
 
+CheckApacheConfig() {
+  local configtest_output
+  local configtest_status
+
+  configtest_output="$(apachectl configtest 2>&1)"
+  configtest_status=$?
+  printf '%s\n' "$configtest_output"
+
+  if grep -q 'AH01882' <<< "$configtest_output"; then
+    echo -e "${RED}mod_ssl${WHITE} собран для другой версии OpenSSL."
+    return 1
+  fi
+
+  if ((configtest_status != 0)); then
+    echo -e "Конфигурация Apache содержит ${RED}ошибки${WHITE}."
+    return 1
+  fi
+}
+
+ReportServicesNeedingRestart() {
+  local services_output
+  local status
+
+  if ! command -v needs-restarting >/dev/null 2>&1; then
+    echo
+    echo -e "${YELLOW}Не удалось проверить другие службы:${WHITE} needs-restarting не найден."
+    return 0
+  fi
+
+  services_output="$(needs-restarting -s 2>&1)"
+  status=$?
+
+  if ((status != 0)); then
+    echo
+    echo -e "${YELLOW}Не удалось определить службы, которым требуется перезапуск.${WHITE}"
+    if [[ -n "$services_output" ]]; then
+      printf '%s\n' "$services_output"
+    fi
+    return 0
+  fi
+
+  if [[ -z "$services_output" ]]; then
+    echo
+    echo "Других служб, требующих перезапуска, не обнаружено."
+    return 0
+  fi
+
+  echo
+  echo -e "${YELLOW}Обнаружены службы, которым требуется перезапуск:${WHITE}"
+  while IFS= read -r service_name; do
+    [[ -n "$service_name" ]] && printf '  %s\n' "$service_name"
+  done <<< "$services_output"
+  echo "Перезапустите их в подходящее время. Для системных служб безопаснее выполнить плановую перезагрузку сервера."
+}
+
 CheckPackageUpdates() {
   local title="$1"
   shift
@@ -118,8 +173,8 @@ PromptApacheRestart() {
 
   echo
   echo -e "Проверяем конфигурацию Apache: ${GREEN}apachectl configtest${WHITE}"
-  if ! apachectl configtest; then
-    echo -e "Конфигурация Apache содержит ${RED}ошибки${WHITE}. Перезапуск отменен."
+  if ! CheckApacheConfig; then
+    echo "Перезапуск Apache отменен."
     return 1
   fi
 
@@ -152,9 +207,16 @@ CheckPhpUpdates() {
 }
 
 CheckApacheUpdates() {
-  CheckPackageUpdates "Проверка обновлений Apache" "httpd*" "mod_ssl" "mod_http2" || return 1
+  local restart_status=0
+
+  CheckPackageUpdates "Проверка обновлений Apache" \
+    "httpd*" "mod_ssl" "mod_http2" "openssl" "openssl-libs" || return 1
   if [[ "$PACKAGE_UPDATES_INSTALLED" -eq 1 ]]; then
-    PromptApacheRestart || return 1
+    if ! PromptApacheRestart; then
+      restart_status=1
+    fi
+    ReportServicesNeedingRestart
+    return "$restart_status"
   fi
 }
 

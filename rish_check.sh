@@ -735,7 +735,13 @@ check_apache_configtest() {
   if command -v apachectl >/dev/null 2>&1; then
     output="$(apachectl configtest 2>&1)"
     status=$?
-    if [[ "$status" -eq 0 ]]; then
+    if grep -q 'AH01882' <<< "$output"; then
+      log "Проверка конфигурации Apache: ${RED}несовместимые версии mod_ssl и OpenSSL${WHITE}"
+      log
+      printf '%s\n' "$output"
+      log
+      return 1
+    elif [[ "$status" -eq 0 ]]; then
       log "Проверка конфигурации Apache: ${GREEN}ok${WHITE}"
     else
       log "Проверка конфигурации Apache: ${RED}ошибка${WHITE}"
