@@ -37,7 +37,7 @@ function create_php_fpm_pool() {
       echo "pm.min_spare_servers = 3"
       echo "pm.max_spare_servers = 5"
       echo "pm.process_idle_timeout = 10s"
-      echo ";slowlog = /var/www/${username}/slow.log"
+      echo ";slowlog = /var/www/${username}/logs/php-slow-log"
       echo ";request_slowlog_timeout = 15s"
       echo ";php_admin_value[error_log] = /var/www/${username}/logs/php-error-log"
       echo ";php_admin_flag[log_errors] = on"

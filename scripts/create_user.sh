@@ -274,7 +274,6 @@ CreateUser() {
     ! install -d -m 755 -o "$NAME" -g "$NAME" "/var/www/${NAME}/logs" ||
     ! install -d -m 755 -o "$NAME" -g "$NAME" "/var/www/${NAME}/session" ||
     ! install -d -m 755 -o "$NAME" -g "$NAME" "/var/www/${NAME}/wsdlcache" ||
-    ! install -d -m 755 -o "$NAME" -g "$NAME" "/var/www/${NAME}/slowlog" ||
     ! install -d -m 755 -o "$NAME" -g "$NAME" "/var/www/${NAME}/tmp"; then
     fail_user_creation "создание каталогов пользователя" "${rollback_args[@]}"
     return 1
