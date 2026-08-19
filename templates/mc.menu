@@ -46,7 +46,7 @@ i       IP адрес сервера
 	sed -i "s/^i       IP адрес сервера.*$/i       IP адрес сервера ${ipaddress}/" /etc/mc/mc.menu
 	read
 
-+ d /var/www/ & t d
++ d /var/www/ & t dl
 5  Установка/управление CMS/PMA
   bash /root/rish/scripts/cms_install.sh "%d" "%f"
 

@@ -1141,8 +1141,14 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     echo
     echo -e "Установка ${GREEN}MariaDB${WHITE} в качестве базы данных."
     Down
-    mariadb_install
-    mark_step_completed "$STEP"
+    if mariadb_install; then
+      mark_step_completed "$STEP"
+    else
+      Up
+      echo -e "Установка или проверка ${RED}MariaDB завершилась ошибкой${WHITE}."
+      Down
+      exit 1
+    fi
   fi
 
   STEP="Установка certbot"
@@ -1338,7 +1344,7 @@ EOF
       echo
       echo -e "После того как скопируете этот ключ, нажмите Enter, чтобы очистить экран"
       echo -e "Оба файла ключа после этого будут уничтожены, но вы сможете подключиться с сохраненным ключом."
-      vertical_menu "current" 2 0 5 "Очистить экран"
+      vertical_menu "current" 2 0 5 nomouse "Очистить экран"
       rm -f /root/.ssh/rish-key /root/.ssh/rish-key.pub
       clear
       echo -e "Советуем сейчас подключиться к серверу заново в ${VIOLET}соседнем окне.${WHITE}"
