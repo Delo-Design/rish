@@ -1,9 +1,60 @@
 #!/usr/bin/env bash
 
+function ensure_swapfile_configuration() {
+    local SWAP_FILE="$1"
+    local SWAPPINESS_VALUE="${2:-10}"
+
+    # Добавляем swap в /etc/fstab для автоматической активации при загрузке.
+    if ! awk -v swap_file="$SWAP_FILE" \
+        '$1 == swap_file && $3 == "swap" { found=1 } END { exit !found }' /etc/fstab; then
+        if ! printf '%s\n' "$SWAP_FILE none swap sw 0 0" | tee -a /etc/fstab > /dev/null; then
+            echo -e "${RED}Ошибка${WHITE}: не удалось добавить swap в /etc/fstab."
+            return 1
+        fi
+        echo -e "Swap добавлен в ${GREEN}/etc/fstab${WHITE}."
+    else
+        echo -e "Swap уже присутствует в ${GREEN}/etc/fstab${WHITE}."
+    fi
+    if ! awk -v swap_file="$SWAP_FILE" \
+        '$1 == swap_file && $3 == "swap" { found=1 } END { exit !found }' /etc/fstab; then
+        echo -e "${RED}Ошибка${WHITE}: запись swap не найдена в /etc/fstab после сохранения."
+        return 1
+    fi
+
+    echo -e "Настройка ${GREEN}vm.swappiness${WHITE} в ${GREEN}$SWAPPINESS_VALUE${WHITE}"
+    if ! sysctl "vm.swappiness=$SWAPPINESS_VALUE"; then
+        echo -e "${RED}Ошибка${WHITE}: не удалось применить vm.swappiness."
+        return 1
+    fi
+
+    if ! grep -Eq '^[[:space:]]*vm\.swappiness[[:space:]]*=' /etc/sysctl.conf; then
+        if ! printf '%s\n' "vm.swappiness=$SWAPPINESS_VALUE" | tee -a /etc/sysctl.conf > /dev/null; then
+            echo -e "${RED}Ошибка${WHITE}: не удалось записать vm.swappiness в /etc/sysctl.conf."
+            return 1
+        fi
+        echo -e "${GREEN}vm.swappiness${WHITE} добавлен в ${GREEN}/etc/sysctl.conf${WHITE}"
+    else
+        if ! sed -i -E \
+            "s/^[[:space:]]*vm\.swappiness[[:space:]]*=.*/vm.swappiness=$SWAPPINESS_VALUE/" \
+            /etc/sysctl.conf; then
+            echo -e "${RED}Ошибка${WHITE}: не удалось обновить vm.swappiness в /etc/sysctl.conf."
+            return 1
+        fi
+        echo -e "${GREEN}vm.swappiness${WHITE} обновлен в ${GREEN}/etc/sysctl.conf${WHITE}"
+    fi
+    if ! grep -Fxq "vm.swappiness=$SWAPPINESS_VALUE" /etc/sysctl.conf; then
+        echo -e "${RED}Ошибка${WHITE}: vm.swappiness не сохранён в /etc/sysctl.conf."
+        return 1
+    fi
+}
+
 function create_swapfile() {
     echo
     local ACTIVE_SWAP
-    ACTIVE_SWAP=$(swapon --show --noheadings --raw --output NAME)
+    if ! ACTIVE_SWAP=$(swapon --show=NAME --noheadings --raw); then
+        echo -e "${RED}Ошибка${WHITE}: не удалось получить список активных swap устройств."
+        return 1
+    fi
 
     if [ -n "$ACTIVE_SWAP" ]; then
         echo "Активные swap устройства:"
@@ -17,6 +68,9 @@ function create_swapfile() {
         DISK_SWAP_SIZE=$(swapon --show=NAME,SIZE --noheadings --raw --bytes | awk '$1 !~ "^/dev/zram[0-9]+$" { total += $2 } END { print total + 0 }')
         DISK_SWAP_SIZE=$(awk -v bytes="$DISK_SWAP_SIZE" 'BEGIN { printf "%.1fG", bytes / 1024 / 1024 / 1024 }')
         echo -e "${GREEN}Дисковый swap${WHITE} размером ${GREEN}$DISK_SWAP_SIZE${WHITE} уже активен. Подключение swap файла не требуется."
+        if printf '%s\n' "$ACTIVE_SWAP" | awk '$1 == "/swapfile" { found=1 } END { exit !found }'; then
+            ensure_swapfile_configuration "/swapfile" 10 || return 1
+        fi
     else
         if [ -n "$ACTIVE_SWAP" ]; then
             echo -e "Обнаружен только ${YELLOW}zram swap${WHITE}."
@@ -100,30 +154,7 @@ function create_swapfile() {
             echo -e "${RED}Ошибка${WHITE}: не удалось активировать swap файл."
             exit 1
         fi
-        # Добавляем в /etc/fstab для автоматической активации при загрузке
-        if ! grep -q "$SWAP_FILE" /etc/fstab; then
-            echo "$SWAP_FILE none swap sw 0 0" | tee -a /etc/fstab > /dev/null
-            echo -e "Swap добавлен в ${GREEN}/etc/fstab${WHITE}."
-        else
-            echo -e "Swap уже присутствует в ${GREEN}/etc/fstab${WHITE}."
-        fi
-        
-        # Устанавливаем значение vm.swappiness, если swap активен
-        local SWAPPINESS_VALUE=10  # Здесь можно указать нужное значение
-        echo -e "Настройка ${GREEN}vm.swappiness${WHITE} в ${GREEN}$SWAPPINESS_VALUE${WHITE}"
-
-        # Устанавливаем значение на лету
-        sysctl vm.swappiness=$SWAPPINESS_VALUE
-
-        # Для постоянного изменения добавляем его в /etc/sysctl.conf, если его там нет
-        if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
-            echo "vm.swappiness=$SWAPPINESS_VALUE" | tee -a /etc/sysctl.conf > /dev/null
-            echo -e "${GREEN}vm.swappiness${WHITE} добавлен в ${GREEN}/etc/sysctl.conf${WHITE}"
-        else
-            # Если параметр уже существует, заменим его на новое значение
-            sed -i "s/^vm.swappiness=.*/vm.swappiness=$SWAPPINESS_VALUE/" /etc/sysctl.conf
-            echo -e "${GREEN}vm.swappiness${WHITE} обновлен в ${GREEN}/etc/sysctl.conf${WHITE}"
-        fi
+        ensure_swapfile_configuration "$SWAP_FILE" 10 || return 1
 
     fi
     echo

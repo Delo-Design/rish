@@ -91,6 +91,7 @@ source scripts/cron_access.sh
 source scripts/user_credentials.sh
 source scripts/create_user.sh
 source scripts/server_management.sh
+source scripts/install_rclone.sh
 
 if ! check_step "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"; then
   rish_dns_management_migrate_legacy_state
@@ -617,7 +618,14 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP="Проверка и включение swap файла, если нужно"
   if ! check_step "$STEP"; then
     Down
-    create_swapfile
+    if ! create_swapfile; then
+      Up
+      echo -e "Не удалось проверить или настроить ${RED}swap${WHITE}."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
     Up
     mark_step_completed "$STEP"
   fi
@@ -684,31 +692,74 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     Install tar
     Install glibc-gconv-extra
     Install logrotate
-    TIMER_STATUS=$(systemctl is-active logrotate.timer 2>/dev/null)
-    TIMER_ENABLED=$(systemctl is-enabled logrotate.timer 2>/dev/null)
 
-    # Проверка и активация logrotate.timer
-    if [ "$TIMER_STATUS" != "active" ] || [ "$TIMER_ENABLED" != "enabled" ]; then
-        Up
-        echo "logrotate.timer не активен или не включен. Пытаемся включить и запустить..."
-        Down
-        # Включаем и запускаем таймер
-        systemctl enable logrotate.timer && systemctl start logrotate.timer
+    if ! LOGROTATE_CHECK_OUTPUT=$(logrotate --debug /etc/logrotate.conf 2>&1); then
+      Up
+      echo -e "Проверка конфигурации ${RED}logrotate${WHITE} завершилась ошибкой:"
+      echo "$LOGROTATE_CHECK_OUTPUT"
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+    unset LOGROTATE_CHECK_OUTPUT
 
-        # Повторная проверка
-        NEW_TIMER_STATUS=$(systemctl is-active logrotate.timer 2>/dev/null)
-        NEW_TIMER_ENABLED=$(systemctl is-enabled logrotate.timer 2>/dev/null)
+    if systemctl cat logrotate.timer >/dev/null 2>&1; then
+      if ! systemctl enable --now logrotate.timer; then
         Up
-        if [ "$NEW_TIMER_STATUS" == "active" ] && [ "$NEW_TIMER_ENABLED" == "enabled" ]; then
-            echo -e "${GREEN}logrotate.timer${WHITE} успешно включен и запущен."
-        else
-            echo -e "Не удалось включить или запустить ${RED}logrotate.timer${WHITE}. Проверьте настройки вручную."
-        fi
+        echo -e "Не удалось включить или запустить ${RED}logrotate.timer${WHITE}."
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
         Down
+        RemoveRim
+        exit 1
+      fi
+      if ! systemctl is-enabled --quiet logrotate.timer || ! systemctl is-active --quiet logrotate.timer; then
+        Up
+        echo -e "${RED}logrotate.timer${WHITE} не перешёл в состояния enabled и active."
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      Up
+      echo -e "Ротация логов проверена: используется ${GREEN}logrotate.timer${WHITE}."
+      Down
+    elif [ -x /etc/cron.daily/logrotate ]; then
+      if ! systemctl enable --now crond.service; then
+        Up
+        echo -e "Не удалось включить или запустить ${RED}crond.service${WHITE}."
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      if ! systemctl is-enabled --quiet crond.service || ! systemctl is-active --quiet crond.service; then
+        Up
+        echo -e "${RED}crond.service${WHITE} не перешёл в состояния enabled и active."
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      if ! command -v run-parts >/dev/null 2>&1 ||
+        ! run-parts --test /etc/cron.daily 2>/dev/null | grep -Fxq /etc/cron.daily/logrotate; then
+        Up
+        echo -e "${RED}/etc/cron.daily/logrotate${WHITE} не включён в ежедневный запуск."
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      Up
+      echo -e "Ротация логов проверена: используется ${GREEN}/etc/cron.daily/logrotate${WHITE} через ${GREEN}crond.service${WHITE}."
+      Down
     else
-        Up
-        echo "logrotate.timer активен и включен."
-        Down
+      Up
+      echo -e "Не найден механизм запуска ${RED}logrotate${WHITE}: нет logrotate.timer и исполняемого /etc/cron.daily/logrotate."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
     fi
     mark_step_completed "$STEP"
   fi
@@ -997,7 +1048,17 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP="Установка jq и rclone"
   if ! check_step "$STEP"; then
     Install jq
-    Install rclone
+    if ! install_rclone; then
+      Up
+      echo -e "Установить или проверить ${RED}rclone${WHITE} не удалось."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+    Up
+    echo -e "${GREEN}$(rclone version | sed -n '1p')${WHITE} установлен."
+    Down
     mark_step_completed "$STEP"
     if ! check_step "Настройка hard_delete для Yandex remote"; then
       mark_step_completed "Настройка hard_delete для Yandex remote"

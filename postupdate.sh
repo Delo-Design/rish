@@ -32,6 +32,7 @@ source /root/rish/scripts/ssh_authentication.sh
 source /root/rish/scripts/cron_access.sh
 source /root/rish/scripts/user_credentials.sh
 source /root/rish/scripts/server_management.sh
+source /root/rish/scripts/install_rclone.sh
 LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
@@ -328,10 +329,17 @@ if ! check_step "$STEP"; then
 fi
 
 STEP="Установка jq и rclone"
-if ! check_step "$STEP"; then
+if ! check_step "$STEP" || ! command -v jq >/dev/null 2>&1 ||
+  ! command -v rclone >/dev/null 2>&1 || ! rclone version >/dev/null 2>&1; then
   Install jq
-  Install rclone
-  mark_step_completed "$STEP"
+  if ! install_rclone; then
+    echo -e "Установить или проверить ${RED}rclone${WHITE} не удалось."
+    exit 1
+  fi
+  echo -e "${GREEN}$(rclone version | sed -n '1p')${WHITE} установлен."
+  if ! check_step "$STEP"; then
+    mark_step_completed "$STEP"
+  fi
 fi
 
 STEP="Установка bind-utils"
