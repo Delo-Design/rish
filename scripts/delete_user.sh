@@ -280,7 +280,7 @@ DeleteUser() {
   vertical_menu "current" 2 0 5 "Нет" "Да"
   choice=$?
   if ((choice != 1)); then
-    echo -e "${CURSORUP}Пользователь ${GREEN}${user}${WHITE} не удален."
+    echo -e "${CURSORUP}Пользователь ${GREEN}${user}${WHITE} не удален.\033[K"
     return 1
   fi
 
