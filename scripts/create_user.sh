@@ -125,6 +125,33 @@ fail_user_creation() {
   return 1
 }
 
+is_valid_site_email() {
+  local email="$1"
+  local local_part
+  local domain
+  local label
+  local top_level_domain
+  local -a domain_labels=()
+
+  ((${#email} <= 254)) || return 1
+  [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || return 1
+
+  local_part="${email%%@*}"
+  domain="${email#*@}"
+  ((${#local_part} <= 64 && ${#domain} <= 253)) || return 1
+  [[ "$local_part" != .* && "$local_part" != *. && "$local_part" != *..* ]] || return 1
+  [[ "$domain" == *.* && "$domain" != .* && "$domain" != *. && "$domain" != *..* ]] || return 1
+
+  IFS='.' read -r -a domain_labels <<<"$domain"
+  for label in "${domain_labels[@]}"; do
+    ((${#label} <= 63)) || return 1
+    [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+
+  top_level_domain="${domain_labels[${#domain_labels[@]} - 1]}"
+  [[ "$top_level_domain" =~ ^([A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)$ ]]
+}
+
 CreateUser() {
   local NAME
   local default_username="$1"  # Получаем первый параметр, переданный в функцию
@@ -195,8 +222,16 @@ CreateUser() {
   echo -e "Если вы не укажете имя сейчас - оно будет создано автоматически. "
   echo -e "Изменить его можно будет в файле ${GREEN}${RISH_CREDENTIALS_DIR}/${NAME}${WHITE}"
   echo
-  echo "Введите имя учетной записи для создания сайтов по умолчанию (Обычно это ваш E-mail)"
-  read -r -e -p "(Можно не заполнять - нажмите Enter)" DEFAULTSITEACCOUNT
+  echo "Введите E-mail учетной записи администратора для создаваемых сайтов по умолчанию."
+  while true; do
+    read -r -e -p "(Можно не заполнять — нажмите Enter): " DEFAULTSITEACCOUNT
+    if [[ -z "$DEFAULTSITEACCOUNT" ]] || is_valid_site_email "$DEFAULTSITEACCOUNT"; then
+      break
+    fi
+
+    echo -e "${WHITE}Некорректный E-mail: ${RED}${DEFAULTSITEACCOUNT}${WHITE}"
+    echo "Введите адрес в формате name@example.com или оставьте поле пустым."
+  done
 
   if id -u "${NAME}" >/dev/null 2>&1
   then

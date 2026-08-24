@@ -310,6 +310,78 @@ write_sshd_config_without_trailing_legacy_rish_match() {
   ' "$sshd_config" >"$output_file"
 }
 
+sshd_config_includes_rish_dropins() {
+  local sshd_config="$1"
+  local line
+  local path
+  local target_name="${RISH_SSH_CONFIG_FILE##*/}"
+  local -a fields=()
+
+  [[ -f "$sshd_config" ]] || return 1
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    fields=()
+    read -r -a fields <<<"$line"
+    ((${#fields[@]} >= 2)) || continue
+    [[ "${fields[0],,}" == "include" ]] || continue
+
+    for path in "${fields[@]:1}"; do
+      path="${path#\"}"
+      path="${path%\"}"
+      if [[ "$path" != /* ]]; then
+        path="/etc/ssh/${path#./}"
+      fi
+      if [[ "$path" == "${RISH_SSH_CONFIG_DIR}/"* ]]; then
+        path="${path#"${RISH_SSH_CONFIG_DIR}/"}"
+      else
+        continue
+      fi
+      if [[ "$path" != */* && "$target_name" == $path ]]; then
+        return 0
+      fi
+    done
+  done <"$sshd_config"
+
+  return 1
+}
+
+write_rish_compatible_sshd_config() {
+  local sshd_config="$1"
+  local output_file="$2"
+  local body_file="${output_file}.body"
+  local source_file="$sshd_config"
+  local legacy_match_removed=0
+
+  rm -f "$output_file" "$body_file"
+  if write_sshd_config_without_trailing_legacy_rish_match "$sshd_config" "$body_file"; then
+    source_file="$body_file"
+    legacy_match_removed=1
+  else
+    rm -f "$body_file"
+  fi
+
+  if sshd_config_includes_rish_dropins "$source_file"; then
+    if ((legacy_match_removed)); then
+      mv -f "$body_file" "$output_file" || {
+        rm -f "$body_file"
+        return 2
+      }
+      return 0
+    fi
+    return 1
+  fi
+
+  if ! {
+    printf 'Include %s/*.conf\n\n' "$RISH_SSH_CONFIG_DIR"
+    cat "$source_file"
+  } >"$output_file"; then
+    rm -f "$output_file" "$body_file"
+    return 2
+  fi
+  rm -f "$body_file"
+  return 0
+}
+
 legacy_rish_sftp_match_is_at_end() {
   write_sshd_config_without_trailing_legacy_rish_match /etc/ssh/sshd_config /dev/null
 }
@@ -374,6 +446,7 @@ configure_ssh_password_authentication() {
   local effective_settings
   local effective_password
   local effective_kbd_interactive
+  local sshd_config_status
   local user
 
   # Read by postupdate.sh after this function returns.
@@ -397,14 +470,19 @@ configure_ssh_password_authentication() {
     rm -f "$temp_file" "$backup_file"
     return 1
   }
-  if write_sshd_config_without_trailing_legacy_rish_match "$sshd_config" "$sshd_temp"; then
+  write_rish_compatible_sshd_config "$sshd_config" "$sshd_temp"
+  sshd_config_status=$?
+  if [[ "$sshd_config_status" -eq 0 ]]; then
     if ! cp -p "$sshd_config" "$sshd_backup" || ! chown --reference="$sshd_config" "$sshd_temp" || ! chmod --reference="$sshd_config" "$sshd_temp"; then
       rm -f "$temp_file" "$backup_file" "$sshd_temp" "$sshd_backup"
       return 1
     fi
     changed_sshd_config=1
-  else
+  elif [[ "$sshd_config_status" -eq 1 ]]; then
     rm -f "$sshd_temp"
+  else
+    rm -f "$temp_file" "$backup_file" "$sshd_temp" "$sshd_backup"
+    return 1
   fi
 
   if ! mv -f "$temp_file" "$RISH_SSH_CONFIG_FILE"; then
