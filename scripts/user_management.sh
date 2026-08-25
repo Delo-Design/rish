@@ -85,7 +85,7 @@ load_user_www_entries() {
   USER_WWW_ERROR=""
 
   if [[ ! -e "$www_dir" && ! -L "$www_dir" ]]; then
-    USER_WWW_ERROR="каталог отсутствует: ${www_dir}"
+    USER_WWW_ERROR="папка отсутствует: ${www_dir}"
     return 1
   fi
   if [[ ! -d "$www_dir" || -L "$www_dir" ]]; then
@@ -114,11 +114,11 @@ get_user_info_menu_label() {
   local label
 
   if ! load_user_www_entries "$user"; then
-    printf '%s' "Инфо: ошибка каталога www"
+    printf '%s' "Инфо: ошибка папки www"
     return
   fi
 
-  label="Инфо: каталогов ${#USER_WWW_DIRECTORIES[@]}, файлов ${#USER_WWW_FILES[@]}"
+  label="Инфо: в www папок ${#USER_WWW_DIRECTORIES[@]}, файлов ${#USER_WWW_FILES[@]}"
   if ((${#USER_WWW_LINK_NAMES[@]} > 0)); then
     label+=", ссылок ${#USER_WWW_LINK_NAMES[@]}"
   fi
@@ -314,7 +314,7 @@ print_user_www_table() {
 
   for item in "${USER_WWW_DIRECTORIES[@]}"; do
     printf -v escaped_item '%q' "$item"
-    types+=("Каталог")
+    types+=("Папка")
     names+=("$escaped_item")
     targets+=("")
   done
@@ -476,7 +476,7 @@ show_user_info() {
       key_label="${key_count}"
       key_color="$GREEN"
     else
-      key_label="${key_count}; небезопасные права: файл ${key_permissions:-неизвестно}, каталог ${key_directory_permissions:-неизвестно}"
+      key_label="${key_count}; небезопасные права: файл ${key_permissions:-неизвестно}, папка ${key_directory_permissions:-неизвестно}"
       key_color="$RED"
     fi
   elif [[ -e "$key_file" || -L "$key_file" ]]; then
@@ -502,10 +502,11 @@ show_user_info() {
   clear
   echo -e "Пользователь: ${GREEN}${user}${WHITE}"
   echo -e "UID: ${GREEN}${uid:-неизвестно}${WHITE}"
-  echo -e "Домашний каталог: ${GREEN}${home_dir:-неизвестно}${WHITE}"
-  echo -e "Каталог данных: ${GREEN}${user_root}${WHITE}"
+  echo -e "Домашняя папка: ${GREEN}${home_dir:-неизвестно}${WHITE}"
+  echo -e "Папка данных: ${GREEN}${user_root}${WHITE}"
   echo
-  echo -e "Содержимое ${GREEN}${sites_dir}${WHITE}:"
+  echo -e "Содержимое папки ${GREEN}${sites_dir}${WHITE}"
+  echo "(только верхний уровень):"
   if ((www_status == 0)); then
     print_user_www_table
   else
