@@ -92,9 +92,6 @@ EOF
   chmod 644 "$config_file"
 
   echo -e "Размер InnoDB buffer pool для этого сервера: ${GREEN}${buffer_pool_size}${WHITE}."
-  if [[ -n "${LOG_FILE:-}" ]]; then
-    echo "MariaDB innodb_buffer_pool_size=${buffer_pool_size}" >>"$LOG_FILE"
-  fi
 }
 
 mariadb_install() {

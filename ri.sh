@@ -918,9 +918,9 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP="Замена стандартной заглушки Alma на заглушку RISH"
   if ! check_step "$STEP"; then
     if [[ ! -f "${RISH_HOME}/templates/apache-noindex.html" ]]; then
-      install -m 644 "${RISH_HOME}/templates/default-apache-noindex.html" "${RISH_HOME}/templates/apache-noindex.html" &>>"$LOG_FILE" || exit 1
+      install -m 644 "${RISH_HOME}/templates/default-apache-noindex.html" "${RISH_HOME}/templates/apache-noindex.html" || exit 1
     fi
-    install -D -m 644 "${RISH_HOME}/templates/apache-noindex.html" /usr/share/httpd/noindex/index.html &>>"$LOG_FILE" || exit 1
+    install -D -m 644 "${RISH_HOME}/templates/apache-noindex.html" /usr/share/httpd/noindex/index.html || exit 1
     if ! check_step "Инициализация шаблона заглушки Apache"; then
       mark_step_completed "Инициализация шаблона заглушки Apache"
     fi
