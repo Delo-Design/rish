@@ -5,7 +5,7 @@
 RISH_DNS_RUNTIME_DIR="/root/rish/dns"
 RISH_DNS_LEGACY_DISABLED_DIR="/root/rish/dns_bak"
 RISH_DNS_MANAGEMENT_MARKER="${RISH_DNS_RUNTIME_DIR}/.enabled"
-RISH_DNS_MANAGEMENT_MIGRATION_STEP="Переход на отдельный признак управления DNS"
+RISH_DNS_MANAGEMENT_MIGRATION_STEP=100
 
 rish_dns_management_is_enabled() {
   [[ -x "$RISH_DNS_MANAGEMENT_MARKER" ]]

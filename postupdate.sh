@@ -1,30 +1,19 @@
 #!/usr/bin/env bash
 
 source /root/rish/windows.sh
+source /root/rish/scripts/steps.sh
+if [[ -f "$COMPLETED_STEPS_FILE" ]]; then
+  rm -f -- "$LEGACY_COMPLETED_STEPS_FILE"
+fi
+if ! initialize_completed_steps; then
+  exit 1
+fi
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 WHITE='\033[0m'
 YELLOW='\033[0;33m'
 version_gt() {
   test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"
-}
-#Вспомогательное внутри сценария
-LOG_FILE="/root/rish/logfile_rish_install.log"
-# Проверка на существование файла лога
-if [ ! -f "$LOG_FILE" ]; then
-  echo "Отсутствует лог файл установки RISH. Установка была выполнена неверно."
-  echo "Обновление невозможно."
-  exit 1
-fi
-# Функция для проверки, был ли шаг выполнен
-check_step() {
-  local step=$1
-  grep -Fxq "$step" "$LOG_FILE"
-}
-# Функция для записи выполненного шага
-mark_step_completed() {
-  local step=$1
-  echo "$step" >>"$LOG_FILE"
 }
 source /root/rish/rish_config.sh
 source /root/rish/php_helpers.sh
@@ -309,26 +298,26 @@ rollback_php_fpm_hardening_update() {
   fi
 }
 
-STEP="Установка dnf-utils"
+STEP=200
 if ! check_step "$STEP"; then
   Install dnf-utils
   mark_step_completed "$STEP"
 fi
 
-STEP="Установка age для шифрования бэкапов"
+STEP=1000
 if ! check_step "$STEP"; then
   if InstallOptional age; then
     mark_step_completed "$STEP"
   fi
 fi
 
-STEP="Установка pv"
+STEP=1100
 if ! check_step "$STEP"; then
   Install pv
   mark_step_completed "$STEP"
 fi
 
-STEP="Установка jq и rclone"
+STEP=3400
 if ! check_step "$STEP" || ! command -v jq >/dev/null 2>&1 ||
   ! command -v rclone >/dev/null 2>&1 || ! rclone version >/dev/null 2>&1; then
   Install jq
@@ -342,13 +331,13 @@ if ! check_step "$STEP" || ! command -v jq >/dev/null 2>&1 ||
   fi
 fi
 
-STEP="Установка bind-utils"
+STEP=3600
 if ! check_step "$STEP"; then
   Install bind-utils
   mark_step_completed "$STEP"
 fi
 
-STEP="Перенос учетных данных пользователей в /root/rish/credentials"
+STEP=5000
 if ! check_step "$STEP"; then
   if ! legacy_user_credentials_exist; then
     mark_step_completed "$STEP"
@@ -364,7 +353,7 @@ if ! check_step "$STEP"; then
   fi
 fi
 
-STEP="Усиление изоляции PHP-FPM через systemd"
+STEP=3000
 if ! check_step "$STEP"; then
   mapfile -t php_fpm_hardening_versions < <(get_installed_php_versions)
   php_fpm_hardening_pending_versions=()
@@ -469,7 +458,7 @@ if ! check_step "$STEP"; then
   fi
 fi
 
-STEP="Ограничение пользовательского CRON через cron.allow"
+STEP=1200
 if ! check_step "$STEP"; then
   if cron_allow_is_secure; then
     mark_step_completed "$STEP"
@@ -487,12 +476,12 @@ if ! check_step "$STEP"; then
   fi
 fi
 
-STEP="Настройка способов авторизации SSH через 00-rish.conf"
+STEP=5200
 if ! check_step "$STEP"; then
   if rish_sftp_configuration_is_secure; then
     mark_step_completed "$STEP"
-    if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
-      mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+    if ! check_step 4800; then
+      mark_step_completed 4800
     fi
   else
     effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
@@ -526,8 +515,8 @@ if ! check_step "$STEP"; then
           echo -e "Особенно внимательно проверьте ключи ${YELLOW}без комментария${WHITE}."
         fi
         mark_step_completed "$STEP"
-        if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
-          mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+        if ! check_step 4800; then
+          mark_step_completed 4800
         fi
       else
         echo -e "${YELLOW}Шаг не помечен выполненным, повторим при следующем обновлении RISH.${WHITE}"
@@ -539,7 +528,7 @@ if ! check_step "$STEP"; then
   fi
 fi
 
-STEP="Усиление ограничений SFTP и перенос ключей"
+STEP=4800
 if ! check_step "$STEP"; then
   if rish_sftp_configuration_is_secure; then
     mark_step_completed "$STEP"
@@ -577,7 +566,7 @@ if ! check_step "$STEP"; then
   fi
 fi
 
-STEP="Настройка hard_delete для Yandex remote"
+STEP=3500
 if ! check_step "$STEP"; then
   rclone_config_dump=""
   yandex_remotes_output=""
@@ -654,7 +643,7 @@ fi
 source /root/rish/create_hotlist.sh
 create_hotlist
 
-STEP="Инициализация шаблона заглушки Apache"
+STEP=2400
 if ! check_step "$STEP"; then
   if [[ ! -f /root/rish/templates/apache-noindex.html ]]; then
     install -m 644 /root/rish/templates/default-apache-noindex.html /root/rish/templates/apache-noindex.html || exit 1

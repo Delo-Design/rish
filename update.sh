@@ -80,7 +80,12 @@ Update() {
           chmod u+x backup2.sh
           chmod u+x rish_check.sh
           echo
-          bash postupdate.sh
+          if ! bash postupdate.sh; then
+            echo
+            echo -e "${RED}Обновление RISH завершилось с ошибкой.${WHITE}"
+            echo "Исправьте указанную выше причину и повторите обновление."
+            exit 1
+          fi
         else
           echo "Скачанный архив поврежден"
           vertical_menu "current" 2 0 5 "Нажмите Enter"

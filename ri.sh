@@ -2,26 +2,8 @@
 #set -euo pipefail
 #IFS=$'\n\t'
 
-#Вспомогательное внутри сценария
-LOG_FILE="/root/rish/logfile_rish_install.log"
 # Путь к конфигурационному файлу
 config_file="/root/rish/rish_config.sh"
-
-# Проверка на существование файла лога, если он не существует - создать его
-if [ ! -f "$LOG_FILE" ]; then
-    touch "$LOG_FILE"
-fi
-# Функция для проверки, был ли шаг выполнен
-check_step() {
-    local step=$1
-    grep -Fxq "$step" "$LOG_FILE"
-}
-
-# Функция для записи выполненного шага
-mark_step_completed() {
-    local step=$1
-    echo "$step" >> "$LOG_FILE"
-}
 
 # Проверяем существование файла
 if [ ! -f "$config_file" ]; then
@@ -48,14 +30,11 @@ WHITE='\033[0m'
 YELLOW='\033[0;33m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
-ServerArch=$( arch )
 OS_VERSION=$( hostnamectl | grep -Eo 'Operating.*' |  sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 
-SUPPORTED_OS='Fedora|Rocky|AlmaLinux|CentOS|Red Hat Enterprise Linux Server|Oracle|ClearOS|Scientific Linux|MSVSphere'
 size=$(stty size)
 lines=${size% *}
 columns=${size#* }
-upperX=1
 upperY=1
 downY=$((${lines}/2))
 rim=$(( ${downY} - 2 ))
@@ -80,6 +59,10 @@ export RISH_HOME=${_script_dir}
 
 cd ${RISH_HOME} || exit
 
+source scripts/steps.sh
+if ! initialize_completed_steps true; then
+  exit 1
+fi
 source windows.sh
 source php_multi_install.sh
 source php_helpers.sh
@@ -493,13 +476,13 @@ df -h -P -l -x tmpfs -x devtmpfs
 echo ""
 
 if ! grep -q "MYSQLPASS" ~/.bashrc; then
-  STEP="Установка dnf-utils"
+  STEP=200
   if ! check_step "$STEP"; then
     Install dnf-utils
     mark_step_completed "$STEP"
   fi
 
-  STEP="Проверка обновлений сервера выполнена"
+  STEP=300
   if ! check_step "$STEP"; then
     echo -n "Проверяем обновления сервера... "
     dnf check-update >/dev/null
@@ -544,7 +527,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     fi
     mark_step_completed "$STEP"
   fi
-  STEP="Установка языковых пакетов"
+  STEP=400
   if ! check_step "$STEP"; then
     Install langpacks-en glibc-all-langpacks
     mark_step_completed "$STEP"
@@ -554,7 +537,7 @@ fi
 
 if ! grep -q "MYSQLPASS" ~/.bashrc; then
   # we think that it is the first run of the script
-  STEP="Установка кодировки консоли"
+  STEP=500
   if ! check_step "$STEP"; then
     if localectl status | grep -q UTF-8; then
       echo
@@ -571,7 +554,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Проверка и отключение SELinux если понадобится"
+  STEP=600
   if ! check_step "$STEP"; then
     if ! SELINUX_STATE="$(GetSELinuxState)"; then
       echo -e "${RED}Не удалось определить фактическое состояние SELinux.${WHITE}"
@@ -615,7 +598,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   RequestEarlyRebootIfNeeded
 
-  STEP="Проверка и включение swap файла, если нужно"
+  STEP=700
   if ! check_step "$STEP"; then
     Down
     if ! create_swapfile; then
@@ -630,7 +613,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Выбор типа установки сервера"
+  STEP=800
   Down
   if ! check_step "$STEP"; then
     echo -e "Выберите тип установки:"
@@ -680,7 +663,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     source $config_file
   fi
 
-  STEP="Установка mc, cronie, logrotate, idn2, epel-release, wget, tar"
+  STEP=900
   if ! check_step "$STEP"; then
     Install mc
     Install cronie
@@ -764,20 +747,20 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка age для шифрования бэкапов"
+  STEP=1000
   if ! check_step "$STEP"; then
     if InstallOptional age; then
       mark_step_completed "$STEP"
     fi
   fi
 
-  STEP="Установка pv"
+  STEP=1100
   if ! check_step "$STEP"; then
     Install pv
     mark_step_completed "$STEP"
   fi
 
-  STEP="Ограничение пользовательского CRON через cron.allow"
+  STEP=1200
   if ! check_step "$STEP"; then
     echo "Разрешаем управление пользовательским CRON только пользователю root."
     if configure_cron_allow; then
@@ -789,7 +772,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     fi
   fi
 
-  apache_packages_step="Установка httpd mod_ssl"
+  apache_packages_step=1300
   apache_packages_step_pending=0
   if ! check_step "$apache_packages_step"; then
     Install --ensure-latest httpd mod_ssl mod_http2 openssl openssl-libs
@@ -800,7 +783,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     apache_packages_step_pending=1
   fi
 
-  apache_certificate_step="Создание самоподписанного сертификата SSL на 10 лет"
+  apache_certificate_step=1400
   apache_certificate_step_pending=0
   if ! check_step "$apache_certificate_step"; then
     Up
@@ -837,13 +820,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   fi
 
   Down
-  STEP="Настройка файла ssl.conf для включения по умолчанию http/2"
+  STEP=1500
   if ! check_step "$STEP"; then
     sed -i "/^Protocols .*$/d" /etc/httpd/conf.d/ssl.conf
     sed -i "s|Listen 443 https.*$|Listen 443 https\nProtocols h2 http/1.1|" /etc/httpd/conf.d/ssl.conf
     mark_step_completed "$STEP"
   fi
-  STEP="Настройка автозапуска httpd при перезагрузке. Запуск httpd сейчас."
+  STEP=1600
   if ! check_step "$STEP"; then
     systemctl enable httpd
     echo
@@ -852,7 +835,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Удаление файла autoindex для httpd"
+  STEP=1700
   if ! check_step "$STEP"; then
     rm -f /etc/httpd/conf.d/autoindex.conf
     mark_step_completed "$STEP"
@@ -860,14 +843,14 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   Up
 
-  STEP="Установка прав 751 для /var/www"
+  STEP=1800
   if ! check_step "$STEP"; then
     chown root:root /var/www
     chmod 751 /var/www
     mark_step_completed "$STEP"
   fi
 
-  STEP="Настройка tmpfiles для прав /var/www"
+  STEP=1900
   if ! check_step "$STEP"; then
     configure_httpd_tmpfiles_override || {
       echo "Не удалось настроить постоянные права /var/www через tmpfiles."
@@ -877,13 +860,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Открытие портов 80 и 443 для web"
+  STEP=2000
   if ! check_step "$STEP"; then
     OpenFirewall
     mark_step_completed "$STEP"
   fi
 
-  STEP="Закрытие портов cockpit"
+  STEP=2100
   if ! check_step "$STEP"; then
     if ! ${LocalServer}; then
       # Проверяем наличие службы cockpit
@@ -908,25 +891,25 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Отключение heartbeat module apache"
+  STEP=2200
   if ! check_step "$STEP"; then
     echo -e "Отключаем heartbeat module и перезапускаем ${GREEN}apache${WHITE}"
     sed -i "s/LoadModule lbmethod_heartbeat_module/#LoadModule lbmethod_heartbeat_module/" /etc/httpd/conf.modules.d/00-proxy.conf
     sed -i "s/##/#/" /etc/httpd/conf.modules.d/00-proxy.conf
     mark_step_completed "$STEP"
   fi
-  STEP="Замена стандартной заглушки Alma на заглушку RISH"
+  STEP=2300
   if ! check_step "$STEP"; then
     if [[ ! -f "${RISH_HOME}/templates/apache-noindex.html" ]]; then
       install -m 644 "${RISH_HOME}/templates/default-apache-noindex.html" "${RISH_HOME}/templates/apache-noindex.html" || exit 1
     fi
     install -D -m 644 "${RISH_HOME}/templates/apache-noindex.html" /usr/share/httpd/noindex/index.html || exit 1
-    if ! check_step "Инициализация шаблона заглушки Apache"; then
-      mark_step_completed "Инициализация шаблона заглушки Apache"
+    if ! check_step 2400; then
+      mark_step_completed 2400
     fi
     mark_step_completed "$STEP"
   fi
-  STEP="Проверка на наличие ServerName и исправление если его нет."
+  STEP=2500
   if ! check_step "$STEP"; then
     if systemctl status httpd.service -l --no-pager -n 3 | grep "Could not"; then
       echo "Устанавливаем имя сервера как localhost"
@@ -935,7 +918,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     fi
     mark_step_completed "$STEP"
   fi
-  STEP="Перезапуск httpd"
+  STEP=2600
   if ! check_step "$STEP"; then
     Down
     apachectl restart
@@ -943,13 +926,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка htop"
+  STEP=2700
   if ! check_step "$STEP"; then
     Install htop
     mark_step_completed "$STEP"
   fi
 
-  STEP="Настройка репозиториев для установки php"
+  STEP=2800
   if ! check_step "$STEP"; then
     echo -e "Ставим репозиторий ${GREEN}Remi Collet${WHITE} для установки ${GREEN}PHP${WHITE}"
     Down
@@ -968,15 +951,15 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка php"
+  STEP=2900
   if ! check_step "$STEP"; then
     echo -e "Выбор и установка нужных версий ${GREEN}PHP${WHITE}"
     Down
     echo -e "Идет получение списка доступных версий ${GREEN}PHP${WHITE}. Ждите."
     php_multi_install
     Up
-    if ! check_step "Усиление изоляции PHP-FPM через systemd"; then
-      mark_step_completed "Усиление изоляции PHP-FPM через systemd"
+    if ! check_step 3000; then
+      mark_step_completed 3000
     fi
     mark_step_completed "$STEP"
     echo -e "Установка выбранных версий ${GREEN}PHP${WHITE} завершена."
@@ -984,7 +967,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   Down
 
-  STEP="Настройка файлов logrotate для httpd."
+  STEP=3100
   if ! check_step "$STEP"; then
     sed -i "s/^#compress/compress/" /etc/logrotate.conf
 
@@ -1008,7 +991,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка часового пояса."
+  STEP=3200
   if ! check_step "$STEP"; then
     Up
     echo -e "Устанавливаем ${GREEN}время${WHITE}:"
@@ -1039,13 +1022,13 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка unzip"
+  STEP=3300
   if ! check_step "$STEP"; then
     Install unzip
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка jq и rclone"
+  STEP=3400
   if ! check_step "$STEP"; then
     Install jq
     if ! install_rclone; then
@@ -1060,18 +1043,18 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     echo -e "${GREEN}$(rclone version | sed -n '1p')${WHITE} установлен."
     Down
     mark_step_completed "$STEP"
-    if ! check_step "Настройка hard_delete для Yandex remote"; then
-      mark_step_completed "Настройка hard_delete для Yandex remote"
+    if ! check_step 3500; then
+      mark_step_completed 3500
     fi
   fi
 
-  STEP="Установка bind-utils"
+  STEP=3600
   if ! check_step "$STEP"; then
     Install bind-utils
     mark_step_completed "$STEP"
   fi
 
-  STEP="Создание хоста для ответа на обращения к несуществующим сайтам."
+  STEP=3700
   if ! check_step "$STEP"; then
     cd /var/www/html
 
@@ -1099,7 +1082,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   pass=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16 | xargs)
   MYSQLPASS=${pass}
 
-  STEP="Установка mcedit как основного редактора"
+  STEP=3800
   if ! check_step "$STEP"; then
     cd ~
     if ! grep -q "EDITOR" ~/.bashrc; then
@@ -1108,7 +1091,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Настройка задержки клавиши Esc в Midnight Commander"
+  STEP=3900
   if ! check_step "$STEP"; then
     if ! grep -q '^export KEYBOARD_KEY_TIMEOUT_US=' ~/.bashrc; then
       echo "export KEYBOARD_KEY_TIMEOUT_US=100000" >>~/.bashrc
@@ -1116,7 +1099,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка репозиториев для MariaDB"
+  STEP=4000
   if ! check_step "$STEP"; then
     Up
     echo
@@ -1192,7 +1175,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Установка MariaDB"
+  STEP=4100
   if ! check_step "$STEP"; then
     Up
     echo
@@ -1208,7 +1191,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     fi
   fi
 
-  STEP="Установка certbot"
+  STEP=4200
   if ! check_step "$STEP"; then
     Up
     echo
@@ -1246,7 +1229,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Отключить почтовую службу"
+  STEP=4300
   if ! check_step "$STEP"; then
     Up
     echo "Если есть почтовая служба - отключаем и останавливаем"
@@ -1262,7 +1245,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     mark_step_completed "$STEP"
   fi
 
-  STEP="Делаем сервис apache автоматически перезапускаемым, в случае какого либо падения."
+  STEP=4400
   if ! check_step "$STEP"; then
     Up
     echo
@@ -1285,7 +1268,7 @@ EOF
     mark_step_completed "$STEP"
   fi
 
-  STEP="Делаем сервис базы данных автоматически запускаемым, в случае какого либо падения"
+  STEP=4500
   if ! check_step "$STEP"; then
     Up
     echo
@@ -1315,7 +1298,7 @@ EOF
 
   RemoveRim
 
-  STEP="Создание меню для MC и папки для hotlist"
+  STEP=4600
   if ! check_step "$STEP"; then
     mkdir -p ~/.config/mc
     cd ${RISH_HOME}
@@ -1331,7 +1314,7 @@ EOF
     mark_step_completed "$STEP"
   fi
 
-  STEP="Настройка ssh config для sftp пользователя на сайте"
+  STEP=4700
   if ! check_step "$STEP"; then
     effective_settings=""
     password_authentication=""
@@ -1356,13 +1339,13 @@ EOF
       exit 1
     fi
     mark_step_completed "$STEP"
-    if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
-      mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+    if ! check_step 4800; then
+      mark_step_completed 4800
     fi
 
   fi
 
-  STEP="Создание первого пользователя"
+  STEP=4900
   if ! check_step "$STEP"; then
     echo ""
     echo ""
@@ -1371,8 +1354,8 @@ EOF
 
     if CreateUser "siteuser"; then
       mark_step_completed "$STEP"
-      if ! legacy_user_credentials_exist && ! check_step "Перенос учетных данных пользователей в /root/rish/credentials"; then
-        mark_step_completed "Перенос учетных данных пользователей в /root/rish/credentials"
+      if ! legacy_user_credentials_exist && ! check_step 5000; then
+        mark_step_completed 5000
       fi
     else
       echo -e "${RED}Не удалось создать первого пользователя сайта.${WHITE}"
@@ -1380,7 +1363,7 @@ EOF
     fi
   fi
 
-  STEP="Предлагаем создать ключ доступ к серверу и вывести его на экран для копирования."
+  STEP=5100
   if ! check_step "$STEP"; then
     echo -e "${RED}Не забудьте${WHITE} добавить свой открытый (public) ключ для авторизации без пароля."
     echo -e ""
@@ -1412,7 +1395,7 @@ EOF
     mark_step_completed "$STEP"
   fi
 
-  STEP="Настройка способов авторизации SSH через 00-rish.conf"
+  STEP=5200
   if ! check_step "$STEP"; then
     echo
     echo -e "Советуем запретить авторизацию по паролю при доступе по ${GREEN}SSH${WHITE}."
@@ -1424,8 +1407,8 @@ EOF
         echo -e "Авторизация по паролю для SSH ${GREEN}запрещена${WHITE}.${ERASEUNTILLENDOFLINE}"
         echo -e "SFTP-пользователи подключаются только по ключам из ${GREEN}/etc/ssh/authorized_keys${WHITE}."
         mark_step_completed "$STEP"
-        if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
-          mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+        if ! check_step 4800; then
+          mark_step_completed 4800
         fi
       else
         echo -e "${RED}Не удалось применить выбранные настройки авторизации SSH.${WHITE}"
@@ -1439,8 +1422,8 @@ EOF
         echo -e "Авторизация по паролю для SSH ${YELLOW}разрешена${WHITE}.${ERASEUNTILLENDOFLINE}"
         echo -e "Для SFTP-пользователей пароль всё равно запрещён: они подключаются только по ключам."
         mark_step_completed "$STEP"
-        if ! check_step "Усиление ограничений SFTP и перенос ключей"; then
-          mark_step_completed "Усиление ограничений SFTP и перенос ключей"
+        if ! check_step 4800; then
+          mark_step_completed 4800
         fi
       else
         echo -e "${RED}Не удалось применить выбранные настройки авторизации SSH.${WHITE}"
@@ -1451,19 +1434,19 @@ EOF
     fi
   fi
 
-  STEP="Обновление hotlist"
+  STEP=5300
   if ! check_step "$STEP"; then
     # Для совместимости с postupdate
     mark_step_completed "$STEP"
   fi
 
-  STEP="Финальная проверка необходимости перезагрузки сервера"
+  STEP=5400
   if ! check_step "$STEP"; then
     CheckRebootRequired
     mark_step_completed "$STEP"
   fi
 
-  STEP="Устанавливаем признак выполненной настройки сервера"
+  STEP=5500
   if ! check_step "$STEP"; then
     echo -e "Конфигурирование сервера ${GREEN}завершено${WHITE}."
     echo
