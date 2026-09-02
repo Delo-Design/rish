@@ -53,11 +53,11 @@ then
 fi
 
 # convert to an absolute path
-_script_dir=$(cd ${_script_dir}; pwd -P)
+_script_dir=$(cd -- "${_script_dir}" && pwd -P) || exit 1
 
 export RISH_HOME=${_script_dir}
 
-cd ${RISH_HOME} || exit
+cd "${RISH_HOME}" || exit
 
 source scripts/steps.sh
 if ! initialize_completed_steps true; then
@@ -75,6 +75,7 @@ source scripts/user_credentials.sh
 source scripts/create_user.sh
 source scripts/server_management.sh
 source scripts/install_rclone.sh
+source scripts/epel.sh
 
 if ! check_step "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"; then
   rish_dns_management_migrate_legacy_state
@@ -660,7 +661,8 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
     mark_step_completed "$STEP"
   else
-    source $config_file
+    # shellcheck source=/dev/null
+    source "$config_file"
   fi
 
   STEP=900
@@ -739,6 +741,19 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     else
       Up
       echo -e "Не найден механизм запуска ${RED}logrotate${WHITE}: нет logrotate.timer и исполняемого /etc/cron.daily/logrotate."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+    mark_step_completed "$STEP"
+  fi
+
+  STEP=950
+  if ! check_step "$STEP"; then
+    if ! rish_ensure_epel_minor_compatibility; then
+      Up
+      echo -e "Проверка ветки ${RED}EPEL${WHITE} для установленной версии операционной системы завершилась ошибкой."
       echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
       Down
       RemoveRim
@@ -1056,7 +1071,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   STEP=3700
   if ! check_step "$STEP"; then
-    cd /var/www/html
+    cd /var/www/html || exit 1
 
     Up
     echo -e "Создаем хост для ответа сервера на обращения к ${GREEN}несуществующим сайтам${WHITE} 000-default"
@@ -1084,7 +1099,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
   STEP=3800
   if ! check_step "$STEP"; then
-    cd ~
+    cd ~ || exit 1
     if ! grep -q "EDITOR" ~/.bashrc; then
       echo "export EDITOR=mcedit" >>~/.bashrc
     fi
@@ -1105,7 +1120,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     echo
     echo -e "Установка и настройка репозиториев для ${GREEN}MariaDB${WHITE}."
     Down
-    cd /etc/yum.repos.d/
+    cd /etc/yum.repos.d/ || exit 1
 
     echo
     echo -e "${GREEN}MariaDB${WHITE} на данный момент имеет 4 релиза с долгосрочной поддержкой:"
@@ -1301,7 +1316,7 @@ EOF
   STEP=4600
   if ! check_step "$STEP"; then
     mkdir -p ~/.config/mc
-    cd ${RISH_HOME}
+    cd "${RISH_HOME}" || exit 1
     if [[ -e "${RISH_HOME}/templates/mc.menu" ]]; then
       rm /etc/mc/mc.menu
       cp "${RISH_HOME}/templates/mc.menu" /etc/mc/mc.menu
