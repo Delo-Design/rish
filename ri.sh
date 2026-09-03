@@ -1249,8 +1249,17 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     Up
     echo -e "Проверяем почтовую службу ${GREEN}Postfix${WHITE}."
     Down
-    if systemctl list-unit-files postfix.service --no-legend --no-pager 2>/dev/null |
-      grep -q '^postfix\.service[[:space:]]'; then
+    postfix_unit_files=""
+    if ! postfix_unit_files="$(systemctl list-unit-files postfix.service --no-legend --no-pager 2>&1)"; then
+      Up
+      echo -e "Не удалось проверить наличие почтовой службы ${RED}Postfix${WHITE}."
+      echo -e "Повторите проверку вручную: ${YELLOW}systemctl list-unit-files postfix.service --no-pager${WHITE}"
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+    if grep -q '^postfix\.service[[:space:]]' <<<"$postfix_unit_files"; then
       if ! systemctl disable --now postfix.service; then
         Up
         echo -e "Не удалось остановить или отключить ${RED}Postfix${WHITE}."
@@ -1319,10 +1328,38 @@ EOF
       exit 1
     fi
 
-    Up
-    echo -e "Автоматический перезапуск ${GREEN}Apache настроен${WHITE}."
-    echo -e "Для применения этой настройки перезапуск службы ${GREEN}Apache не требуется${WHITE}."
-    Down
+    if systemctl is-active --quiet httpd.service; then
+      Up
+      echo -e "Автоматический перезапуск ${GREEN}Apache настроен${WHITE}."
+      echo -e "Служба ${GREEN}Apache уже работает${WHITE}; перезапуск не требуется."
+      Down
+    else
+      Up
+      echo -e "Служба ${YELLOW}Apache сейчас не работает${WHITE}. Запускаем её."
+      Down
+      if ! systemctl start httpd.service; then
+        Up
+        echo -e "Не удалось запустить службу ${RED}Apache${WHITE}."
+        echo -e "Проверьте состояние службы: ${YELLOW}systemctl status httpd --no-pager -l${WHITE}"
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      if ! systemctl is-active --quiet httpd.service; then
+        Up
+        echo -e "Команда запуска завершилась, но служба ${RED}Apache не перешла в рабочее состояние${WHITE}."
+        echo -e "Проверьте состояние службы: ${YELLOW}systemctl status httpd --no-pager -l${WHITE}"
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      Up
+      echo -e "Служба ${GREEN}Apache запущена${WHITE}."
+      echo -e "Автоматический перезапуск ${GREEN}Apache настроен${WHITE}."
+      Down
+    fi
     mark_step_completed "$STEP"
   fi
 
@@ -1374,10 +1411,38 @@ EOF
       exit 1
     fi
 
-    Up
-    echo -e "Автоматический перезапуск ${GREEN}MariaDB настроен${WHITE}."
-    echo -e "Для применения этой настройки перезапуск службы ${GREEN}MariaDB не требуется${WHITE}."
-    Down
+    if systemctl is-active --quiet mariadb.service; then
+      Up
+      echo -e "Автоматический перезапуск ${GREEN}MariaDB настроен${WHITE}."
+      echo -e "Служба ${GREEN}MariaDB уже работает${WHITE}; перезапуск не требуется."
+      Down
+    else
+      Up
+      echo -e "Служба ${YELLOW}MariaDB сейчас не работает${WHITE}. Запускаем её."
+      Down
+      if ! systemctl start mariadb.service; then
+        Up
+        echo -e "Не удалось запустить службу ${RED}MariaDB${WHITE}."
+        echo -e "Проверьте состояние службы: ${YELLOW}systemctl status mariadb --no-pager -l${WHITE}"
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      if ! systemctl is-active --quiet mariadb.service; then
+        Up
+        echo -e "Команда запуска завершилась, но служба ${RED}MariaDB не перешла в рабочее состояние${WHITE}."
+        echo -e "Проверьте состояние службы: ${YELLOW}systemctl status mariadb --no-pager -l${WHITE}"
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
+      Up
+      echo -e "Служба ${GREEN}MariaDB запущена${WHITE}."
+      echo -e "Автоматический перезапуск ${GREEN}MariaDB настроен${WHITE}."
+      Down
+    fi
     mark_step_completed "$STEP"
   fi
 
