@@ -160,6 +160,7 @@ function change_php_version() {
     update_site_php_conf "/etc/httpd/conf.d/${site_name}.conf" "$selected_php" || return 1
     update_site_php_conf "/etc/httpd/conf.d/${site_name}-ssl.conf" "$selected_php" || return 1
     update_site_php_conf "/etc/httpd/conf.d/${site_name}-le-ssl.conf" "$selected_php" || return 1
+    update_site_php_conf "/etc/httpd/conf.d/${site_name}-selectel-ssl.conf" "$selected_php" || return 1
     if [[ -f "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" ]]; then
       mv "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf" "/etc/opt/remi/${selected_php}/php-fpm.d/www.conf.old"
     fi

@@ -241,24 +241,42 @@ backupall() {
 
     create_file_parts() {
         local output_prefix="$1"
+        local -a pipeline_status=()
+        local tar_status
+        local age_status=0
+        local split_status
 
         echo "Идет создание архива файлов..."
         echo "Обработано: 0MB"
         if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
-            (set -o pipefail; tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
+            tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
                 --record-size="$recordsize" --checkpoint="$checkpoint" \
                 --checkpoint-action=exec='printf "\033[1A\rОбработано: %sMB\033[K\033[1B\r" "$((TAR_CHECKPOINT))" >&2' \
                 | age "${BACKUP_AGE_ARGS[@]}" \
-                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix")
+                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix"
+            pipeline_status=("${PIPESTATUS[@]}")
+            tar_status="${pipeline_status[0]}"
+            age_status="${pipeline_status[1]}"
+            split_status="${pipeline_status[2]}"
         else
-            (set -o pipefail; tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
+            tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
                 --record-size="$recordsize" --checkpoint="$checkpoint" \
                 --checkpoint-action=exec='printf "\033[1A\rОбработано: %sMB\033[K\033[1B\r" "$((TAR_CHECKPOINT))" >&2' \
-                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix")
+                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix"
+            pipeline_status=("${PIPESTATUS[@]}")
+            tar_status="${pipeline_status[0]}"
+            split_status="${pipeline_status[1]}"
         fi
-        local status=$?
         printf '\033[1A\r\033[K\033[1A\r\033[K'
-        return "$status"
+
+        if (( (tar_status != 0 && tar_status != 1) || age_status != 0 || split_status != 0 )); then
+            return 1
+        fi
+        if (( tar_status == 1 )); then
+            echo "Некоторые файлы изменились во время создания архива."
+            echo -e "Копии этих файлов могут быть ${YELLOW}неточными${WHITE}, но бэкап будет продолжен."
+        fi
+        return 0
     }
 
     while IFS=';' read -r USER TARGET TYPE DB REMOTE ARCHIVE_FLAG EXCLUDE_LIST; do

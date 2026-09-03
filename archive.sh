@@ -508,6 +508,9 @@ function archive_site() {
       if [[ -n "$tar_reason" ]]; then
         echo -e "Причина: ${YELLOW}${tar_reason}${WHITE}"
       fi
+      echo "Некоторые файлы изменились во время создания архива."
+      echo -e "Копии этих файлов могут быть ${YELLOW}неточными${WHITE}, но архив сохранен."
+      tar_rc=0
       ;;
     2)
       if [[ "$ARCHIVE_USE_CRYPTO" -ne 1 ]]; then
