@@ -917,6 +917,8 @@ function copy_site_files() {
   local remote_tar_exclude_args=""
   local -a du_exclude_args=()
   local -a tar_exclude_args=()
+  local -a transfer_status=()
+  local remote_tar_status
   local excl
 
   echo
@@ -947,7 +949,13 @@ function copy_site_files() {
   fi
 
   if command -v pv >/dev/null 2>&1 && [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
-    if ! (set -o pipefail; ssh -C "$host" "tar -C ${remote_root_quoted}${remote_tar_exclude_args} -cf - ." | pv -s "$size_bytes" | tar -C "$local_site_root" -xf -); then
+    if ssh -C "$host" "tar -C ${remote_root_quoted}${remote_tar_exclude_args} -cf - ." | pv -s "$size_bytes" | tar -C "$local_site_root" -xf -; then
+      transfer_status=("${PIPESTATUS[@]}")
+    else
+      transfer_status=("${PIPESTATUS[@]}")
+    fi
+    remote_tar_status="${transfer_status[0]}"
+    if (( (remote_tar_status != 0 && remote_tar_status != 1) || transfer_status[1] != 0 || transfer_status[2] != 0 )); then
       echo -e "Ошибка при переносе файлов сайта tar-потоком."
       return 1
     fi
@@ -956,10 +964,21 @@ function copy_site_files() {
       echo -e "${YELLOW}pv не установлен${WHITE}, прогресс передачи не будет показан."
     fi
     echo "Перенос продолжается, дождитесь завершения."
-    if ! (set -o pipefail; ssh -C "$host" "tar -C ${remote_root_quoted}${remote_tar_exclude_args} -cf - ." | tar -C "$local_site_root" -xf -); then
+    if ssh -C "$host" "tar -C ${remote_root_quoted}${remote_tar_exclude_args} -cf - ." | tar -C "$local_site_root" -xf -; then
+      transfer_status=("${PIPESTATUS[@]}")
+    else
+      transfer_status=("${PIPESTATUS[@]}")
+    fi
+    remote_tar_status="${transfer_status[0]}"
+    if (( (remote_tar_status != 0 && remote_tar_status != 1) || transfer_status[1] != 0 )); then
       echo -e "Ошибка при переносе файлов сайта tar-потоком."
       return 1
     fi
+  fi
+
+  if (( remote_tar_status == 1 )); then
+    echo "Некоторые файлы изменились на исходном сервере во время переноса."
+    echo -e "Копии этих файлов могут быть ${YELLOW}неточными${WHITE}, но перенос будет продолжен."
   fi
 
   if ! chown -R "${local_user}:${local_user}" "$local_site_root"; then
