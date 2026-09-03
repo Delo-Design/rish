@@ -1247,14 +1247,25 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   STEP=4300
   if ! check_step "$STEP"; then
     Up
-    echo "Если есть почтовая служба - отключаем и останавливаем"
+    echo -e "Проверяем почтовую службу ${GREEN}Postfix${WHITE}."
     Down
-    if systemctl status postfix; then
-      systemctl stop postfix
-      systemctl disable postfix
-      systemctl status postfix
+    if systemctl list-unit-files postfix.service --no-legend --no-pager 2>/dev/null |
+      grep -q '^postfix\.service[[:space:]]'; then
+      if ! systemctl disable --now postfix.service; then
+        Up
+        echo -e "Не удалось остановить или отключить ${RED}Postfix${WHITE}."
+        echo -e "Проверьте состояние службы: ${YELLOW}systemctl status postfix --no-pager -l${WHITE}"
+        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+        Down
+        RemoveRim
+        exit 1
+      fi
       Up
-      echo -e "${GREEN}Почтовая служба остановлена.${WHITE}"
+      echo -e "Почтовая служба ${GREEN}Postfix остановлена и отключена${WHITE}."
+      Down
+    else
+      Up
+      echo -e "Почтовая служба ${GREEN}Postfix не установлена${WHITE} — отключать нечего."
       Down
     fi
     mark_step_completed "$STEP"
@@ -1264,22 +1275,54 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   if ! check_step "$STEP"; then
     Up
     echo
-    echo "Делаем сервис apache автоматически перезапускаемым, в случае какого либо падения."
-    echo "Сервер будет пытаться перезапустить apache каждые 3 минуты в случае падения."
+    echo -e "Настраиваем автоматический перезапуск ${GREEN}Apache${WHITE} после непредвиденной остановки."
+    echo -e "В таком случае systemd запустит службу снова через ${GREEN}3 минуты${WHITE}."
     Down
-    if [[ ! -d /etc/systemd/system/httpd.service.d ]]; then
-      mkdir /etc/systemd/system/httpd.service.d
+    if ! install -d -m 755 /etc/systemd/system/httpd.service.d; then
+      Up
+      echo -e "Не удалось создать каталог настроек службы ${RED}Apache${WHITE}."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
     fi
-    cat >/etc/systemd/system/httpd.service.d/local.conf <<EOF
+    if ! cat >/etc/systemd/system/httpd.service.d/local.conf <<EOF
 [Service]
 Restart=always
 RestartSec=180
 EOF
+    then
+      Up
+      echo -e "Не удалось сохранить настройки автоматического перезапуска ${RED}Apache${WHITE}."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+
+    if ! systemctl daemon-reload; then
+      Up
+      echo -e "Не удалось применить настройки службы ${RED}Apache${WHITE}: команда systemctl daemon-reload завершилась ошибкой."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+
+    if [[ "$(systemctl show httpd.service --property=Restart --value 2>/dev/null)" != "always" ]]; then
+      Up
+      echo -e "Не удалось подтвердить политику автоматического перезапуска ${RED}Apache${WHITE}."
+      echo -e "Проверьте настройки: ${YELLOW}systemctl cat httpd --no-pager${WHITE}"
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+
     Up
-    echo -e "Перезапускаем сервер ${GREEN}apache${WHITE} после настройки"
+    echo -e "Автоматический перезапуск ${GREEN}Apache настроен${WHITE}."
+    echo -e "Для применения этой настройки перезапуск службы ${GREEN}Apache не требуется${WHITE}."
     Down
-    systemctl daemon-reload
-    systemctl restart httpd
     mark_step_completed "$STEP"
   fi
 
@@ -1287,26 +1330,53 @@ EOF
   if ! check_step "$STEP"; then
     Up
     echo
-    echo "Делаем сервис базы данных автоматически запускаемым, в случае какого либо падения."
-    echo "Сервер будет пытаться перезапустить базу каждые 3 минуты в случае падения."
+    echo -e "Настраиваем автоматический перезапуск ${GREEN}MariaDB${WHITE} после непредвиденной остановки."
+    echo -e "В таком случае systemd запустит службу снова через ${GREEN}3 минуты${WHITE}."
     Down
-    if [[ ! -d /etc/systemd/system/mariadb.service.d ]]; then
-      mkdir /etc/systemd/system/mariadb.service.d
+    if ! install -d -m 755 /etc/systemd/system/mariadb.service.d; then
+      Up
+      echo -e "Не удалось создать каталог настроек службы ${RED}MariaDB${WHITE}."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
     fi
-    cat >/etc/systemd/system/mariadb.service.d/local.conf <<EOF
+    if ! cat >/etc/systemd/system/mariadb.service.d/local.conf <<EOF
 [Service]
 Restart=always
 RestartSec=180
 EOF
+    then
+      Up
+      echo -e "Не удалось сохранить настройки автоматического перезапуска ${RED}MariaDB${WHITE}."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+
+    if ! systemctl daemon-reload; then
+      Up
+      echo -e "Не удалось применить настройки службы ${RED}MariaDB${WHITE}: команда systemctl daemon-reload завершилась ошибкой."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+
+    if [[ "$(systemctl show mariadb.service --property=Restart --value 2>/dev/null)" != "always" ]]; then
+      Up
+      echo -e "Не удалось подтвердить политику автоматического перезапуска ${RED}MariaDB${WHITE}."
+      echo -e "Проверьте настройки: ${YELLOW}systemctl cat mariadb --no-pager${WHITE}"
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
 
     Up
-    echo
-    echo -e "Перезапускаем службу ${GREEN}баз данных${WHITE} после настройки"
-    Down
-    systemctl daemon-reload
-    systemctl restart mariadb
-    Up
-    echo -e "Установка и настройка ${GREEN}MariaDB завершена.${WHITE}"
+    echo -e "Автоматический перезапуск ${GREEN}MariaDB настроен${WHITE}."
+    echo -e "Для применения этой настройки перезапуск службы ${GREEN}MariaDB не требуется${WHITE}."
     Down
     mark_step_completed "$STEP"
   fi
