@@ -3,6 +3,15 @@ clear
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+GREEN='\033[0;32m'
+LRED='\033[1;31m'
+YELLOW='\033[0;33m'
+WHITE='\033[0m'
+
+# shellcheck source=./windows.sh
+# shellcheck disable=SC1091
+source /root/rish/windows.sh
+
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -64,6 +73,7 @@ vars=(
     ["directory"]="#директория из которой создается бекап (где лежат сайты по каталогам - один каталог - один сайт)\ndirectory=/var/www/*/www"
     ["DIR_BACKUP"]="#временная папка для создания бекапа\nDIR_BACKUP=/root/backup"
     ["keeplast"]="#сколько последних архиваций хранить\nkeeplast=5"
+    ["keepmonthly"]="#сколько предыдущих месяцев хранить по одной резервной копии\nkeepmonthly=6"
     ["splitarchive"]="#разбивать архив на части по сколько мегабайт\nsplitarchive=500m"
     ["recordsize"]="#размер записей tar\nrecordsize=1m"
     ["checkpoint"]="#через сколько записей вызывать checkpoint\ncheckpoint=10"
@@ -108,11 +118,19 @@ for var in "${!vars[@]}"; do
     add_var_if_not_exists "$var" "${vars[$var]}"
 done
 
+# Конфигурационный файл создаётся на сервере и отсутствует в репозитории.
+# shellcheck disable=SC1090
 source "$config_file"
-source /root/rish/windows.sh
+# Переменные загружаются из rish_config.sh. Объявления нужны статическому анализатору
+# и не изменяют уже загруженные значения.
+declare backupall2 directory DIR_BACKUP keeplast keepmonthly splitarchive recordsize checkpoint server rclone_remote
 if [[ -f /root/rish/scripts/backup_crypto.sh ]]; then
+    # shellcheck source=./scripts/backup_crypto.sh
+    # shellcheck disable=SC1091
     source /root/rish/scripts/backup_crypto.sh
 else
+    # shellcheck source=./scripts/backup_crypto.sh
+    # shellcheck disable=SC1091
     source "${SCRIPT_DIR}/scripts/backup_crypto.sh"
 fi
 
@@ -130,18 +148,17 @@ fi
 DATE_DIR=$(/bin/date '+%Y.%m.%d')
 DATE_TS=$(/bin/date '+%Y-%m-%d_%H-%M')
 
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-LRED='\033[1;31m'
-YELLOW='\033[0;33m'
-WHITE='\033[0m'
-
 backupall() {
     local overall_status=0
     local archive_base age_suffix completion_part completion_prefix completion_remote_path backup_dir
     local USER TARGET TYPE DB REMOTE ARCHIVE_FLAG EXCLUDE_LIST
-    local ARCHIVE_NAME dir
-    local -a EXCLUDE_OPTS EXCLUDE_DIRS
+    local ARCHIVE_NAME dir key OLD_DIR date_year date_month date_rest date_month_index remote_dirs_output
+    local remote_files_output remote_file remote_date remote_list_error failed_removals_text first_remove_error
+    local BACKUP_REMOVE_ERROR
+    local current_year current_month current_month_index oldest_month_index
+    local keep_last_count keep_monthly_count retention_limit=10000 failed_count failed_limit failed_more i
+    local -a EXCLUDE_OPTS EXCLUDE_DIRS REMOTE_DIRS DATE_DIRS FAILED_REMOVALS
+    local -A KEEP_DIRS MONTHLY_MONTHS DATE_DIR_HAS_FILES
 
     if [[ -z "${DIR_BACKUP:-}" ]] || ! backup_dir="$(realpath -m -- "$DIR_BACKUP")" || [[ "$backup_dir" == "/" ]]; then
         echo -e "Небезопасное значение ${LRED}DIR_BACKUP${WHITE}: временная папка не задана или указывает на корневой каталог."
@@ -173,6 +190,68 @@ backupall() {
         if command -v logger >/dev/null 2>&1; then
             logger -t rish-backup -- "$message"
         fi
+    }
+
+    backup_cleanup_warning() {
+        local message="$1"
+        echo -e "${YELLOW}Предупреждение:${WHITE} ${message}"
+        if command -v logger >/dev/null 2>&1; then
+            logger -t rish-backup -- "$message"
+        fi
+    }
+
+    backup_cleanup_error_summary() {
+        local error_text="$1"
+
+        error_text="${error_text##*$'\n'}"
+        error_text="${error_text//$'\r'/}"
+        error_text="${error_text//$'\t'/ }"
+        if [[ -z "$error_text" ]]; then
+            error_text="неизвестная ошибка"
+        fi
+        printf '%.400s' "$error_text"
+    }
+
+    remove_remote_backup_dir() {
+        local remote_name="$1"
+        local remote_user="$2"
+        local remote_dir="$3"
+        local remote_path="${remote_name}:${server}/${remote_user}/${remote_dir}"
+        local parent_path="${remote_name}:${server}/${remote_user}/"
+        local remaining_dirs listed_dir purge_error delete_error rmdir_error verify_error
+        local delete_failed=0
+
+        BACKUP_REMOVE_ERROR=""
+
+        if purge_error="$(rclone purge "$remote_path" 2>&1)"; then
+            return 0
+        fi
+        if ! delete_error="$(rclone delete --rmdirs "$remote_path" 2>&1)"; then
+            delete_failed=1
+        fi
+        if rmdir_error="$(rclone rmdir "$remote_path" 2>&1)"; then
+            return 0
+        fi
+
+        if ! remaining_dirs="$(rclone lsf --dirs-only "$parent_path" 2>&1)"; then
+            verify_error="$(backup_cleanup_error_summary "$remaining_dirs")"
+            BACKUP_REMOVE_ERROR="не удалось проверить результат удаления: ${verify_error}"
+            return 1
+        fi
+        while IFS= read -r listed_dir; do
+            listed_dir="${listed_dir%/}"
+            if [[ "$listed_dir" == "$remote_dir" ]]; then
+                if ((delete_failed)); then
+                    BACKUP_REMOVE_ERROR="delete: $(backup_cleanup_error_summary "$delete_error")"
+                elif [[ -n "$rmdir_error" ]]; then
+                    BACKUP_REMOVE_ERROR="rmdir: $(backup_cleanup_error_summary "$rmdir_error")"
+                else
+                    BACKUP_REMOVE_ERROR="purge: $(backup_cleanup_error_summary "$purge_error")"
+                fi
+                return 1
+            fi
+        done <<< "$remaining_dirs"
+        return 0
     }
 
     cleanup_current_archive() {
@@ -249,6 +328,8 @@ backupall() {
         echo "Идет создание архива файлов..."
         echo "Обработано: 0MB"
         if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
+            # TAR_CHECKPOINT раскрывается командой, которую запускает tar.
+            # shellcheck disable=SC2016
             tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
                 --record-size="$recordsize" --checkpoint="$checkpoint" \
                 --checkpoint-action=exec='printf "\033[1A\rОбработано: %sMB\033[K\033[1B\r" "$((TAR_CHECKPOINT))" >&2' \
@@ -259,6 +340,8 @@ backupall() {
             age_status="${pipeline_status[1]}"
             split_status="${pipeline_status[2]}"
         else
+            # TAR_CHECKPOINT раскрывается командой, которую запускает tar.
+            # shellcheck disable=SC2016
             tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
                 --record-size="$recordsize" --checkpoint="$checkpoint" \
                 --checkpoint-action=exec='printf "\033[1A\rОбработано: %sMB\033[K\033[1B\r" "$((TAR_CHECKPOINT))" >&2' \
@@ -431,6 +514,32 @@ backupall() {
         fi
     done < "$backupall2"
 
+    keep_last_count=""
+    keep_monthly_count=""
+    if [[ ! "${keeplast:-}" =~ ^[0-9]+$ || ${#keeplast} -gt 5 ]]; then
+        backup_object_error "Очистка старых архивов пропущена: keeplast должен быть целым числом от 1 до ${retention_limit}."
+    else
+        keep_last_count=$((10#$keeplast))
+        if ((keep_last_count < 1 || keep_last_count > retention_limit)); then
+            backup_object_error "Очистка старых архивов пропущена: keeplast должен быть целым числом от 1 до ${retention_limit}."
+            keep_last_count=""
+        fi
+    fi
+    if [[ ! "${keepmonthly:-}" =~ ^[0-9]+$ || ${#keepmonthly} -gt 5 ]]; then
+        backup_object_error "Очистка старых архивов пропущена: keepmonthly должен быть целым числом от 0 до ${retention_limit}."
+    else
+        keep_monthly_count=$((10#$keepmonthly))
+        if ((keep_monthly_count > retention_limit)); then
+            backup_object_error "Очистка старых архивов пропущена: keepmonthly должен быть целым числом от 0 до ${retention_limit}."
+            keep_monthly_count=""
+        fi
+    fi
+
+    current_year="${DATE_DIR%%.*}"
+    date_rest="${DATE_DIR#*.}"
+    current_month="${date_rest%%.*}"
+    current_month_index=$((10#$current_year * 12 + 10#$current_month))
+
     for key in "${!CLEANUP_TARGETS[@]}"; do
         REMOTE="${key%%|*}"
         USER="${key##*|}"
@@ -438,17 +547,92 @@ backupall() {
             continue
         fi
         echo "Очистка старых архивов для $USER на ${REMOTE}:"
-        mapfile -t REMOTE_DIRS < <(rclone lsf --dirs-only "${REMOTE}:${server}/${USER}/" 2>/dev/null | sed 's:/$::' | sort)
-        if [ "${#REMOTE_DIRS[@]}" -le "$keeplast" ]; then
+        if [[ -z "$keep_last_count" || -z "$keep_monthly_count" ]]; then
             continue
         fi
-        REMOVE_COUNT=$((${#REMOTE_DIRS[@]} - keeplast))
-        for ((i=0; i<REMOVE_COUNT; i++)); do
-            OLD_DIR="${REMOTE_DIRS[$i]}"
-            if [ -n "$OLD_DIR" ]; then
-                rclone purge "${REMOTE}:${server}/${USER}/${OLD_DIR}"
+
+        REMOTE_DIRS=()
+        DATE_DIRS=()
+        KEEP_DIRS=()
+        MONTHLY_MONTHS=()
+        DATE_DIR_HAS_FILES=()
+        if ! remote_dirs_output="$(rclone lsf --dirs-only "${REMOTE}:${server}/${USER}/" 2>&1)"; then
+            remote_list_error="$(backup_cleanup_error_summary "$remote_dirs_output")"
+            backup_cleanup_warning "Не удалось получить список архивов для ${USER} на ${REMOTE}: ${remote_list_error}. Ротация пропущена."
+            continue
+        fi
+        if ! remote_files_output="$(rclone lsf -R --max-depth 2 --files-only "${REMOTE}:${server}/${USER}/" 2>&1)"; then
+            remote_list_error="$(backup_cleanup_error_summary "$remote_files_output")"
+            backup_cleanup_warning "Не удалось проверить содержимое архивов для ${USER} на ${REMOTE}: ${remote_list_error}. Ротация пропущена."
+            continue
+        fi
+        if [[ -n "$remote_dirs_output" ]]; then
+            mapfile -t REMOTE_DIRS < <(printf '%s\n' "$remote_dirs_output" | sed 's:/$::' | LC_ALL=C sort -r)
+        fi
+        if [[ -n "$remote_files_output" ]]; then
+            while IFS= read -r remote_file; do
+                [[ "$remote_file" == */* ]] || continue
+                remote_date="${remote_file%%/*}"
+                if [[ "$remote_date" =~ ^[0-9]{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])$ ]]; then
+                    DATE_DIR_HAS_FILES["$remote_date"]=1
+                fi
+            done <<< "$remote_files_output"
+        fi
+        for OLD_DIR in "${REMOTE_DIRS[@]}"; do
+            if [[ "$OLD_DIR" =~ ^[0-9]{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])$ && -n "${DATE_DIR_HAS_FILES[$OLD_DIR]+x}" ]]; then
+                DATE_DIRS+=("$OLD_DIR")
             fi
         done
+
+        for ((i=0; i<${#DATE_DIRS[@]} && i<keep_last_count; i++)); do
+            KEEP_DIRS["${DATE_DIRS[$i]}"]=1
+        done
+
+        if ((keep_monthly_count > 0)); then
+            oldest_month_index=$((current_month_index - keep_monthly_count))
+            for OLD_DIR in "${DATE_DIRS[@]}"; do
+                date_year="${OLD_DIR%%.*}"
+                date_rest="${OLD_DIR#*.}"
+                date_month="${date_rest%%.*}"
+                date_month_index=$((10#$date_year * 12 + 10#$date_month))
+                if ((date_month_index < oldest_month_index || date_month_index >= current_month_index)); then
+                    continue
+                fi
+                if [[ -z "${MONTHLY_MONTHS[$date_year.$date_month]+x}" ]]; then
+                    MONTHLY_MONTHS["$date_year.$date_month"]=1
+                    KEEP_DIRS["$OLD_DIR"]=1
+                fi
+            done
+        fi
+
+        FAILED_REMOVALS=()
+        first_remove_error=""
+        for OLD_DIR in "${DATE_DIRS[@]}"; do
+            if [[ -z "${KEEP_DIRS[$OLD_DIR]+x}" ]]; then
+                if ! remove_remote_backup_dir "$REMOTE" "$USER" "$OLD_DIR"; then
+                    FAILED_REMOVALS+=("$OLD_DIR")
+                    if [[ -z "$first_remove_error" ]]; then
+                        first_remove_error="$BACKUP_REMOVE_ERROR"
+                    fi
+                fi
+            fi
+        done
+        failed_count=${#FAILED_REMOVALS[@]}
+        if ((failed_count > 0)); then
+            failed_limit=10
+            failed_removals_text=""
+            for ((i=0; i<failed_count && i<failed_limit; i++)); do
+                if [[ -n "$failed_removals_text" ]]; then
+                    failed_removals_text+=", "
+                fi
+                failed_removals_text+="${FAILED_REMOVALS[$i]}"
+            done
+            if ((failed_count > failed_limit)); then
+                failed_more=$((failed_count - failed_limit))
+                failed_removals_text+=", еще ${failed_more}"
+            fi
+            backup_cleanup_warning "Не удалось удалить старые архивы для ${USER} на ${REMOTE} (${failed_count}): ${failed_removals_text}. Причина: ${first_remove_error:-неизвестная ошибка}. Бэкап создан, но ротация этих каталогов не выполнена."
+        fi
     done
 
     for REMOTE in "${!CLEANUP_REMOTES[@]}"; do
@@ -492,11 +676,13 @@ createlist() {
 
 	echo -n "" > "$backupall2"
 	echo "# format: user;name;type(site|folder|db);db;remote;archive(no|yes|crypto:<age_or_ssh_public_key>[,<age_or_ssh_public_key>]);exclude_list" >> "$backupall2"
-    let ii=0
+    ii=0
     maxlen=0
     shopt -s nullglob
 
-	for file in $directory/*
+    # directory содержит настраиваемый glob, например /var/www/*/www.
+    # shellcheck disable=SC2231
+    for file in $directory/*
 	do
 		if [ -d "$file" ]
 		then
@@ -512,7 +698,9 @@ createlist() {
 		fi
 	done
 
-	for file in $directory/*
+    # directory содержит настраиваемый glob, например /var/www/*/www.
+    # shellcheck disable=SC2231
+    for file in $directory/*
 	do
 		if [ -d "$file" ]
 		then
@@ -528,7 +716,7 @@ createlist() {
 				db="$r"
 			fi
 
-			let ii=$ii+1
+            ii=$((ii + 1))
 			printf "%3s. " $ii
 			if [ "$TYPE" = "site" ]; then
 				if [ -n "$db" ]; then
@@ -541,7 +729,7 @@ createlist() {
 			fi
 			printf "${GREEN}%-${maxlen}s${WHITE} %-35s\n" "$r" "$db_output"
 
-			currentuser=$(basename $(dirname $(dirname "$file")))
+            currentuser=$(basename "$(dirname "$(dirname "$file")")")
 			echo "${currentuser};${r};${TYPE};${db};${rclone_remote};yes;" >> "$backupall2"
 		fi
 	done
@@ -637,6 +825,8 @@ updatelist() {
         kept=$((kept + 1))
     done < "$backupall2"
 
+    # directory содержит настраиваемый glob, например /var/www/*/www.
+    # shellcheck disable=SC2231
     for file in $directory/*
     do
         if [ ! -d "$file" ]; then
@@ -648,7 +838,7 @@ updatelist() {
             continue
         fi
 
-        currentuser=$(basename $(dirname $(dirname "$file")))
+        currentuser=$(basename "$(dirname "$(dirname "$file")")")
         key="${currentuser}|${r}"
         if [ -n "${EXISTING_TARGETS[$key]}" ]; then
             continue
@@ -699,6 +889,40 @@ then
 	backupall
 	exit $?
 fi
+
+edit_backup_config() {
+    local editor_status choice
+
+    if ! command -v mcedit >/dev/null 2>&1; then
+        echo -e "${LRED}Не удалось открыть файл настроек:${WHITE} команда mcedit не найдена."
+        return 1
+    fi
+
+    while true; do
+        mcedit "$config_file"
+        editor_status=$?
+
+        if ! /bin/bash -n "$config_file"; then
+            echo
+            echo -e "${LRED}В файле настроек обнаружена синтаксическая ошибка.${WHITE}"
+            echo "Архивация с некорректным файлом настроек не будет запущена."
+            echo
+            vertical_menu "current" 2 0 5 "default=0" "Исправить файл" "Выйти"
+            choice=$?
+            if [[ "$choice" -eq 0 ]]; then
+                continue
+            fi
+            exit 1
+        fi
+
+        if [[ "$editor_status" -ne 0 ]]; then
+            echo -e "${LRED}Редактор завершился с ошибкой.${WHITE}"
+            return 1
+        fi
+
+        exec /bin/bash "${SCRIPT_DIR}/backup2.sh"
+    done
+}
 
 configcnf() {
    echo "Конфигурируем rclone (Yandex Disk)"
@@ -1618,7 +1842,7 @@ BACKUP_COPIED_SOURCE=""
 backup_crypto_choose_policy_from_site() {
     local current_user="$1"
     local current_target="$2"
-    local user target type db remote policy exclude normalized_policy details key_label label
+    local user target type db _remote policy _exclude normalized_policy details key_label label
     local choice index key_count set_number next_set_number=1 menu_height
     local target_width=0 details_width=0
     local -a labels=() source_users=() source_targets=() source_types=()
@@ -1628,7 +1852,7 @@ backup_crypto_choose_policy_from_site() {
     BACKUP_COPIED_POLICY=""
     BACKUP_COPIED_SOURCE=""
 
-    while IFS=';' read -r user target type db remote policy exclude; do
+    while IFS=';' read -r user target type db _remote policy _exclude; do
         [[ -n "$user" && -n "$target" && "$user" != \#* ]] || continue
         type="$(backup_crypto_trim "$type")"
         [[ "${type,,}" == "site" ]] || continue
@@ -2005,7 +2229,7 @@ backup_crypto_object_actions() {
 
 backup_crypto_management_menu() {
     local default_index=0
-    local menu_height choice line_no user target type db remote policy exclude status label details
+    local menu_height choice line_no user target type db _remote policy _exclude status label details
     local target_width details_width index normalized_policy key_count ssh_key_count key_type recipient
     local menu_y menu_right_x action_x selected_row
     local -a labels=() line_numbers=() users=() targets=() types=() policies=() statuses=()
@@ -2031,7 +2255,7 @@ backup_crypto_management_menu() {
         details_width=0
         line_no=0
 
-        while IFS=';' read -r user target type db remote policy exclude; do
+        while IFS=';' read -r user target type db _remote policy _exclude; do
             line_no=$((line_no + 1))
             [[ -n "$user" && -n "$target" && "$user" != \#* ]] || continue
             if backup_parse_archive_policy "$policy"; then
@@ -2132,7 +2356,6 @@ backup_crypto_management_menu() {
 
 declare -A CACHE_READY
 declare -A CACHE_SITES
-declare -A CACHE_SITE_SNAPSHOTS
 declare -A CACHE_SNAPSHOT_META
 
 progress_line_stderr() {
@@ -2334,13 +2557,10 @@ ensure_remote_index() {
             done | sort -r
         )
         if [ "${#labels_for_site[@]}" -gt 0 ]; then
-            CACHE_SITE_SNAPSHOTS["$remote_name|$user_name|$site_name"]="$(printf '%s\n' "${labels_for_site[@]}")"
             for label in "${labels_for_site[@]}"; do
                 pair_key="${user_name}|${site_name}|${label}"
                 CACHE_SNAPSHOT_META["$remote_name|$user_name|$site_name|$label"]="${snapshot_meta[$pair_key]}"
             done
-        else
-            CACHE_SITE_SNAPSHOTS["$remote_name|$user_name|$site_name"]=""
         fi
     done
 
@@ -2791,6 +3011,10 @@ then
 else
     echo -e "Подключение по умолчанию не настроено (подключение ${LRED}'${rclone_remote}'${WHITE} не найдено в rclone)."
 fi
+echo "Настройки хранения резервных копий:"
+echo -e "Файл настроек: ${YELLOW}${config_file}${WHITE}"
+echo -e "Последних резервных копий хранить: ${GREEN}${keeplast}${WHITE} (keeplast)"
+echo -e "Предыдущих месяцев хранить по одной копии: ${GREEN}${keepmonthly}${WHITE} (keepmonthly)"
 
 if [ ! -f "$backupall2" ]
 then
@@ -2864,6 +3088,8 @@ do
         menu_items+=("О подключении по умолчанию ${rclone_remote}")
         menu_actions+=("remote_info")
     fi
+    menu_items+=("Редактировать файл настроек")
+    menu_actions+=("edit_config")
     menu_items+=("Выйти")
     menu_actions+=("exit")
 
@@ -2882,6 +3108,7 @@ do
         config_yandex) configcnf ;;
         select_remote) select_default_remote ;;
         remote_info) remote_info ;;
+        edit_config) edit_backup_config ;;
         exit) break ;;
     esac
 done

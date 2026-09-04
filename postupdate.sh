@@ -898,6 +898,29 @@ if [[ $ERROR_FOUND -eq 1 ]]; then
 
 fi
 
+# Уведомление о хранении месячных резервных копий
+backup_retention_config="/root/rish/rish_config.sh"
+if ! grep -Eq '^[[:space:]]*keepmonthly[[:space:]]*=' "$backup_retention_config"; then
+  if ! printf '\n#сколько предыдущих месяцев хранить по одной резервной копии\nkeepmonthly=1\n' >> "$backup_retention_config"; then
+    echo -e "${RED}Ошибка:${WHITE} не удалось добавить keepmonthly в ${backup_retention_config}."
+    exit 1
+  fi
+
+  echo
+  echo -e "${GREEN}Резервное копирование${WHITE} — месячные копии"
+  echo
+  echo "Теперь RISH может сохранять последний существующий архив каждого"
+  echo "из предыдущих месяцев."
+  echo
+  echo -e "В настройки ${YELLOW}${backup_retention_config}${WHITE} добавлен параметр ${GREEN}keepmonthly=1${WHITE}."
+  echo "Это может увеличить объём, занимаемый резервными копиями."
+  echo
+  echo "Проверьте доступное место и при необходимости измените параметр:"
+  echo "  keepmonthly=0 — не хранить месячные копии"
+  echo "  keepmonthly=N — хранить по одной копии за N предыдущих месяцев"
+  echo
+fi
+
 # Предупреждение о переходе на новую систему бэкапов
 cron_jobs="$(crontab -l 2>/dev/null || true)"
 if printf '%s\n' "$cron_jobs" | grep -Eq '^[[:space:]]*[^#].*/root/rish/backup\.sh([[:space:]]|$)'; then
