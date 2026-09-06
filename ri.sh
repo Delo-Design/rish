@@ -1250,10 +1250,12 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     echo -e "Проверяем почтовую службу ${GREEN}Postfix${WHITE}."
     Down
     postfix_unit_files=""
-    if ! postfix_unit_files="$(systemctl list-unit-files postfix.service --no-legend --no-pager 2>&1)"; then
+    # Запрос по имени возвращает ненулевой код и при отсутствии службы.
+    if ! postfix_unit_files="$(systemctl list-unit-files --type=service --no-legend --no-pager 2>&1)"; then
       Up
       echo -e "Не удалось проверить наличие почтовой службы ${RED}Postfix${WHITE}."
-      echo -e "Повторите проверку вручную: ${YELLOW}systemctl list-unit-files postfix.service --no-pager${WHITE}"
+      printf '%s\n' "$postfix_unit_files"
+      echo -e "Повторите проверку вручную: ${YELLOW}systemctl list-unit-files --type=service --no-pager${WHITE}"
       echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
       Down
       RemoveRim
