@@ -1602,6 +1602,9 @@ EOF
   if ! check_step "$STEP"; then
     echo -e "Конфигурирование сервера ${GREEN}завершено${WHITE}."
     echo
+    echo -e "Введите ${GREEN}mc${WHITE}, чтобы запустить Midnight Commander."
+    echo -e "Затем нажмите ${GREEN}F2${WHITE}, чтобы открыть меню RISH и выбрать нужное действие."
+    echo
     if ! grep -q "MYSQLPASS" ~/.bashrc; then
       # Устанавливаем признак выполненной настройки сервера
       echo "export MYSQLPASS="${SCRIPTVERSION} >>~/.bashrc

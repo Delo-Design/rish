@@ -125,9 +125,19 @@ function php_multi_install() {
 
     # Добавляем опцию для завершения процесса
     options+=("Завершить выбор")
+    local default_index=$((${#options[@]} - 1))
+    local option_index
+    if (( ${#installed_versions[@]} == 0 )); then
+      for option_index in "${!options[@]}"; do
+        if [[ "${options[$option_index]}" == *" [stable]" ]]; then
+          default_index=$option_index
+          break
+        fi
+      done
+    fi
     cursor_to $(($current_y)) 0
     echo "Доступно:"
-    vertical_menu "current" 1 0 10 "${options[@]}"
+    vertical_menu "current" 1 0 10 "default=$default_index" "${options[@]}"
     local ret=$?
     echo -en "${ESC}[1A${ESC}[K"
     if (( ret == 255 )) || (( ret == ${#options[@]}-1 )); then
