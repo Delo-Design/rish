@@ -781,6 +781,300 @@ check_php_fpm_configtests() {
   return "$status"
 }
 
+hostname_site_conflicts() {
+  local name="${1,,}" file pattern names
+  local -a files=()
+  for file in /etc/httpd/conf.d/*.conf; do
+    [[ -f "$file" ]] && files+=("$file")
+  done
+  ((${#files[@]})) || return 0
+  names="$(awk '
+    { sub(/#.*/, "") }
+    tolower($0) ~ /^[[:space:]]*<virtualhost[[:space:]]/ { inside = 1; next }
+    tolower($0) ~ /^[[:space:]]*<\/virtualhost>/ { inside = 0 }
+    inside && (tolower($1) == "servername" || tolower($1) == "serveralias") {
+      for (i = 2; i <= NF; i++) {
+        name = tolower($i)
+        gsub(/^"|"$/, "", name)
+        sub(/^https?:\/\//, "", name)
+        sub(/:[0-9]+$/, "", name)
+        sub(/\.$/, "", name)
+        print FILENAME "\t" name
+      }
+    }
+  ' "${files[@]}")" || return 1
+  while IFS=$'\t' read -r file pattern; do
+    [[ -n "$pattern" ]] || continue
+    if [[ "${name%.}" == $pattern ]]; then
+      printf '%s (%s)\n' "$pattern" "$file"
+    fi
+  done <<< "$names"
+  return 0
+}
+
+hostname_hosts_has_name() {
+  awk -v name="$1" '
+    { sub(/#.*/, "") }
+    NF > 1 { for (i = 2; i <= NF; i++) if (tolower($i) == tolower(name)) found = 1 }
+    END { exit !found }
+  ' "${2:-/etc/hosts}"
+}
+
+hostname_hosts_canonical() {
+  awk -v ip="$1" '
+    { sub(/#.*/, "") }
+    $1 == ip && NF > 1 { name = $2; count++ }
+    END { if (count > 1) exit 1; if (count == 1) print name }
+  ' "${2:-/etc/hosts}"
+}
+
+hostname_primary_ipv4() {
+  local route interface server_ip addresses
+  route="$(timeout 3 ip -4 route get 1.1.1.1 2>/dev/null)" || return 1
+  read -r interface server_ip < <(awk '
+    NR == 1 {
+      for (i = 1; i < NF; i++) {
+        if ($i == "dev") dev = $(i + 1)
+        if ($i == "src") src = $(i + 1)
+      }
+      if (dev != "" && src != "") print dev, src
+    }
+  ' <<< "$route")
+  [[ -n "$interface" && -n "$server_ip" ]] || return 1
+  addresses="$(timeout 3 ip -o -4 address show dev "$interface" scope global 2>/dev/null)" || return 1
+  awk -v ip="$server_ip" '
+    $3 == "inet" {
+      split($4, address, "/")
+      if (address[1] != ip) next
+      count++
+      for (i = 5; i <= NF; i++) {
+        if ($i == "dynamic") unstable = 1
+        if (($i == "valid_lft" || $i == "preferred_lft") && $(i + 1) != "forever") unstable = 1
+      }
+    }
+    END { if (count == 1 && !unstable) print ip; else exit 1 }
+  ' <<< "$addresses"
+}
+
+hostname_valid_name() {
+  LC_ALL=C awk -v name="$1" 'BEGIN {
+    if (length(name) > 64 || name ~ /^[0-9.]+$/) exit 1
+    count = split(name, labels, ".")
+    if (tolower(labels[1]) == "localhost") exit 1
+    for (i = 1; i <= count; i++)
+      if (length(labels[i]) > 63 || labels[i] !~ /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/) exit 1
+    exit !(count > 0)
+  }'
+}
+
+hostname_hosts_plan() {
+  # Only remove the former site hostname from entries belonging to this server.
+  awk -v ip="$2" -v name="$3" -v old="$4" '
+    BEGIN { short = name; sub(/\..*/, "", short) }
+    {
+      lines[NR] = $0; keep[NR] = 1
+      body = $0; sub(/#.*/, "", body)
+      sub(/^[[:space:]]+/, "", body)
+      count = split(body, fields, /[[:space:]]+/)
+      if (count < 2) next
+      address = fields[1]; entry = address; changed = 0
+      if (address == ip) {
+        matches++
+        entry = ip " " name (short != name ? " " short : "")
+        changed = 1
+      }
+      for (i = 2; i <= count; i++) {
+        if (fields[i] == "") continue
+        alias = tolower(fields[i])
+        if (old != "" && alias == tolower(old)) {
+          if (address != ip && address !~ /^127\./ && address != "::1") conflict = 1
+          changed = 1
+          continue
+        }
+        if (alias == tolower(name) || alias == tolower(short)) {
+          if (address != ip) conflict = 1
+          else continue
+        }
+        entry = entry " " fields[i]
+      }
+      if (changed) {
+        comment = index($0, "#") ? substr($0, index($0, "#")) : ""
+        if (entry == address) {
+          lines[NR] = comment
+          if (comment == "") keep[NR] = 0
+        } else lines[NR] = entry (comment != "" ? " " comment : "")
+      }
+    }
+    END {
+      if (conflict || matches > 1 || (!matches && old == "")) exit 2
+      for (i = 1; i <= NR; i++) if (keep[i]) print lines[i]
+      if (!matches) print ip " " name (short != name ? " " short : "")
+    }
+  ' "$1"
+}
+
+hostname_fix_error() {
+  ERRORS+=("$1")
+  log "$1"
+  return 1
+}
+
+hostname_discard_preview() {
+  rm -f -- "$1/hosts" "$1/hostname" "$1/hosts.new"
+  rmdir -- "$1"
+}
+
+fix_hostname_configuration() {
+  local old_name="$1" new_name="$2" old_alias=""
+  local server_ip canonical backup checksum conflicts status=0 rollback_failed=0
+  local hosts_file="/etc/hosts" hostname_file="/etc/hostname"
+
+  if [[ ! -f "$hosts_file" || -L "$hosts_file" || ! -w "$hosts_file" ]] ||
+    ! server_ip="$(hostname_primary_ipv4)"; then
+    log "Исправление пропущено: нужен обычный доступный для записи /etc/hosts и постоянный основной IPv4."
+    return 0
+  fi
+  if [[ "$new_name" != "$old_name" ]]; then
+    old_alias="$old_name"
+    if [[ ! -f "$hostname_file" || -L "$hostname_file" ]] ||
+      [[ "$(hostnamectl --static 2>/dev/null)" != "$old_name" ]]; then
+      log "Переименование пропущено: сначала согласуйте текущее и постоянное имя сервера; /etc/hostname должен быть обычным файлом."
+      return 0
+    fi
+  fi
+  backup="$(mktemp -d /etc/.rish-hostname.XXXXXXXX)" || {
+    hostname_fix_error "Не удалось создать каталог резервной копии hostname."; return 1
+  }
+  if ! cp --preserve=all -- "$hosts_file" "$backup/hosts" ||
+    ! cp --preserve=all -- "$hosts_file" "$backup/hosts.new" ||
+    { [[ -n "$old_alias" ]] && ! cp --preserve=all -- "$hostname_file" "$backup/hostname"; }; then
+    hostname_fix_error "Не удалось сохранить резервные копии в ${backup}."; return 1
+  fi
+  hostname_hosts_plan "$backup/hosts" "$server_ip" "$new_name" "$old_alias" > "$backup/hosts.new" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    hostname_discard_preview "$backup"
+    if [[ "$status" -eq 2 ]]; then
+      log "Исправление пропущено: конфликт имён/адресов или нет единственной записи для ${server_ip} в /etc/hosts. Требуется ручная правка."
+      return 0
+    fi
+    hostname_fix_error "Не удалось подготовить изменение /etc/hosts."; return 1
+  fi
+
+  if [[ -n "$old_alias" ]]; then
+    log "Имя сервера: ${YELLOW}${old_name}${WHITE} → ${GREEN}${new_name}${WHITE}."
+  else
+    log "Текущее имя будет записано первым, остальные имена сохранятся как дополнительные алиасы."
+    log "Hostname сервера изменён не будет."
+  fi
+  log "Резервная копия подготовлена."
+  log "Предлагаемые изменения /etc/hosts:"
+  diff -u -- "$backup/hosts" "$backup/hosts.new" || true
+  if [[ -n "$old_alias" ]]; then
+    confirm_fix "имя сервера и его запись в /etc/hosts"
+  else
+    confirm_fix "запись имени сервера в /etc/hosts"
+  fi
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    hostname_discard_preview "$backup"
+    [[ "$status" -eq 2 ]] && return 2
+    return 0
+  fi
+
+  # The preview must still describe the files and hostname being changed.
+  conflicts="$(hostname_site_conflicts "$new_name")" || conflicts="не удалось проверить"
+  if [[ -n "$conflicts" || -L "$hosts_file" || "$(uname -n)" != "$old_name" ||
+    "$(hostname_primary_ipv4)" != "$server_ip" ]] || ! cmp -s "$hosts_file" "$backup/hosts" ||
+    { [[ -n "$old_alias" ]] && { [[ -L "$hostname_file" ]] || ! cmp -s "$hostname_file" "$backup/hostname"; }; }; then
+    hostname_discard_preview "$backup"
+    log "Исправление отменено: имя, адрес или конфигурация изменились после подготовки."
+    return 0
+  fi
+  checksum="$(sha256sum "$backup/hosts.new")" || {
+    hostname_fix_error "Не удалось проверить подготовленный /etc/hosts. Резервная копия: ${backup}"; return 1
+  }
+  checksum="${checksum%% *}"
+  log "Резервная копия: ${YELLOW}${backup}${WHITE}"
+  if ! mv -f -- "$backup/hosts.new" "$hosts_file"; then
+    hostname_fix_error "Не удалось заменить /etc/hosts. Резервная копия: ${backup}"; return 1
+  fi
+  status=0
+  if [[ -n "$old_alias" ]]; then
+    hostnamectl --static --transient set-hostname "$new_name" || status=1
+    [[ "$(hostnamectl --static 2>/dev/null)" == "$new_name" ]] || status=1
+  fi
+  [[ "$(uname -n)" == "$new_name" ]] || status=1
+  canonical="$(hostname_hosts_canonical "$server_ip")" || status=1
+  [[ "${canonical,,}" == "${new_name,,}" ]] || status=1
+  hostname_hosts_has_name "${new_name%%.*}" || status=1
+  if [[ "$status" -eq 0 ]]; then
+    [[ -n "$old_alias" ]] && APACHE_RESTART_REQUIRED=1
+    log "Имя сервера ${GREEN}${new_name}${WHITE} согласовано с /etc/hosts."
+    return 0
+  fi
+
+  # Preserve a concurrent edit instead of overwriting it during rollback.
+  if [[ "$(sha256sum "$hosts_file" | awk '{print $1}')" == "$checksum" ]] &&
+    cp --preserve=all -- "$backup/hosts" "$backup/hosts.new" &&
+    mv -f -- "$backup/hosts.new" "$hosts_file"; then
+    :
+  else
+    rollback_failed=1
+  fi
+  if [[ -n "$old_alias" ]]; then
+    if [[ "$(uname -n)" == "$new_name" || "$(uname -n)" == "$old_name" ]]; then
+      hostnamectl --static --transient set-hostname "$old_name" || rollback_failed=1
+      cp --preserve=all -- "$backup/hostname" "$hostname_file" || rollback_failed=1
+    else
+      rollback_failed=1
+    fi
+  fi
+  if [[ "$rollback_failed" -eq 0 ]]; then
+    hostname_fix_error "Исправление имени не прошло проверку; исходные настройки восстановлены. Резервная копия: ${backup}"
+  else
+    hostname_fix_error "Исправление имени не прошло проверку; откат выполнен не полностью. Проверьте настройки вручную. Резервная копия: ${backup}"
+  fi
+  return 1
+}
+
+print_hostname_configuration_warning() {
+  local server_name new_name conflicts server_ip canonical
+
+  [[ "$SILENT" -eq 1 ]] && return 0
+  server_name="$(uname -n 2>/dev/null)"
+  [[ -n "$server_name" ]] || return 0
+  conflicts="$(hostname_site_conflicts "$server_name")" || {
+    log "Не удалось прочитать домены сайтов Apache; проверка hostname пропущена."; return 0
+  }
+  if [[ -z "$conflicts" ]]; then
+    [[ -r /etc/hosts ]] || return 0
+    server_ip="$(hostname_primary_ipv4)" || return 0
+    canonical="$(hostname_hosts_canonical "$server_ip")" || return 0
+    [[ -n "$canonical" && "${canonical,,}" != "${server_name,,}" ]] || return 0
+
+    log "Текущее имя сервера: ${YELLOW}${server_name}${WHITE}."
+    log "В /etc/hosts для основного IP ${YELLOW}${server_ip}${WHITE} первым указано другое имя: ${YELLOW}${canonical}${WHITE}."
+    [[ "${1:-}" == "fix" && "$MODE" == "fix" ]] || return 0
+    hostname_valid_name "$server_name" || { log "Некорректное имя сервера; исправление пропущено."; return 0; }
+    fix_hostname_configuration "$server_name" "$server_name"
+    return $?
+  fi
+
+  log "Имя сервера ${YELLOW}${server_name}${WHITE} совпадает с доменом сайта:"
+  printf '%s\n' "$conflicts"
+  log "Возможен конфликт выбора виртуального хоста Apache. Рекомендуется отдельное техническое имя сервера."
+  [[ "${1:-}" == "fix" && "$MODE" == "fix" ]] || return 0
+
+  [[ -t 0 ]] || { log "Для выбора нового hostname запустите rish_check.sh fix в терминале."; return 0; }
+  read -r -e -p "Новое техническое имя сервера (Enter — пропустить): " new_name || return 0
+  [[ -n "$new_name" ]] || return 0
+  new_name="${new_name,,}"
+  conflicts="$(hostname_site_conflicts "$new_name")" || return 0
+  [[ -z "$conflicts" ]] || { log "Выбранное имя тоже совпадает с доменом сайта; исправление пропущено."; return 0; }
+  hostname_valid_name "$new_name" || { log "Некорректное имя сервера; исправление пропущено."; return 0; }
+  fix_hostname_configuration "$server_name" "$new_name"
+}
+
 print_ssh_password_auth_warning() {
   local sshd_config
   local option
@@ -1212,6 +1506,7 @@ run_final_configtests() {
 
   [[ "$SILENT" -eq 1 ]] && return
 
+  print_hostname_configuration_warning
   print_ssh_password_auth_warning
   print_selectel_certificate_sync_warning
   print_certbot_certificate_renewal_warning
@@ -1434,12 +1729,24 @@ apply_issues() {
 
 run_fix() {
   local round=0
+  local hostname_fix_status
 
   while (( round < 3 )); do
     collect_issues
     if [[ "${#ERRORS[@]}" -gt 0 ]]; then
       print_final_report
       return 2
+    fi
+
+    if [[ "$round" -eq 0 ]]; then
+      print_hostname_configuration_warning fix
+      hostname_fix_status=$?
+      [[ "$hostname_fix_status" -eq 2 ]] && return 1
+      if [[ "$hostname_fix_status" -ne 0 ]]; then
+        [[ "${#ERRORS[@]}" -gt 0 ]] || ERRORS+=("Не удалось исправить имя сервера и его запись в /etc/hosts.")
+        print_final_report
+        return 2
+      fi
     fi
 
     if [[ "${#ISSUE_MESSAGES[@]}" -eq 0 ]]; then
