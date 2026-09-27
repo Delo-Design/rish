@@ -61,6 +61,7 @@ ServerManagementMenu() {
     "Включить/отключить Composer"
     "Включить/отключить авторизацию по паролю по SSH"
     "Включить/отключить управление DNS"
+    "Добавить внешние DNS"
     "Выйти")
   Down
   echo
@@ -262,6 +263,14 @@ ServerManagementMenu() {
         fi
       fi
       vertical_menu "current" 2 0 5 "Нажмите Enter"
+      ;;
+    4)
+      if [[ -f /root/rish/scripts/external_dns.sh ]]; then
+        bash /root/rish/scripts/external_dns.sh menu
+      else
+        echo "Модуль настройки внешних DNS не найден."
+        vertical_menu "current" 2 0 5 "Нажмите Enter"
+      fi
       ;;
     *)
       RemoveRim
