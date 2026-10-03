@@ -981,6 +981,90 @@ remote_info() {
     echo
 }
 
+backup_list_remote_data() {
+    local new_remote="$1"
+    local mode="$2"
+
+    [[ -n "$new_remote" && "$new_remote" != *';'* && "$new_remote" != *$'\n'* && "$new_remote" != *$'\r'* ]] || return 1
+    [[ "$mode" == "summary" || "$mode" == "update" ]] || return 1
+    [[ -f "$backupall2" && ! -L "$backupall2" ]] || return 1
+
+    awk -F';' -v OFS=';' -v remote="${new_remote//\\/\\\\}" -v mode="$mode" '
+        /^[[:space:]]*(#|$)/ {
+            if (mode == "update") print
+            next
+        }
+        NF < 6 || $1 == "" || $2 == "" {
+            invalid=1
+            exit 2
+        }
+        {
+            total++
+            if (($5 "") != (remote "")) {
+                changed++
+                if (mode == "update") $5=remote
+            }
+            if (mode == "update") print
+        }
+        END {
+            if (invalid) exit 2
+            if (mode == "summary") print total + 0 ";" changed + 0
+        }
+    ' "$backupall2"
+}
+
+offer_backup_list_remote_update() {
+    local new_remote="$1"
+    local summary total changed choice list_dir list_name tmp_file
+
+    if [[ ! -e "$backupall2" && ! -L "$backupall2" ]]; then
+        echo -e "Файл списка архивации ещё не создан: ${YELLOW}${backupall2}${WHITE}"
+        return 0
+    fi
+    if ! summary="$(backup_list_remote_data "$new_remote" summary)"; then
+        echo -e "Не удалось ${LRED}прочитать список архивации${WHITE}: ${YELLOW}${backupall2}${WHITE}"
+        echo "Проверьте формат записей и доступ к файлу. Подключения объектов не изменены."
+        return 1
+    fi
+    IFS=';' read -r total changed <<< "$summary"
+    if ((total == 0)); then
+        echo "В списке архивации нет объектов."
+        return 0
+    fi
+    if ((changed == 0)); then
+        echo -e "Все объекты списка уже используют подключение ${GREEN}${new_remote}${WHITE}."
+        return 0
+    fi
+
+    echo -e "Список архивации: ${YELLOW}${backupall2}${WHITE}"
+    echo "Применить подключение ко всем объектам существующего списка?"
+    echo -e "Будет изменено записей: ${YELLOW}${changed}${WHITE}. Остальные настройки объектов сохранятся."
+    vertical_menu "current" 1 0 5 "default=0" \
+        "Оставить текущие подключения объектов" \
+        "Назначить ${new_remote} всем объектам списка"
+    choice=$?
+    if [[ "$choice" -ne 1 ]]; then
+        echo "Подключения существующих объектов не изменены."
+        return 0
+    fi
+
+    list_dir="$(dirname "$backupall2")"
+    list_name="$(basename "$backupall2")"
+    if ! tmp_file="$(mktemp "${list_dir}/.${list_name}.rish-tmp.XXXXXX")"; then
+        echo -e "Не удалось ${LRED}создать временный файл${WHITE}. Подключения объектов не изменены."
+        return 1
+    fi
+    # Копируем права и владельца; исходный список заменяем только после подготовки.
+    if ! cp -p -- "$backupall2" "$tmp_file" || \
+       ! backup_list_remote_data "$new_remote" update > "$tmp_file" || \
+       ! mv -f -- "$tmp_file" "$backupall2"; then
+        rm -f -- "$tmp_file"
+        echo -e "Не удалось ${LRED}обновить подключения объектов${WHITE}: ${YELLOW}${backupall2}${WHITE}"
+        return 1
+    fi
+    echo -e "Объектам списка назначено подключение ${GREEN}${new_remote}${WHITE}. Изменено записей: ${GREEN}${changed}${WHITE}."
+}
+
 select_default_remote() {
     local choice selected_remote exit_index
     local -a remotes menu_items
@@ -1030,6 +1114,9 @@ select_default_remote() {
                     continue
                 fi
                 rclone_remote="$selected_remote"
+                echo
+                echo -e "Подключение по умолчанию изменено на ${GREEN}${rclone_remote}${WHITE}."
+                offer_backup_list_remote_update "$rclone_remote"
                 ;;
         esac
     done

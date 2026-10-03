@@ -781,14 +781,14 @@ check_php_fpm_configtests() {
   return "$status"
 }
 
-hostname_site_conflicts() {
-  local name="${1,,}" file pattern names
+hostname_site_names() {
+  local file
   local -a files=()
   for file in /etc/httpd/conf.d/*.conf; do
     [[ -f "$file" ]] && files+=("$file")
   done
   ((${#files[@]})) || return 0
-  names="$(awk '
+  awk '
     { sub(/#.*/, "") }
     tolower($0) ~ /^[[:space:]]*<virtualhost[[:space:]]/ { inside = 1; next }
     tolower($0) ~ /^[[:space:]]*<\/virtualhost>/ { inside = 0 }
@@ -799,17 +799,65 @@ hostname_site_conflicts() {
         sub(/^https?:\/\//, "", name)
         sub(/:[0-9]+$/, "", name)
         sub(/\.$/, "", name)
+        # A catch-all virtual host does not identify specific DNS names.
+        if (name == "*") continue
         print FILENAME "\t" name
       }
     }
-  ' "${files[@]}")" || return 1
+  ' "${files[@]}"
+}
+
+hostname_site_conflicts() {
+  local name="${1,,}" file pattern names
+  names="$(hostname_site_names)" || return 1
   while IFS=$'\t' read -r file pattern; do
     [[ -n "$pattern" ]] || continue
+    # shellcheck disable=SC2053 # Apache ServerAlias may contain wildcards.
     if [[ "${name%.}" == $pattern ]]; then
       printf '%s (%s)\n' "$pattern" "$file"
     fi
   done <<< "$names"
   return 0
+}
+
+hostname_hosts_site_names() {
+  local names candidates name file pattern
+  names="$(hostname_site_names)" || return 1
+  [[ -n "$names" ]] || return 0
+  candidates="$(awk '
+    { sub(/#.*/, "") }
+    NF > 1 {
+      for (i = 2; i <= NF; i++) {
+        name = tolower($i)
+        sub(/\.$/, "", name)
+        if (name ~ /^localhost(\.localdomain|4\.localdomain4|6\.localdomain6)$/) continue
+        if (index(name, ".") && !seen[name]++) print name
+      }
+    }
+  ' "${1:-/etc/hosts}")" || return 1
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    while IFS=$'\t' read -r file pattern; do
+      [[ -n "$pattern" ]] || continue
+      # shellcheck disable=SC2053 # Apache ServerAlias may contain wildcards.
+      if [[ "$name" == $pattern ]]; then
+        printf '%s\n' "$name"
+        break
+      fi
+    done <<< "$names"
+  done <<< "$candidates"
+  return 0
+}
+
+check_hostname_hosts() {
+  local names
+  [[ -r /etc/hosts ]] || return 0
+  names="$(hostname_hosts_site_names)" || {
+    ERRORS+=("Не удалось проверить домены сайтов в /etc/hosts.")
+    return 1
+  }
+  [[ -n "$names" ]] || return 0
+  add_issue "В /etc/hosts указаны домены сайтов: ${names//$'\n'/, }. Возможны ошибки запросов публичного DNS." "fix_hostname_hosts"
 }
 
 hostname_hosts_has_name() {
@@ -868,9 +916,15 @@ hostname_valid_name() {
 }
 
 hostname_hosts_plan() {
-  # Only remove the former site hostname from entries belonging to this server.
-  awk -v ip="$2" -v name="$3" -v old="$4" '
-    BEGIN { short = name; sub(/\..*/, "", short) }
+  local site_names="${5:-}"
+  # Only remove site names from the primary IP and loopback entries.
+  awk -v ip="$2" -v name="$3" -v old="$4" -v sites="${site_names//$'\n'/ }" '
+    BEGIN {
+      short = name; sub(/\..*/, "", short)
+      old_normalized = tolower(old); sub(/\.$/, "", old_normalized)
+      count = split(sites, site_names, " ")
+      for (i = 1; i <= count; i++) if (site_names[i] != "") remove[site_names[i]] = 1
+    }
     {
       lines[NR] = $0; keep[NR] = 1
       body = $0; sub(/#.*/, "", body)
@@ -886,14 +940,18 @@ hostname_hosts_plan() {
       for (i = 2; i <= count; i++) {
         if (fields[i] == "") continue
         alias = tolower(fields[i])
-        if (old != "" && alias == tolower(old)) {
+        sub(/\.$/, "", alias)
+        # Preserve standard loopback names, including a former hostname.
+        if (alias !~ /^localhost([46])?$/ &&
+            alias !~ /^localhost(\.localdomain|4\.localdomain4|6\.localdomain6)$/ &&
+            ((old != "" && alias == old_normalized) || alias in remove)) {
           if (address != ip && address !~ /^127\./ && address != "::1") conflict = 1
           changed = 1
           continue
         }
         if (alias == tolower(name) || alias == tolower(short)) {
-          if (address != ip) conflict = 1
-          else continue
+          if (address == ip) continue
+          if (old != "" || sites == "" || (address !~ /^127\./ && address != "::1")) conflict = 1
         }
         entry = entry " " fields[i]
       }
@@ -906,9 +964,9 @@ hostname_hosts_plan() {
       }
     }
     END {
-      if (conflict || matches > 1 || (!matches && old == "")) exit 2
+      if (conflict || matches > 1 || (!matches && old == "" && sites == "")) exit 2
       for (i = 1; i <= NR; i++) if (keep[i]) print lines[i]
-      if (!matches) print ip " " name (short != name ? " " short : "")
+      if (!matches && old != "") print ip " " name (short != name ? " " short : "")
     }
   ' "$1"
 }
@@ -927,6 +985,7 @@ hostname_discard_preview() {
 fix_hostname_configuration() {
   local old_name="$1" new_name="$2" old_alias=""
   local server_ip canonical backup checksum conflicts status=0 rollback_failed=0
+  local site_names current_site_names
   local hosts_file="/etc/hosts" hostname_file="/etc/hostname"
 
   if [[ ! -f "$hosts_file" || -L "$hosts_file" || ! -w "$hosts_file" ]] ||
@@ -950,7 +1009,11 @@ fix_hostname_configuration() {
     { [[ -n "$old_alias" ]] && ! cp --preserve=all -- "$hostname_file" "$backup/hostname"; }; then
     hostname_fix_error "Не удалось сохранить резервные копии в ${backup}."; return 1
   fi
-  hostname_hosts_plan "$backup/hosts" "$server_ip" "$new_name" "$old_alias" > "$backup/hosts.new" || status=$?
+  site_names="$(hostname_hosts_site_names "$backup/hosts")" || {
+    hostname_discard_preview "$backup"
+    hostname_fix_error "Не удалось проверить домены сайтов в /etc/hosts."; return 1
+  }
+  hostname_hosts_plan "$backup/hosts" "$server_ip" "$new_name" "$old_alias" "$site_names" > "$backup/hosts.new" || status=$?
   if [[ "$status" -ne 0 ]]; then
     hostname_discard_preview "$backup"
     if [[ "$status" -eq 2 ]]; then
@@ -963,8 +1026,13 @@ fix_hostname_configuration() {
   if [[ -n "$old_alias" ]]; then
     log "Имя сервера: ${YELLOW}${old_name}${WHITE} → ${GREEN}${new_name}${WHITE}."
   else
-    log "Текущее имя будет записано первым, остальные имена сохранятся как дополнительные алиасы."
+    if [[ -n "$(hostname_hosts_canonical "$server_ip" "$backup/hosts")" ]]; then
+      log "Техническое имя будет записано первым, посторонние алиасы сохранятся."
+    fi
     log "Hostname сервера изменён не будет."
+  fi
+  if [[ -n "$site_names" ]]; then
+    log "Домены сайтов будут удалены из локальных записей /etc/hosts: ${YELLOW}${site_names//$'\n'/, }${WHITE}."
   fi
   log "Резервная копия подготовлена."
   log "Предлагаемые изменения /etc/hosts:"
@@ -983,7 +1051,8 @@ fix_hostname_configuration() {
 
   # The preview must still describe the files and hostname being changed.
   conflicts="$(hostname_site_conflicts "$new_name")" || conflicts="не удалось проверить"
-  if [[ -n "$conflicts" || -L "$hosts_file" || "$(uname -n)" != "$old_name" ||
+  current_site_names="$(hostname_hosts_site_names "$hosts_file")" || current_site_names="не удалось проверить"
+  if [[ -n "$conflicts" || "$current_site_names" != "$site_names" || -L "$hosts_file" || "$(uname -n)" != "$old_name" ||
     "$(hostname_primary_ipv4)" != "$server_ip" ]] || ! cmp -s "$hosts_file" "$backup/hosts" ||
     { [[ -n "$old_alias" ]] && { [[ -L "$hostname_file" ]] || ! cmp -s "$hostname_file" "$backup/hostname"; }; }; then
     hostname_discard_preview "$backup"
@@ -1005,8 +1074,12 @@ fix_hostname_configuration() {
   fi
   [[ "$(uname -n)" == "$new_name" ]] || status=1
   canonical="$(hostname_hosts_canonical "$server_ip")" || status=1
-  [[ "${canonical,,}" == "${new_name,,}" ]] || status=1
-  hostname_hosts_has_name "${new_name%%.*}" || status=1
+  if [[ -n "$canonical" || -n "$old_alias" || -z "$site_names" ]]; then
+    [[ "${canonical,,}" == "${new_name,,}" ]] || status=1
+    hostname_hosts_has_name "${new_name%%.*}" || status=1
+  fi
+  current_site_names="$(hostname_hosts_site_names "$hosts_file")" || status=1
+  [[ -z "$current_site_names" ]] || status=1
   if [[ "$status" -eq 0 ]]; then
     [[ -n "$old_alias" ]] && APACHE_RESTART_REQUIRED=1
     log "Имя сервера ${GREEN}${new_name}${WHITE} согласовано с /etc/hosts."
@@ -1038,7 +1111,7 @@ fix_hostname_configuration() {
 }
 
 print_hostname_configuration_warning() {
-  local server_name new_name conflicts server_ip canonical
+  local server_name new_name conflicts server_ip canonical site_names
 
   [[ "$SILENT" -eq 1 ]] && return 0
   server_name="$(uname -n 2>/dev/null)"
@@ -1048,12 +1121,24 @@ print_hostname_configuration_warning() {
   }
   if [[ -z "$conflicts" ]]; then
     [[ -r /etc/hosts ]] || return 0
-    server_ip="$(hostname_primary_ipv4)" || return 0
-    canonical="$(hostname_hosts_canonical "$server_ip")" || return 0
-    [[ -n "$canonical" && "${canonical,,}" != "${server_name,,}" ]] || return 0
+    site_names="$(hostname_hosts_site_names)" || {
+      log "Не удалось проверить домены сайтов в /etc/hosts."; return 0
+    }
+    server_ip="$(hostname_primary_ipv4)" || server_ip=""
+    canonical=""
+    if [[ -n "$server_ip" ]]; then
+      canonical="$(hostname_hosts_canonical "$server_ip")" || canonical=""
+    fi
+    [[ -n "$site_names" || ( -n "$canonical" && "${canonical,,}" != "${server_name,,}" ) ]] || return 0
 
     log "Текущее имя сервера: ${YELLOW}${server_name}${WHITE}."
-    log "В /etc/hosts для основного IP ${YELLOW}${server_ip}${WHITE} первым указано другое имя: ${YELLOW}${canonical}${WHITE}."
+    if [[ -n "$canonical" && "${canonical,,}" != "${server_name,,}" ]]; then
+      log "В /etc/hosts для основного IP ${YELLOW}${server_ip}${WHITE} первым указано другое имя: ${YELLOW}${canonical}${WHITE}."
+    fi
+    if [[ -n "$site_names" ]]; then
+      log "В /etc/hosts указаны домены сайтов: ${YELLOW}${site_names//$'\n'/, }${WHITE}."
+      log "Локальные записи могут мешать запросам публичного DNS, включая NS, MX и TXT."
+    fi
     [[ "${1:-}" == "fix" && "$MODE" == "fix" ]] || return 0
     hostname_valid_name "$server_name" || { log "Некорректное имя сервера; исправление пропущено."; return 0; }
     fix_hostname_configuration "$server_name" "$server_name"
@@ -1485,6 +1570,7 @@ collect_issues() {
   check_prerequisites
   [[ "${#ERRORS[@]}" -gt 0 ]] && return
 
+  check_hostname_hosts
   collect_referenced_pools
   check_httpd_tmpfiles_override
   check_cron_allow
@@ -1602,6 +1688,31 @@ apply_issues() {
     fix_arg="${ISSUE_ARGS[$i]}"
 
     if [[ -z "$fix_action" ]]; then
+      continue
+    fi
+
+    if [[ "$fix_action" == "fix_hostname_hosts" ]]; then
+      # The hostname repair shows its own diff and confirmation menu.
+      print_hostname_configuration_warning fix
+      confirm_status=$?
+      if [[ "$confirm_status" -eq 2 ]]; then
+        log "${YELLOW}Исправление прервано пользователем.${WHITE}"
+        return 1
+      fi
+      if [[ "$confirm_status" -ne 0 ]]; then
+        [[ "${#ERRORS[@]}" -gt 0 ]] || ERRORS+=("Не удалось исправить домены сайтов в /etc/hosts.")
+        return 1
+      fi
+      fix_arg="$(hostname_hosts_site_names)" || {
+        ERRORS+=("Не удалось проверить домены сайтов в /etc/hosts после исправления.")
+        return 1
+      }
+      if [[ -z "$fix_arg" ]]; then
+        log "${GREEN}Исправлено:${WHITE} ${message}"
+        changed=1
+      else
+        log "${YELLOW}Пропущено:${WHITE} ${message}"
+      fi
       continue
     fi
 
@@ -1729,7 +1840,7 @@ apply_issues() {
 
 run_fix() {
   local round=0
-  local hostname_fix_status
+  local hostname_fix_status hostname_fix_pending fix_action
 
   while (( round < 3 )); do
     collect_issues
@@ -1738,7 +1849,11 @@ run_fix() {
       return 2
     fi
 
-    if [[ "$round" -eq 0 ]]; then
+    hostname_fix_pending=0
+    for fix_action in "${ISSUE_FIXES[@]}"; do
+      [[ "$fix_action" == "fix_hostname_hosts" ]] && hostname_fix_pending=1
+    done
+    if [[ "$round" -eq 0 && "$hostname_fix_pending" -eq 0 ]]; then
       print_hostname_configuration_warning fix
       hostname_fix_status=$?
       [[ "$hostname_fix_status" -eq 2 ]] && return 1
@@ -1756,6 +1871,10 @@ run_fix() {
 
     print_issues
     if ! apply_issues; then
+      if [[ "${#ERRORS[@]}" -gt 0 ]]; then
+        print_final_report
+        return 2
+      fi
       collect_issues
       print_final_report
       [[ "${#ERRORS[@]}" -gt 0 ]] && return 2
