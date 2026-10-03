@@ -84,6 +84,7 @@ rish_register_step 5200 "Настройка способов авторизац�
 rish_register_step 5300 "Обновление hotlist"
 rish_register_step 5400 "Финальная проверка необходимости перезагрузки сервера"
 rish_register_step 5500 "Устанавливаем признак выполненной настройки сервера"
+rish_register_step 5600 "Уведомление о резервном копировании CRON"
 
 unset -f rish_register_step
 

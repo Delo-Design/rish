@@ -1598,6 +1598,12 @@ EOF
     mark_step_completed "$STEP"
   fi
 
+  STEP=5600
+  if ! check_step "$STEP"; then
+    # При новой установке резервное копирование CRON уже доступно.
+    mark_step_completed "$STEP"
+  fi
+
   STEP=5500
   if ! check_step "$STEP"; then
     echo -e "Конфигурирование сервера ${GREEN}завершено${WHITE}."

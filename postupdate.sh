@@ -921,6 +921,20 @@ if ! grep -Eq '^[[:space:]]*keepmonthly[[:space:]]*=' "$backup_retention_config"
   echo
 fi
 
+# Уведомление о резервном копировании CRON
+STEP=5600
+if ! check_step "$STEP"; then
+  echo
+  echo -e "${GREEN}Резервное копирование${WHITE} — задания CRON"
+  echo
+  echo -e "Добавлено резервное копирование заданий CRON пользователей, включая ${YELLOW}root${WHITE}."
+  echo
+  echo "Чтобы включить его, откройте «Бэкапы (резервное копирование)»"
+  echo "и выполните «Обновить файл-список всех архивируемых объектов»."
+  echo
+  mark_step_completed "$STEP"
+fi
+
 # Предупреждение о переходе на новую систему бэкапов
 cron_jobs="$(crontab -l 2>/dev/null || true)"
 if printf '%s\n' "$cron_jobs" | grep -Eq '^[[:space:]]*[^#].*/root/rish/backup\.sh([[:space:]]|$)'; then
