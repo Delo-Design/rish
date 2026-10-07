@@ -1061,11 +1061,29 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     echo -e "Выбор и установка нужных версий ${GREEN}PHP${WHITE}"
     Down
     echo -e "Идет получение списка доступных версий ${GREEN}PHP${WHITE}. Ждите."
-    php_multi_install
-    Up
-    if ! check_step 3000; then
-      mark_step_completed 3000
+    if ! php_multi_install; then
+      Up
+      echo -e "Выбор или установка ${RED}PHP${WHITE} завершились ошибкой. Установка RISH остановлена."
+      echo "После устранения причины повторно запустите /root/rish/ri.sh."
+      Down
+      exit 1
     fi
+  fi
+
+  # Проверяем PHP и при повторном запуске, даже если старый установщик уже отметил шаг выполненным.
+  Down
+  if ! php_verify_installed_versions; then
+    Up
+    echo -e "Проверка установленного ${RED}PHP${WHITE} завершилась ошибкой. Установка RISH остановлена."
+    echo "После устранения причины повторно запустите /root/rish/ri.sh."
+    Down
+    exit 1
+  fi
+  Up
+  if ! check_step 3000; then
+    mark_step_completed 3000
+  fi
+  if ! check_step "$STEP"; then
     mark_step_completed "$STEP"
     echo -e "Установка выбранных версий ${GREEN}PHP${WHITE} завершена."
   fi

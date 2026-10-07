@@ -1,5 +1,53 @@
 #!/usr/bin/env bash
 
+php_check_cli() {
+  local php_version="$1"
+  local php_binary="/opt/remi/${php_version}/root/usr/bin/php"
+
+  if ! "$php_binary" --version >/dev/null; then
+    echo -e "Не удалось запустить ${RED}${php_version}${WHITE}."
+    echo -e "Проверьте PHP CLI: ${YELLOW}${php_binary} --version${WHITE}"
+    return 1
+  fi
+}
+
+php_check_fpm_configuration() {
+  local php_version="$1"
+  local fpm_binary="/opt/remi/${php_version}/root/usr/sbin/php-fpm"
+
+  if ! "$fpm_binary" -t >/dev/null; then
+    echo -e "Проверка конфигурации ${RED}${php_version}-php-fpm${WHITE} завершилась ошибкой."
+    echo -e "Повторить проверку: ${YELLOW}${fpm_binary} -t${WHITE}"
+    return 1
+  fi
+}
+
+php_verify_installed_versions() {
+  local installed_packages package_name php_version
+
+  if ! installed_packages="$(rpm -qa --qf '%{NAME}\n')"; then
+    echo "Не удалось получить список установленных пакетов PHP."
+    return 1
+  fi
+
+  while IFS= read -r package_name; do
+    [[ "$package_name" =~ ^(php[0-9]{2})-php-fpm$ ]] || continue
+    php_version="${BASH_REMATCH[1]}"
+    php_check_cli "$php_version" || return 1
+    php_check_fpm_configuration "$php_version" || return 1
+    if ! systemctl is-active --quiet "${php_version}-php-fpm"; then
+      echo -e "Установлены пакеты ${YELLOW}${php_version}${WHITE}, но служба ${RED}${php_version}-php-fpm${WHITE} не работает."
+      echo -e "Проверьте состояние: ${YELLOW}systemctl status ${php_version}-php-fpm --no-pager -l${WHITE}"
+      return 1
+    fi
+    if ! php_fpm_systemd_security_is_effective "$php_version"; then
+      echo -e "Systemd не применил ожидаемые параметры защиты для ${RED}${php_version}-php-fpm${WHITE}."
+      return 1
+    fi
+  done <<< "$installed_packages"
+  return 0
+}
+
 function php_multi_install() {
   local options
   local available_versions
@@ -15,6 +63,7 @@ function php_multi_install() {
   local installed_versions
   local www_template
   local www_conf
+  local repository_packages
 
   while true; do
     available_versions=()
@@ -23,6 +72,10 @@ function php_multi_install() {
     #mapfile -t available_versions < <(dnf repository-packages remi-safe list | grep php | grep -oP 'php[0-9]{2}' | sort -r | uniq)
 
     # 1. Получаем список версий и статус
+    if ! repository_packages="$(dnf repository-packages remi-safe list)"; then
+      echo "Не удалось получить список доступных версий PHP. Установка остановлена."
+      exit 1
+    fi
     while read pkg ver; do
         phpver=$(echo "$pkg" | grep -oE 'php[0-9]{2}')
         shortver=$(echo "$ver" | cut -d'-' -f1)
@@ -35,7 +88,7 @@ function php_multi_install() {
         versions_arr+=("$ver_str|$status")
         (( ${#ver_str} > max_verlen )) && max_verlen=${#ver_str}
     done < <(
-      dnf repository-packages remi-safe list | awk '/^php[0-9]{2}-php-fpm\./ {print $1, $2}' | sort -ru
+      printf '%s\n' "$repository_packages" | awk '/^php[0-9]{2}-php-fpm\./ {print $1, $2}' | sort -ru
     )
 
     # 2. Собираем красивый массив для меню
@@ -79,8 +132,8 @@ function php_multi_install() {
 
 
     if [ ${#options[@]} -eq 0 ]; then
-      echo "Все доступные версии PHP уже установлены."
-      return
+      echo "Пакеты всех доступных версий PHP уже установлены."
+      return 0
     fi
 
     echo
@@ -148,7 +201,7 @@ function php_multi_install() {
     selected_version=$(echo "$selected_line" | grep -oP '^php[0-9]{2}')
 
     echo "Установка выбранной версии PHP ($selected_version) и дополнительных расширений..."
-    sudo dnf install -y "$selected_version" \
+    if ! sudo dnf install -y "$selected_version" \
     "${selected_version}-php-fpm" \
     "${selected_version}-php-opcache" \
     "${selected_version}-php-cli" \
@@ -160,18 +213,22 @@ function php_multi_install() {
     "${selected_version}-php-zip" \
     "${selected_version}-php-intl" \
     "${selected_version}-php-json" \
-    "${selected_version}-php-gmp"
+    "${selected_version}-php-gmp"; then
+      echo -e "Не удалось установить пакеты ${RED}${selected_version}${WHITE}. Установка остановлена."
+      exit 1
+    fi
+    php_check_cli "$selected_version" || exit 1
 
-    Up
-    echo -e "${GREEN}${selected_version}${WHITE} успешно установлен."
-    Down
     PHPINI="/etc/opt/remi/${selected_version}/php.ini"
-    sed -i "s/memory_limit = .*/memory_limit = 256M/" $PHPINI
-    sed -i "s/upload_max_filesize = .*/upload_max_filesize = 32M/" $PHPINI
-    sed -i "s/post_max_size = .*/post_max_size = 32M/" $PHPINI
-    sed -i "s/max_execution_time = .*/max_execution_time = 60/" $PHPINI
-    sed -i "/^;\?max_input_vars[[:space:]]*=/c\max_input_vars = 20000" $PHPINI
-    sed -i "s/output_buffering .*/output_buffering = Off/" $PHPINI
+    if ! sed -i "s/memory_limit = .*/memory_limit = 256M/" "$PHPINI" ||
+      ! sed -i "s/upload_max_filesize = .*/upload_max_filesize = 32M/" "$PHPINI" ||
+      ! sed -i "s/post_max_size = .*/post_max_size = 32M/" "$PHPINI" ||
+      ! sed -i "s/max_execution_time = .*/max_execution_time = 60/" "$PHPINI" ||
+      ! sed -i "/^;\?max_input_vars[[:space:]]*=/c\max_input_vars = 20000" "$PHPINI" ||
+      ! sed -i "s/output_buffering .*/output_buffering = Off/" "$PHPINI"; then
+      echo -e "Не удалось настроить ${RED}${PHPINI}${WHITE}. Установка остановлена."
+      exit 1
+    fi
 
     echo -e "Установлены лимиты для ${GREEN}${selected_version}${WHITE}:"
     echo -e "memory_limit = ${GREEN}256M${WHITE}"
@@ -183,29 +240,35 @@ function php_multi_install() {
     www_template="${RISH_HOME}/templates/php-fpm-www.conf.template"
     www_conf="/etc/opt/remi/${selected_version}/php-fpm.d/www.conf"
     if [[ -f "$www_template" ]]; then
-      sed "s/{{PHP_VERSION}}/${selected_version}/g" "$www_template" > "$www_conf"
+      if ! sed "s/{{PHP_VERSION}}/${selected_version}/g" "$www_template" > "$www_conf"; then
+        echo -e "Не удалось записать конфигурацию ${RED}${www_conf}${WHITE}. Установка остановлена."
+        exit 1
+      fi
     else
       echo -e "Шаблон ${RED}${www_template}${WHITE} не найден."
-      echo -e "Оставляем стандартный ${YELLOW}${www_conf}${WHITE} от Remi."
+      echo "Установка остановлена. Восстановите шаблон RISH и повторите установку."
+      exit 1
     fi
 
     echo
     echo -e "Ставим ${GREEN}imagick${WHITE}?"
     if vertical_menu "current" 2 0 5 "Да" "Нет"
     then
-      Install "${selected_version}-php-pecl-imagick"
+      Install "${selected_version}-php-pecl-imagick" || exit 1
     fi
     if ${LocalServer}; then
       echo -e ${CURSORUP}"Ставим ${GREEN}Xdebug${WHITE}?${ERASEUNTILLENDOFLINE}"
       if vertical_menu "current" 2 0 5 "Да" "Нет"; then
-        Install "${selected_version}-php-xdebug"
+        Install "${selected_version}-php-xdebug" || exit 1
         if [[ -e "/etc/opt/remi/${selected_version}/php.d/15-xdebug.ini" ]]; then
-          {
-            echo "xdebug.idekey = \"PHPSTORM\""
-            echo "xdebug.mode = debug"
-            echo "xdebug.client_port = 9003"
-            echo "xdebug.discover_client_host=1"
-          } >>"/etc/opt/remi/${selected_version}/php.d/15-xdebug.ini"
+          if ! printf '%s\n' \
+            'xdebug.idekey = "PHPSTORM"' \
+            'xdebug.mode = debug' \
+            'xdebug.client_port = 9003' \
+            'xdebug.discover_client_host=1' >>"/etc/opt/remi/${selected_version}/php.d/15-xdebug.ini"; then
+            echo -e "Не удалось настроить ${RED}/etc/opt/remi/${selected_version}/php.d/15-xdebug.ini${WHITE}. Установка остановлена."
+            exit 1
+          fi
         else
           echo -e "Файл ${RED}/etc/opt/remi/${selected_version}/php.d/15-xdebug.ini${WHITE} не существует!"
           echo -e "Возможны ошибки при установке xdebug."
@@ -221,6 +284,7 @@ function php_multi_install() {
       fi
     fi
 
+    php_check_fpm_configuration "$selected_version" || exit 1
     if ! write_php_fpm_systemd_conf "$selected_version"; then
       echo -e "Не удалось создать защищенную systemd-конфигурацию для ${RED}${selected_version}-php-fpm${WHITE}."
       exit 1
@@ -252,7 +316,18 @@ function php_multi_install() {
       systemctl daemon-reload || true
       exit 1
     fi
+    if ! systemctl is-active --quiet "${selected_version}-php-fpm"; then
+      echo -e "Служба ${RED}${selected_version}-php-fpm${WHITE} не работает после запуска. Новая systemd-конфигурация будет отменена."
+      echo -e "Проверьте состояние: ${YELLOW}systemctl status ${selected_version}-php-fpm --no-pager -l${WHITE}"
+      systemctl disable "${selected_version}-php-fpm" || true
+      rollback_php_fpm_systemd_conf "$selected_version" || true
+      systemctl daemon-reload || true
+      exit 1
+    fi
     commit_php_fpm_systemd_conf "$selected_version" || true
+    Up
+    echo -e "${GREEN}${selected_version}${WHITE} успешно установлен. PHP-FPM работает."
+    Down
     echo
 
   done
