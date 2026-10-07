@@ -96,9 +96,24 @@ EOF
 
 mariadb_install() {
 
-  Install MariaDB-server MariaDB-client
-  systemctl start mariadb
-  systemctl enable mariadb
+  Install MariaDB-server MariaDB-client || return 1
+  if ! mariadb --version >/dev/null; then
+    echo "Не удалось запустить клиент MariaDB. Настройка остановлена."
+    return 1
+  fi
+  if ! systemctl start mariadb; then
+    echo "Не удалось запустить службу MariaDB. Настройка остановлена."
+    echo "Проверьте состояние: systemctl status mariadb --no-pager -l"
+    return 1
+  fi
+  if ! systemctl is-active --quiet mariadb; then
+    echo "Служба MariaDB не перешла в рабочее состояние. Настройка остановлена."
+    return 1
+  fi
+  if ! systemctl enable mariadb; then
+    echo "Не удалось включить автозапуск службы MariaDB. Настройка остановлена."
+    return 1
+  fi
 
   Up
   echo -e "Производим настройку безопасности ${GREEN}mysql_secure_installation${WHITE}"
@@ -107,7 +122,7 @@ mariadb_install() {
   sed -i '/collation-server=/d' /etc/my.cnf.d/server.cnf
   sed -i "s/^\[mysqld\]/\[mysqld\]\ncharacter-set-server=utf8mb4\ncollation-server=utf8mb4_unicode_ci/" /etc/my.cnf.d/server.cnf
 
-  mariadb-secure-installation <<EOF
+  if ! mariadb-secure-installation <<EOF
 
 n
 n
@@ -117,9 +132,21 @@ y
 y
 
 EOF
+  then
+    echo "Настройка безопасности MariaDB завершилась ошибкой. Установка остановлена."
+    return 1
+  fi
   # mysql -uroot  -e "ALTER USER root@localhost IDENTIFIED VIA mysql_native_password USING PASSWORD(\"${pass}\");"
   sed -i "s/^#bind-address.*$/bind-address=127.0.0.1/" /etc/my.cnf.d/server.cnf
-  mariadb_configure_buffer_pool
-  systemctl restart mariadb
+  mariadb_configure_buffer_pool || return 1
+  if ! systemctl restart mariadb; then
+    echo "Не удалось перезапустить службу MariaDB. Настройка остановлена."
+    echo "Проверьте состояние: systemctl status mariadb --no-pager -l"
+    return 1
+  fi
+  if ! systemctl is-active --quiet mariadb; then
+    echo "Служба MariaDB не работает после перезапуска. Настройка остановлена."
+    return 1
+  fi
   mariadb_verify_installation "$MARIADB_EXPECTED_BUFFER_POOL_MB"
 }

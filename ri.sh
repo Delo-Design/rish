@@ -2,6 +2,104 @@
 #set -euo pipefail
 #IFS=$'\n\t'
 
+SCRIPTVERSION='1.0.1'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+LRED='\033[1;31m'
+VIOLET='\033[0;35m'
+WHITE='\033[0m'
+YELLOW='\033[0;33m'
+CURSORUP='\033[1A'
+ERASEUNTILLENDOFLINE='\033[K'
+
+RISH_CPU_ARCH=""
+RISH_CPU_MODEL=""
+RISH_CPU_ISA_LEVEL="не определён"
+RISH_CPU_REQUIRES_V3=0
+
+rish_print_cpu_info() {
+  local level_color="$GREEN"
+
+  if [[ "$RISH_CPU_ISA_LEVEL" == "не определён" ]]; then
+    level_color="$YELLOW"
+  elif ((RISH_CPU_REQUIRES_V3)) && [[ "$RISH_CPU_ISA_LEVEL" != "x86-64-v3" && "$RISH_CPU_ISA_LEVEL" != "x86-64-v4" ]]; then
+    level_color="$RED"
+  fi
+
+  printf 'Процессор: %b%s%b\n' "$GREEN" "$RISH_CPU_MODEL" "$WHITE"
+  printf 'Архитектура CPU: %b%s%b\n' "$GREEN" "$RISH_CPU_ARCH" "$WHITE"
+  if [[ "$RISH_CPU_ARCH" == "x86_64" ]]; then
+    printf 'Доступный уровень инструкций CPU: %b%s%b\n' "$level_color" "$RISH_CPU_ISA_LEVEL" "$WHITE"
+    if ((RISH_CPU_REQUIRES_V3)); then
+      printf 'Требование RISH на EL10: не ниже %bx86-64-v3%b.\n' "$GREEN" "$WHITE"
+    fi
+  fi
+}
+
+rish_check_cpu_compatibility() {
+  local os_major os_family loader loader_help level
+
+  RISH_CPU_REQUIRES_V3=0
+  RISH_CPU_ISA_LEVEL="не определён"
+  if ! RISH_CPU_ARCH="$(uname -m)" || [[ -z "$RISH_CPU_ARCH" ]]; then
+    echo "Не удалось определить архитектуру CPU. Установка RISH остановлена."
+    return 1
+  fi
+  RISH_CPU_MODEL="$(awk '/^model name[[:space:]]*:/ { sub(/^[^:]*:[[:space:]]*/, ""); print; exit }' /proc/cpuinfo 2>/dev/null)"
+  RISH_CPU_MODEL="${RISH_CPU_MODEL:-не определена}"
+
+  if [[ "$RISH_CPU_ARCH" == "x86_64" ]]; then
+    if [[ -r /etc/os-release ]]; then
+      os_major="$(awk -F= '$1 == "VERSION_ID" { gsub(/["\047]/, "", $2); split($2, version, "."); print version[1]; exit }' /etc/os-release)"
+      os_family="$(awk -F= '$1 == "ID" || $1 == "ID_LIKE" { gsub(/["\047]/, "", $2); printf "%s ", $2 }' /etc/os-release)"
+      if [[ "$os_major" == "10" ]]; then
+        case " $os_family " in
+          *" rhel "*|*" almalinux "*|*" rocky "*|*" centos "*|*" ol "*)
+            RISH_CPU_REQUIRES_V3=1
+            ;;
+        esac
+      fi
+    fi
+
+    for loader in /lib64/ld-linux-x86-64.so.2 /usr/lib64/ld-linux-x86-64.so.2; do
+      [[ -x "$loader" ]] || continue
+      if loader_help="$(LC_ALL=C "$loader" --help 2>/dev/null)" &&
+        [[ "$loader_help" == *"Subdirectories of glibc-hwcaps directories"* ]]; then
+        RISH_CPU_ISA_LEVEL="x86-64 (baseline)"
+        for level in 4 3 2; do
+          if [[ "$loader_help" == *"x86-64-v${level} (supported"* ]]; then
+            RISH_CPU_ISA_LEVEL="x86-64-v${level}"
+            break
+          fi
+        done
+        break
+      fi
+    done
+  fi
+
+  rish_print_cpu_info
+  if ((RISH_CPU_REQUIRES_V3)) && [[ "$RISH_CPU_ISA_LEVEL" != "x86-64-v3" && "$RISH_CPU_ISA_LEVEL" != "x86-64-v4" ]]; then
+    echo
+    if [[ "$RISH_CPU_ISA_LEVEL" == "не определён" ]]; then
+      echo "Не удалось проверить поддержку x86-64-v3 через загрузчик glibc."
+    else
+      printf 'Внимание: доступный CPU не поддерживает %bx86-64-v3%b.\n' "$RED" "$WHITE"
+    fi
+    echo "PHP из Remi и MariaDB из внешнего репозитория для EL10 требуют x86-64-v3."
+    echo "Штатная MariaDB AlmaLinux для v2 не решает несовместимость PHP из Remi."
+    echo
+    echo "Используйте AlmaLinux 9 либо VPS с доступной поддержкой x86-64-v3."
+    echo "Установка RISH остановлена до изменения настроек и установки пакетов."
+    return 1
+  fi
+  return 0
+}
+
+# Проверка CPU должна выполняться до создания конфигов и записи состояния шагов.
+if ! rish_check_cpu_compatibility; then
+  exit 1
+fi
+
 # Путь к конфигурационному файлу
 config_file="/root/rish/rish_config.sh"
 
@@ -20,16 +118,6 @@ add_var_if_not_exists() {
     fi
 }
 
-
-SCRIPTVERSION='1.0.1'
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-LRED='\033[1;31m'
-VIOLET='\033[0;35m'
-WHITE='\033[0m'
-YELLOW='\033[0;33m'
-CURSORUP='\033[1A'
-ERASEUNTILLENDOFLINE='\033[K'
 OS_VERSION=$( hostnamectl | grep -Eo 'Operating.*' |  sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 
 size=$(stty size)
@@ -182,6 +270,8 @@ else
     echo "Система НЕ относится к семейству RHEL."
     exit 1
 fi
+
+rish_print_cpu_info
 
 if echo ${CURRENT_OS} | grep -Eq "Fedora"
 then
