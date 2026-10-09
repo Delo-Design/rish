@@ -248,8 +248,8 @@ show_extension_updates() {
   local lock_key
   local progress_output
   local progress_row
-  local reported_count
   local site_id
+  local site_checked
   local site_name
   local tracking_error=""
   local tracking_warning_shown=0
@@ -271,6 +271,7 @@ show_extension_updates() {
   local update_query
   local update_lock_fd
   local total_sites=0
+  local -A known_sites=()
   local -A reported_sites=()
   local -a progress_rows=()
   local -a update_rows=()
@@ -306,20 +307,25 @@ show_extension_updates() {
   fi
 
   update_sites_table="$(sql_escape_identifier "${DB_PREFIX}update_sites")"
-  if ! total_sites=$(
+  if ! progress_output=$(
     mariadb --defaults-extra-file="$TMP_DEFAULTS" --batch --raw --skip-column-names \
-      "$DB_NAME" -e "SELECT COUNT(*) FROM \`${update_sites_table}\` WHERE enabled = 1;" 2>&1
+      "$DB_NAME" -e "SELECT update_site_id FROM \`${update_sites_table}\` WHERE enabled = 1;" 2>&1
   ); then
-    tracking_error="$total_sites"
+    tracking_error="$progress_output"
     can_track_progress=0
-    total_sites=0
-  fi
-  if [[ ! "$total_sites" =~ ^[0-9]+$ ]]; then
-    if [[ -z "$tracking_error" ]]; then
-      tracking_error="MariaDB вернула некорректное количество серверов обновлений: ${total_sites}"
+  else
+    if [[ -n "$progress_output" ]]; then
+      mapfile -t progress_rows <<< "$progress_output"
     fi
-    can_track_progress=0
-    total_sites=0
+    for site_id in "${progress_rows[@]}"; do
+      if [[ ! "$site_id" =~ ^[0-9]+$ ]]; then
+        tracking_error="MariaDB вернула некорректный update_site_id: ${site_id}"
+        can_track_progress=0
+        break
+      fi
+      known_sites["$site_id"]=1
+    done
+    total_sites="${#known_sites[@]}"
   fi
 
   : > "$CLI_OUTPUT_FILE"
@@ -357,11 +363,13 @@ show_extension_updates() {
 SELECT CONCAT(
   update_site_id,
   CHAR(31),
+  COALESCE(last_check_timestamp >= ${check_started_at}, 0),
+  CHAR(31),
   COALESCE(name, '-')
 )
 FROM \`${update_sites_table}\`
 WHERE enabled = 1
-  AND last_check_timestamp >= ${check_started_at}
+  OR last_check_timestamp >= ${check_started_at}
 ORDER BY last_check_timestamp, update_site_id;
 " 2>&1
       ); then
@@ -372,15 +380,29 @@ ORDER BY last_check_timestamp, update_site_id;
         if [[ -n "$progress_output" ]]; then
           mapfile -t progress_rows <<< "$progress_output"
         fi
-        completed_sites="${#progress_rows[@]}"
 
+        # Retain known IDs while Joomla temporarily disables update sites.
         for progress_row in "${progress_rows[@]}"; do
-          IFS=$'\037' read -r site_id site_name <<< "$progress_row"
+          IFS=$'\037' read -r site_id site_checked site_name <<< "$progress_row"
           if [[ ! "$site_id" =~ ^[0-9]+$ ]]; then
             tracking_error="MariaDB вернула некорректный update_site_id: ${site_id}"
             can_track_progress=0
             break
           fi
+          if [[ "$site_checked" != 0 && "$site_checked" != 1 ]]; then
+            tracking_error="MariaDB вернула некорректный статус проверки сервера ${site_id}: ${site_checked}"
+            can_track_progress=0
+            break
+          fi
+          known_sites["$site_id"]=1
+        done
+        total_sites="${#known_sites[@]}"
+      fi
+
+      if ((can_track_progress)); then
+        for progress_row in "${progress_rows[@]}"; do
+          IFS=$'\037' read -r site_id site_checked site_name <<< "$progress_row"
+          [[ "$site_checked" == 1 ]] || continue
           if [[ -n "${reported_sites[$site_id]+x}" ]]; then
             continue
           fi
@@ -389,9 +411,9 @@ ORDER BY last_check_timestamp, update_site_id;
           [[ -n "$site_name" ]] || site_name="-"
           site_name="$(truncate_cell "$site_name" 60)"
           reported_sites["$site_id"]=1
-          reported_count="${#reported_sites[@]}"
+          completed_sites="${#reported_sites[@]}"
           printf '\033[2K\r[%s/%s] Обработан: %s\n' \
-            "$reported_count" "$total_sites" "$site_name"
+            "$completed_sites" "$total_sites" "$site_name"
         done
       fi
     fi
@@ -443,7 +465,7 @@ ORDER BY last_check_timestamp, update_site_id;
     wait_for_enter
     return
   elif ((cli_status == 0 && can_track_progress)); then
-    echo "Обработано серверов: ${total_sites} из ${total_sites} | ${elapsed} сек."
+    echo "Обработано серверов: ${completed_sites} из ${total_sites} | ${elapsed} сек."
     echo
   elif ((cli_status == 0)); then
     echo "Проверка серверов завершена | ${elapsed} сек."

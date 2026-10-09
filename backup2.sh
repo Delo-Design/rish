@@ -2,6 +2,13 @@
 clear
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKUP_MENU_ARGS=("$@")
+BACKUP_MC_NAME=""
+BACKUP_MC_DIRECTORY=""
+if [[ "${1:-}" == "--mc" && "$#" -eq 3 ]]; then
+    BACKUP_MC_NAME="$2"
+    BACKUP_MC_DIRECTORY="$3"
+fi
 
 GREEN='\033[0;32m'
 LRED='\033[1;31m'
@@ -145,8 +152,60 @@ if [[ "$1" == "auto" ]] && [ -n "${2:-}" ]; then
 fi
 
 
-DATE_DIR=$(/bin/date '+%Y.%m.%d')
-DATE_TS=$(/bin/date '+%Y-%m-%d_%H-%M')
+selected_backup_record() {
+    local current_directory="${BACKUP_MC_DIRECTORY%/}"
+    local selected_user line row_user row_target row_type row_policy
+    local matched_record=""
+
+    [[ "$current_directory" =~ ^/var/www/([^/]+)/www$ ]] || return 1
+    selected_user="${BASH_REMATCH[1]}"
+    case "$BACKUP_MC_NAME" in
+        ""|.|..|*/*) return 1 ;;
+    esac
+    [[ -d "$current_directory/$BACKUP_MC_NAME" ]] || return 1
+    [[ -f "$backupall2" && -r "$backupall2" ]] || return 1
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        IFS=';' read -r row_user row_target _ <<< "$line"
+        [[ "$row_user" == "$selected_user" && "$row_target" == "$BACKUP_MC_NAME" ]] || continue
+        # Не выбираем произвольную запись при совпадении пользователя и имени.
+        [[ -z "$matched_record" ]] || return 1
+        matched_record="$line"
+    done < "$backupall2"
+    [[ -n "$matched_record" ]] || return 1
+
+    IFS=';' read -r _ _ row_type _ _ row_policy _ <<< "$matched_record"
+    case "$row_type" in
+        ""|site|folder|db) ;;
+        *) return 1 ;;
+    esac
+    backup_parse_archive_policy "$row_policy" || return 1
+    [[ "$BACKUP_ARCHIVE_MODE" != "disabled" ]] || return 1
+    printf '%s\n' "$matched_record"
+}
+
+backup_selected_object() (
+    local selected_record temp_list
+
+    if ! selected_record="$(selected_backup_record)"; then
+        echo -e "Архивация ${YELLOW}${BACKUP_MC_NAME}${WHITE} недоступна: проверьте каталог и запись в списке бэкапов."
+        return 1
+    fi
+    if ! temp_list="$(mktemp)"; then
+        echo "Не удалось подготовить список для одиночной архивации."
+        return 1
+    fi
+    trap 'rm -f -- "$temp_list"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if ! printf '%s\n' "$selected_record" > "$temp_list"; then
+        echo "Не удалось сохранить список для одиночной архивации."
+        return 1
+    fi
+
+    # Исходный список сохраняется; общий механизм получает ровно одну запись.
+    backupall selected "$temp_list"
+)
 
 add_cron_backup_objects() {
     local list_file="$1"
@@ -224,18 +283,65 @@ add_cron_backup_objects() {
     echo -e "Новые объекты CRON: подключение ${GREEN}${rclone_remote}${WHITE}, ${YELLOW}без шифрования${WHITE}."
 }
 
-backupall() {
+# Подоболочка закрывает дескриптор блокировки при выходе, включая ранний return.
+backupall() (
     local overall_status=0
+    local backup_scope="${1:-all}"
+    local backup_list_file="${2:-$backupall2}"
+    local backup_lock_file="/run/lock/rish-backup.lock"
+    local backup_lock_fd backup_lock_status=0 backup_lock_umask
+    local DATE_DIR DATE_TS
     local archive_base age_suffix completion_part completion_prefix completion_remote_path backup_dir
     local USER TARGET TYPE DB REMOTE ARCHIVE_FLAG EXCLUDE_LIST
     local ARCHIVE_NAME dir key OLD_DIR date_year date_month date_rest date_month_index remote_dirs_output
     local remote_files_output remote_file remote_date remote_list_error failed_removals_text first_remove_error
     local retention_file retention_object retention_group retained_dates
-    local BACKUP_REMOVE_ERROR cron_error
+    local BACKUP_REMOVE_ERROR cron_error cron_status
     local current_year current_month current_month_index oldest_month_index
     local keep_last_count keep_monthly_count retention_limit=10000 failed_count failed_limit failed_more
     local -a EXCLUDE_OPTS EXCLUDE_DIRS REMOTE_DIRS DATE_DIRS FAILED_REMOVALS
     local -A KEEP_DIRS MONTHLY_MONTHS DATE_DIR_HAS_FILES RETENTION_GROUPS GROUP_DATES FAILED_BACKUP_USERS
+
+    if ! command -v flock >/dev/null 2>&1; then
+        echo -e "Не удалось запустить архивацию: команда ${LRED}flock${WHITE} не найдена."
+        return 1
+    fi
+    if [[ -L "$backup_lock_file" || ( -e "$backup_lock_file" && ! -f "$backup_lock_file" ) ]]; then
+        echo -e "Небезопасный файл блокировки: ${LRED}${backup_lock_file}${WHITE}."
+        return 1
+    fi
+
+    # Файл не удаляем: все запуски должны блокировать один и тот же inode.
+    backup_lock_umask="$(umask)"
+    umask 077
+    if ! exec {backup_lock_fd}>> "$backup_lock_file"; then
+        umask "$backup_lock_umask"
+        echo -e "Не удалось открыть файл блокировки: ${LRED}${backup_lock_file}${WHITE}."
+        return 1
+    fi
+    umask "$backup_lock_umask"
+
+    flock -n -E 75 "$backup_lock_fd" || backup_lock_status=$?
+    if [[ "$backup_lock_status" -eq 75 ]]; then
+        echo -e "Архивация уже ${YELLOW}выполняется${WHITE}. Повторите позже."
+        if command -v logger >/dev/null 2>&1; then
+            logger -t rish-backup -- "Архивация пропущена: другой процесс уже выполняет резервное копирование."
+        fi
+        return 75
+    fi
+    if [[ "$backup_lock_status" -ne 0 ]]; then
+        echo -e "Не удалось установить блокировку: ${LRED}${backup_lock_file}${WHITE}."
+        return 1
+    fi
+
+    # Время относится к запуску архивации, а не к моменту открытия меню.
+    if ! DATE_TS="$(/bin/date '+%Y-%m-%d_%H-%M')" ||
+       [[ ! "$DATE_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}$ ]]; then
+        echo "Не удалось определить дату и время для имени архива."
+        return 1
+    fi
+    DATE_DIR="${DATE_TS%%_*}"
+    DATE_DIR="${DATE_DIR//-/.}"
 
     if [[ -z "${DIR_BACKUP:-}" ]] || ! backup_dir="$(realpath -m -- "$DIR_BACKUP")" || [[ "$backup_dir" == "/" ]]; then
         echo -e "Небезопасное значение ${LRED}DIR_BACKUP${WHITE}: временная папка не задана или указывает на корневой каталог."
@@ -444,7 +550,8 @@ backupall() {
 
     create_cron_parts() (
         local output_prefix="$1"
-        local cron_dir cron_state cron_message cron_status
+        local cron_file="crontab_${USER}.txt"
+        local cron_dir cron_message cron_status
 
         # Открытый crontab не должен попасть в общий каталог загрузки rclone.
         umask 077
@@ -457,32 +564,29 @@ backupall() {
         trap 'exit 130' INT
         trap 'exit 143' TERM
 
-        if LC_ALL=C crontab -l -u "$USER" > "$cron_dir/crontab.txt" 2> "$cron_dir/error"; then
-            cron_state="present"
+        # Код 2 означает штатный пропуск отсутствующего или пустого crontab.
+        if LC_ALL=C crontab -l -u "$USER" > "$cron_dir/$cron_file" 2> "$cron_dir/error"; then
+            [[ -s "$cron_dir/$cron_file" ]] || return 2
         else
             cron_status=$?
             cron_message="$(cat "$cron_dir/error")"
-            if [[ "$cron_status" -eq 1 && "$cron_message" == "no crontab for ${USER}" && ! -s "$cron_dir/crontab.txt" ]]; then
-                cron_state="absent"
+            if [[ "$cron_status" -eq 1 && "$cron_message" == "no crontab for ${USER}" && ! -s "$cron_dir/$cron_file" ]]; then
+                return 2
             else
                 printf 'не удалось прочитать crontab: %s\n' "$(backup_cleanup_error_summary "$cron_message")"
                 return 1
             fi
         fi
-        if ! printf 'user=%s\nstate=%s\n' "$USER" "$cron_state" > "$cron_dir/crontab.state"; then
-            echo "не удалось сохранить состояние crontab"
-            return 1
-        fi
 
         if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
-            if ! tar -czf - -C "$cron_dir" crontab.txt crontab.state \
+            if ! tar -czf - -C "$cron_dir" "$cron_file" \
                 | age "${BACKUP_AGE_ARGS[@]}" \
                 | split -b "$splitarchive" --numeric-suffixes - "$output_prefix"; then
                 echo "не удалось создать зашифрованный архив crontab"
                 return 1
             fi
         else
-            if ! tar -czf - -C "$cron_dir" crontab.txt crontab.state \
+            if ! tar -czf - -C "$cron_dir" "$cron_file" \
                 | split -b "$splitarchive" --numeric-suffixes - "$output_prefix"; then
                 echo "не удалось создать архив crontab"
                 return 1
@@ -547,7 +651,7 @@ backupall() {
             if ! awk -F';' -v user="${USER//\\/\\\\}" -v target="${TARGET//\\/\\\\}" '
                 ($1 "") == (user "") && (($2 "") == (target "") || $3 == "cron") { count++ }
                 END { exit count != 1 }
-            ' < "$backupall2"; then
+            ' < "$backup_list_file"; then
                 backup_object_error "Архивация CRON ${USER} пропущена: повторный объект CRON или совпадение имени '${TARGET}' с другим объектом."
                 continue
             fi
@@ -556,7 +660,11 @@ backupall() {
             continue
         fi
 
-        ARCHIVE_NAME="${TARGET}_${DATE_TS}"
+        if [[ "$TYPE" == "cron" ]]; then
+            ARCHIVE_NAME="cron_${USER}_${DATE_TS}"
+        else
+            ARCHIVE_NAME="${TARGET}_${DATE_TS}"
+        fi
         EXCLUDE_OPTS=()
         if [ -n "$EXCLUDE_LIST" ]; then
             IFS=',' read -r -a EXCLUDE_DIRS <<< "$EXCLUDE_LIST"
@@ -598,7 +706,12 @@ backupall() {
         fi
 
         if [ "$TYPE" = "cron" ]; then
-            if ! cron_error="$(create_cron_parts "${archive_base}.tar.gz${age_suffix}-part-")"; then
+            cron_status=0
+            cron_error="$(create_cron_parts "${archive_base}.tar.gz${age_suffix}-part-")" || cron_status=$?
+            if ((cron_status == 2)); then
+                echo -e "Пропускаем CRON пользователя ${YELLOW}${USER}${WHITE}: crontab отсутствует или пуст."
+                continue
+            elif ((cron_status != 0)); then
                 cleanup_current_archive
                 backup_object_error "Архивация CRON ${USER} пропущена: ${cron_error}."
                 continue
@@ -667,7 +780,13 @@ backupall() {
             rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
             backup_object_error "Ошибка передачи архива ${TARGET} в подключение '${REMOTE}'. Временные файлы очищены."
         fi
-    done < "$backupall2"
+    done < "$backup_list_file"
+
+    # Каталоги с датами общие для разных объектов пользователя.
+    # Одиночный запуск не выполняет ротацию и очистку всего хранилища.
+    if [[ "$backup_scope" == "selected" ]]; then
+        return "$overall_status"
+    fi
 
     keep_last_count=""
     keep_monthly_count=""
@@ -832,7 +951,7 @@ backupall() {
     done
 
     return "$overall_status"
-}
+)
 
 createlist() {
 	echo
@@ -968,7 +1087,6 @@ updatelist() {
                 removed=$((removed + 1))
                 continue
             fi
-            # Отсутствующий или пустой crontab тоже имеет состояние для бэкапа.
             # Сохраняем собственные remote, archive и имя существующего объекта.
             printf '%s;%s;%s;%s;%s;%s;%s\n' "$USER" "$TARGET" "$TYPE" "$DB" "$REMOTE" "$ARCHIVE_FLAG" "$EXCLUDE_LIST" >> "$tmp_list"
             kept=$((kept + 1))
@@ -1128,7 +1246,7 @@ edit_backup_config() {
             return 1
         fi
 
-        exec /bin/bash "${SCRIPT_DIR}/backup2.sh"
+        exec /bin/bash "${SCRIPT_DIR}/backup2.sh" "${BACKUP_MENU_ARGS[@]}"
     done
 }
 
@@ -2916,6 +3034,7 @@ download_site_snapshot_archive() {
     local has_sql="${9:-0}"
     local tmp_dir target_dir archive_extension age_suffix archive_filename
     local download_filename download_sql_filename
+    local download_prefix="${user_name}_"
     local legacy_filename="" sql_filename="" assembled_archive="" assembled_sql=""
     local target_archive="" target_sql="" staged_archive="" staged_sql=""
     local archive_combined=0
@@ -2981,10 +3100,15 @@ download_site_snapshot_archive() {
         age_suffix=""
     fi
 
+    # Новое имя архива CRON уже содержит пользователя.
+    if [[ "$site_name" == "cron_${user_name}" ]]; then
+        download_prefix=""
+    fi
+
     tmp_dir="$(mktemp -d)" || return 1
     target_dir="$(pwd)"
     archive_filename="${site_name}_${ts_part}${archive_extension}${age_suffix}"
-    download_filename="${user_name}_${archive_filename}"
+    download_filename="${download_prefix}${archive_filename}"
     assembled_archive="${tmp_dir}/${archive_filename}"
 
     cursor_to "$status_row" 1
@@ -3044,7 +3168,7 @@ download_site_snapshot_archive() {
     fi
 
     # Имя на хранилище сохраняется; локальные копии разных пользователей различаются.
-    download_filename="${user_name}_${archive_filename}"
+    download_filename="${download_prefix}${archive_filename}"
     target_archive="${target_dir}/${download_filename}"
     if [[ -d "$target_archive" ]]; then
         echo -e "Путь назначения ${LRED}${target_archive}${WHITE} занят каталогом."
@@ -3371,6 +3495,10 @@ do
         menu_items+=("Создать файл-список всех архивируемых объектов")
         menu_actions+=("create_list")
     else
+        if selected_backup_record >/dev/null; then
+            menu_items+=("Архивация ${BACKUP_MC_NAME}")
+            menu_actions+=("backup_selected")
+        fi
         if [ "$local_remote_ready" -eq 1 ]; then
             menu_items+=("Архивация всех сайтов сервера" "Скачать копию из бекапа на сервер")
             menu_actions+=("backup_all" "restore")
@@ -3400,6 +3528,7 @@ do
         break
     fi
     case "${menu_actions[$choice]}" in
+        backup_selected) backup_selected_object ;;
         backup_all) backupall ;;
         restore) restore_backup_menu ;;
         crypto) backup_crypto_management_menu ;;

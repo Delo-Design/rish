@@ -79,7 +79,7 @@ z  Статистика сайтов сервера
     CheckIP
 
 b  Бэкaпы (peзepвноe кoпиpoвaниe)
-    bash /root/rish/backup2.sh
+    bash /root/rish/backup2.sh --mc %f %d
 
 c  Клонирование сайта
   bash /root/rish/scripts/clonesite.sh
