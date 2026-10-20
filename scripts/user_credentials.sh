@@ -2,6 +2,10 @@
 
 RISH_CREDENTIALS_DIR="${RISH_HOME:-/root/rish}/credentials"
 RISH_CREDENTIALS_MIGRATION_ERROR=""
+RISH_MARIADB_PASSWORD_TEMP_FILE=""
+RISH_MARIADB_PASSWORD_ORIGINAL_HASH=""
+RISH_MARIADB_PASSWORD_TEMP_HASH=""
+RISH_MARIADB_PASSWORD_USER=""
 
 rish_credentials_file() {
   local user="$1"
@@ -106,6 +110,180 @@ validate_user_credentials() {
   [[ "$sftp_login" == "$user" && -n "$sftp_password" ]] || return 1
   [[ "$mariadb_login" == "$user" && -n "$mariadb_password" ]] || return 1
   [[ -n "$site_login" && -n "$site_password" ]]
+}
+
+rish_mariadb_credentials_shape_is_valid() {
+  local file="$1"
+  local user="$2"
+
+  awk -v user="$user" '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      section = trim(section)
+      if (section == "MariaDB") {
+        sections++
+      }
+      next
+    }
+
+    section == "MariaDB" && index($0, "=") > 0 {
+      key = trim(substr($0, 1, index($0, "=") - 1))
+      if (key == "Login") {
+        logins++
+        login = trim(substr($0, index($0, "=") + 1))
+      } else if (key == "Password") {
+        passwords++
+      }
+    }
+
+    END {
+      if (sections != 1 || logins != 1 || passwords != 1 || login != user) {
+        exit 1
+      }
+    }
+  ' "$file"
+}
+
+rish_mariadb_credentials_snapshot() {
+  local file="$1"
+  local directory_before
+  local directory_after
+  local before
+  local after
+  local hash
+
+  rish_credentials_file_is_secure "$file" || return 1
+  [[ "$(stat -c '%h' "$file" 2>/dev/null)" == "1" ]] || return 1
+  directory_before="$(stat -c '%d:%i:%u:%g:%a' "$RISH_CREDENTIALS_DIR" 2>/dev/null)" || return 1
+  before="$(stat -c '%d:%i:%h:%u:%g:%a:%s:%Y:%Z' "$file" 2>/dev/null)" || return 1
+  hash="$(sha256sum -- "$file" 2>/dev/null)" || return 1
+  hash="${hash%% *}"
+  [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || return 1
+  after="$(stat -c '%d:%i:%h:%u:%g:%a:%s:%Y:%Z' "$file" 2>/dev/null)" || return 1
+  directory_after="$(stat -c '%d:%i:%u:%g:%a' "$RISH_CREDENTIALS_DIR" 2>/dev/null)" || return 1
+  rish_credentials_file_is_secure "$file" || return 1
+  [[ "$(stat -c '%h' "$file" 2>/dev/null)" == "1" ]] || return 1
+  [[ "$before" == "$after" && "$directory_before" == "$directory_after" ]] || return 1
+  printf '%s:%s:%s\n' "$directory_before" "$before" "$hash"
+}
+
+discard_user_mariadb_password() {
+  local temp_file="$RISH_MARIADB_PASSWORD_TEMP_FILE"
+  local user="$RISH_MARIADB_PASSWORD_USER"
+
+  RISH_MARIADB_PASSWORD_TEMP_FILE=""
+  RISH_MARIADB_PASSWORD_ORIGINAL_HASH=""
+  RISH_MARIADB_PASSWORD_TEMP_HASH=""
+  RISH_MARIADB_PASSWORD_USER=""
+
+  [[ -n "$temp_file" ]] || return 0
+  [[ "$user" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || return 1
+  [[ "$temp_file" == "$RISH_CREDENTIALS_DIR/.${user}.mariadb-password."* && "${temp_file%/*}" == "$RISH_CREDENTIALS_DIR" ]] || return 1
+  rm -f -- "$temp_file"
+}
+
+prepare_user_mariadb_password() {
+  local user="$1"
+  local password="$2"
+  local credentials_file
+  local original_hash
+  local current_hash
+  local temp_file
+  local temp_hash
+  local last_byte
+
+  [[ -z "$RISH_MARIADB_PASSWORD_TEMP_FILE" ]] || return 1
+  [[ -n "$password" && ! "$password" =~ [[:cntrl:]] ]] || return 1
+  [[ ! "$password" =~ ^[[:space:]] && ! "$password" =~ [[:space:]]$ ]] || return 1
+  credentials_file="$(rish_credentials_file "$user")" || return 1
+  original_hash="$(rish_mariadb_credentials_snapshot "$credentials_file")" || return 1
+  validate_user_credentials "$user" || return 1
+  rish_mariadb_credentials_shape_is_valid "$credentials_file" "$user" || return 1
+
+  temp_file="$(mktemp "${RISH_CREDENTIALS_DIR}/.${user}.mariadb-password.XXXXXX")" || return 1
+  RISH_MARIADB_PASSWORD_TEMP_FILE="$temp_file"
+  RISH_MARIADB_PASSWORD_ORIGINAL_HASH="$original_hash"
+  RISH_MARIADB_PASSWORD_USER="$user"
+  if ! chown root:root "$temp_file" || ! chmod 600 "$temp_file"; then
+    discard_user_mariadb_password
+    return 1
+  fi
+
+  # Read the password through a descriptor: awk -v interprets backslash escapes.
+  if ! awk '
+    BEGIN {
+      if ((getline password < "/dev/fd/3") != 1) {
+        exit 1
+      }
+      close("/dev/fd/3")
+    }
+
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      sub(/^[[:space:]]+/, "", section)
+      sub(/[[:space:]]+$/, "", section)
+    }
+
+    section == "MariaDB" && /^[[:space:]]*Password[[:space:]]*=/ {
+      match($0, /^[[:space:]]*Password[[:space:]]*=[[:space:]]*/)
+      print substr($0, 1, RLENGTH) password
+      next
+    }
+
+    { print }
+  ' "$credentials_file" 3<<<"$password" >"$temp_file"; then
+    discard_user_mariadb_password
+    return 1
+  fi
+
+  # awk appends a newline, so preserve a source file without a final newline.
+  last_byte="$(tail -c 1 -- "$credentials_file")" || {
+    discard_user_mariadb_password
+    return 1
+  }
+  if [[ -n "$last_byte" ]] && ! truncate -s -1 -- "$temp_file"; then
+    discard_user_mariadb_password
+    return 1
+  fi
+  current_hash="$(rish_mariadb_credentials_snapshot "$credentials_file")" || current_hash=""
+  temp_hash="$(rish_mariadb_credentials_snapshot "$temp_file")" || temp_hash=""
+  if [[ "$current_hash" != "$original_hash" || -z "$temp_hash" ]] ||
+    ! rish_mariadb_credentials_shape_is_valid "$temp_file" "$user" ||
+    [[ "$(rish_ini_value "$temp_file" "MariaDB" "Password")" != "$password" ]]; then
+    discard_user_mariadb_password
+    return 1
+  fi
+  RISH_MARIADB_PASSWORD_TEMP_HASH="$temp_hash"
+}
+
+commit_user_mariadb_password() {
+  local user="$RISH_MARIADB_PASSWORD_USER"
+  local credentials_file
+  local original_hash
+  local temp_hash
+
+  [[ -n "$RISH_MARIADB_PASSWORD_TEMP_FILE" && -n "$RISH_MARIADB_PASSWORD_ORIGINAL_HASH" && -n "$RISH_MARIADB_PASSWORD_TEMP_HASH" ]] || return 1
+  credentials_file="$(rish_credentials_file "$user")" || return 1
+  [[ "$RISH_MARIADB_PASSWORD_TEMP_FILE" == "$RISH_CREDENTIALS_DIR/.${user}.mariadb-password."* && "${RISH_MARIADB_PASSWORD_TEMP_FILE%/*}" == "$RISH_CREDENTIALS_DIR" ]] || return 1
+  temp_hash="$(rish_mariadb_credentials_snapshot "$RISH_MARIADB_PASSWORD_TEMP_FILE")" || return 1
+  [[ "$temp_hash" == "$RISH_MARIADB_PASSWORD_TEMP_HASH" ]] || return 1
+  original_hash="$(rish_mariadb_credentials_snapshot "$credentials_file")" || return 1
+  [[ "$original_hash" == "$RISH_MARIADB_PASSWORD_ORIGINAL_HASH" ]] || return 1
+  mv -T -- "$RISH_MARIADB_PASSWORD_TEMP_FILE" "$credentials_file" || return 1
+  RISH_MARIADB_PASSWORD_TEMP_FILE=""
+  RISH_MARIADB_PASSWORD_ORIGINAL_HASH=""
+  RISH_MARIADB_PASSWORD_TEMP_HASH=""
+  RISH_MARIADB_PASSWORD_USER=""
 }
 
 user_credentials_match() {

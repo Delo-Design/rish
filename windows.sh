@@ -72,7 +72,8 @@ vertical_menu_handle_signal() {
   local signal="$1"
   vertical_menu_cleanup
   vertical_menu_restore_traps
-  kill -s "$signal" "$$"
+  # $$ still refers to the parent shell inside a subshell.
+  kill -s "$signal" "${BASHPID:-$$}"
 
   # If the previous handler returned or ignored the signal, resume the menu.
   vertical_menu_install_traps

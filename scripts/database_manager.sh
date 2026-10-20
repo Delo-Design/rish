@@ -6,9 +6,12 @@ YELLOW='\033[0;33m'
 LRED='\033[1;31m'
 WHITE='\033[0m'
 
-source /root/rish/windows.sh
+RISH_HOME="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || exit 1
+source "${RISH_HOME}/windows.sh"
+source "${RISH_HOME}/scripts/user_credentials.sh"
+source "${RISH_HOME}/scripts/cms_database.sh"
 
-SITE_DATABASES_FILE="/root/rish/site_databases"
+SITE_DATABASES_FILE="${RISH_HOME}/site_databases"
 CALL_DIRECTORY="${1:-}"
 CALL_NAME="${2:-}"
 DEFAULT_SITE_PATH=""
@@ -26,6 +29,7 @@ DATABASE_CACHE_NAMES=()
 DATABASE_CACHE_GRANTEES=()
 DATABASE_CACHE_LABELS=()
 DATABASE_MENU_DEFAULT_INDEX=0
+DATABASE_PASSWORD_CHARACTERS='A-Za-z0-9!@%_+=:,./?~-'
 
 wait_for_enter() {
   vertical_menu "current" 2 0 5 "Нажмите Enter"
@@ -512,6 +516,212 @@ draw_database_action_connector() {
   repl "─" "$((length - 1))"
 }
 
+database_password_is_valid() {
+  local password="$1"
+  local LC_ALL=C
+
+  [[ -n "$password" && "$password" != *[!$DATABASE_PASSWORD_CHARACTERS]* ]]
+}
+
+generate_database_password() {
+  local password attempt
+
+  for ((attempt = 0; attempt < 32; attempt++)); do
+    password="$(LC_ALL=C tr -dc "$DATABASE_PASSWORD_CHARACTERS" < /dev/urandom | head -c 24)"
+    if ((${#password} == 24)) && database_password_is_valid "$password" && [[ "$password" == *[a-z]* && "$password" == *[A-Z]* &&
+      "$password" == *[0-9]* && "$password" == *[![:alnum:]]* ]]; then
+      printf '%s' "$password"
+      return 0
+    fi
+  done
+  return 1
+}
+
+read_database_password() {
+  local choice password
+
+  NEW_DATABASE_PASSWORD=""
+  DATABASE_PASSWORD_INPUT_ACTIVE=0
+  vertical_menu "current" 2 0 5 "Сгенерировать сложный пароль" "Ввести пароль самостоятельно" "Отмена"
+  choice=$?
+  case "$choice" in
+    0)
+      NEW_DATABASE_PASSWORD="$(generate_database_password)" || {
+        printf '%bНе удалось%b сгенерировать пароль.\n' "$RED" "$WHITE" >&2
+        return 1
+      }
+      printf 'Сгенерирован сложный пароль из %b%s%b символов.\n' "$GREEN" '24' "$WHITE"
+      ;;
+    1)
+      # A separate input screen allows removing wrapped input and scrollback, too.
+      clear
+      while true; do
+        printf 'Введите пароль открытым текстом. После %bEnter%b экран ввода будет очищен.\n' "$GREEN" "$WHITE"
+        printf 'Разрешены %b%s%b\n' "$GREEN" 'A-Z, a-z, 0-9 и символы !@%_+=:,./?~-' "$WHITE"
+        echo "Пустая строка — отмена."
+        echo
+        printf 'Пароль: '
+        DATABASE_PASSWORD_INPUT_ACTIVE=1
+        IFS= read -r -e password
+        choice=$?
+        printf '\033[H\033[2J\033[3J'
+        DATABASE_PASSWORD_INPUT_ACTIVE=0
+        ((choice == 0)) && [[ -n "$password" ]] || return 1
+        if database_password_is_valid "$password"; then
+          NEW_DATABASE_PASSWORD="$password"
+          break
+        fi
+        printf 'Пароль содержит %bнедопустимые символы%b. Повторите ввод.\n\n' "$RED" "$WHITE"
+      done
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+select_database_password_user() {
+  local db_name="$1" db_name_sql result user choice
+  local default_index=0
+  local -a users=()
+
+  db_name_sql="${db_name//\'/\'\'}"
+  if ! result="$(mariadb -N -B -e "
+    SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES';
+    SELECT DISTINCT u.User FROM mysql.user AS u
+    JOIN INFORMATION_SCHEMA.SCHEMA_PRIVILEGES AS p
+      ON p.GRANTEE = CONCAT(CHAR(39), u.User, CHAR(39), '@', CHAR(39), u.Host, CHAR(39))
+    WHERE p.TABLE_SCHEMA = '${db_name_sql}' AND u.Host = 'localhost'
+      AND u.plugin = 'mysql_native_password' AND u.User <> 'root'
+    ORDER BY u.User;" 2>/dev/null)"; then
+    printf '%bНе удалось%b получить учётные записи MariaDB.\n' "$RED" "$WHITE" >&2
+    return 1
+  fi
+  while IFS= read -r user; do
+    [[ -n "$user" ]] || continue
+    if validate_user_credentials "$user"; then
+      [[ "$user" == "$DEFAULT_USER" ]] && default_index="${#users[@]}"
+      users+=("$user")
+    fi
+  done <<< "$result"
+  if ((${#users[@]} == 0)); then
+    printf 'У базы %bнет подходящих пользователей%b RISH с %b%s%b и корректным файлом %bcredentials%b.\n' \
+      "$YELLOW" "$WHITE" "$GREEN" 'mysql_native_password' "$WHITE" "$GREEN" "$WHITE"
+    return 1
+  fi
+
+  printf 'Выберите пользователя MariaDB для смены пароля (%blocalhost%b):\n' "$GREEN" "$WHITE"
+  vertical_menu "current" 2 0 30 "default=${default_index}" "${users[@]}" "Отмена"
+  choice=$?
+  ((choice >= 0 && choice < ${#users[@]})) || return 1
+  SELECTED_DATABASE_PASSWORD_USER="${users[$choice]}"
+}
+
+set_database_user_password() {
+  local user="$1" password="$2" password_sql
+
+  [[ "$user" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ && "$user" != "root" ]] || return 1
+  database_password_is_valid "$password" || return 1
+  password_sql="${password//\'/\'\'}"
+  # SQL containing the password goes through stdin, never process arguments/history.
+  printf "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES';\nSET SESSION old_passwords = 0;\nSET PASSWORD FOR '%s'@'localhost' = PASSWORD('%s');\n" \
+    "$user" "$password_sql" | mariadb --batch --binary-mode --skip-reconnect \
+      --default-character-set=utf8mb4 --skip-column-names >/dev/null 2>&1
+}
+
+change_database_password() (
+  local db_name="$1" user databases password credential_file affected_db
+  local choice credentials_saved=1 preserve_password_temp=0 password_recovery_reported=0
+
+  # Invoked by the EXIT trap in this subshell.
+  # shellcheck disable=SC2329
+  cleanup_database_password() {
+    if [[ "${DATABASE_PASSWORD_INPUT_ACTIVE:-0}" == 1 ]]; then
+      printf '\033[H\033[2J\033[3J'
+    fi
+    if ((preserve_password_temp == 0)); then
+      discard_user_mariadb_password
+    elif [[ -n "$RISH_MARIADB_PASSWORD_TEMP_FILE" ]] && ((password_recovery_reported == 0)); then
+      printf '\nОперация %bпрервана%b. Проверьте пароль MariaDB и конфигурации сайтов.\n' "$YELLOW" "$WHITE" >&2
+      printf 'Подготовленный файл с новым паролем сохранён: %b%s%b\n' "$GREEN" "$RISH_MARIADB_PASSWORD_TEMP_FILE" "$WHITE" >&2
+    fi
+  }
+  trap cleanup_database_password EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  clear
+  printf 'База данных: %b%s%b\n\n' "$GREEN" "$db_name" "$WHITE"
+  select_database_password_user "$db_name" || return 1
+  user="$SELECTED_DATABASE_PASSWORD_USER"
+  credential_file="$(rish_credentials_file "$user")" || return 1
+  echo
+  echo "Способ задания пароля:"
+  read_database_password || return 1
+  password="$NEW_DATABASE_PASSWORD"
+  unset NEW_DATABASE_PASSWORD
+  if ! databases="$(mariadb -N -B -e "
+    SELECT DISTINCT p.TABLE_SCHEMA
+    FROM INFORMATION_SCHEMA.SCHEMA_PRIVILEGES AS p
+    INNER JOIN INFORMATION_SCHEMA.SCHEMATA AS s ON s.SCHEMA_NAME = p.TABLE_SCHEMA
+    WHERE p.GRANTEE = CONCAT(CHAR(39), '${user}', CHAR(39), '@', CHAR(39), 'localhost', CHAR(39))
+    ORDER BY p.TABLE_SCHEMA;" 2>/dev/null)"; then
+    printf '\n%bНе удалось%b определить базы пользователя. Смена пароля %bотменена%b.\n' "$RED" "$WHITE" "$YELLOW" "$WHITE" >&2
+    return 1
+  fi
+  printf '\nПользователь MariaDB: %b%s@localhost%b\n' "$GREEN" "$user" "$WHITE"
+  echo "Пароль общий для всех баз этой учётной записи."
+  echo
+  echo "Затрагиваемые базы:"
+  while IFS= read -r affected_db; do
+    [[ -n "$affected_db" ]] || continue
+    printf '  %b%s%b\n' "$GREEN" "$affected_db" "$WHITE"
+  done <<< "$databases"
+  cms_database_find_sites "$user" "$databases"
+  cms_database_show_sites
+  echo
+  echo "После смены пароля будет предложено обновить найденные конфигурации сайтов."
+  printf 'До обновления конфигураций сайты могут %bпотерять доступ к базе%b.\n' "$YELLOW" "$WHITE"
+  if ! prepare_user_mariadb_password "$user" "$password"; then
+    printf '\n%bНе удалось%b подготовить файл %bcredentials%b. Пароль MariaDB %bне изменён%b.\n' \
+      "$RED" "$WHITE" "$GREEN" "$WHITE" "$YELLOW" "$WHITE" >&2
+    return 1
+  fi
+
+  printf '\nСменить пароль %b%s@localhost%b?\n' "$GREEN" "$user" "$WHITE"
+  vertical_menu "current" 2 0 5 "default=1" "Сменить пароль" "Отмена"
+  choice=$?
+  if ((choice != 0)); then
+    printf '\nСмена пароля %bотменена%b.\n' "$YELLOW" "$WHITE"
+    return 1
+  fi
+  echo
+  echo "Результат смены пароля:"
+  # The server may have applied SET PASSWORD even if the client is interrupted.
+  preserve_password_temp=1
+  if ! set_database_user_password "$user" "$password"; then
+    password_recovery_reported=1
+    printf 'MariaDB %bне подтвердила смену пароля%b. При обрыве соединения результат может быть неизвестен.\n' "$RED" "$WHITE" >&2
+    echo "Файлы credentials и сайтов не изменены. Проверьте состояние учётной записи." >&2
+    printf 'Подготовленный файл с новым паролем сохранён: %b%s%b\n' "$GREEN" "$RISH_MARIADB_PASSWORD_TEMP_FILE" "$WHITE" >&2
+    return 1
+  fi
+  printf 'Пароль MariaDB для %b%s@localhost%b %bизменён%b.\n' "$GREEN" "$user" "$WHITE" "$GREEN" "$WHITE"
+  if commit_user_mariadb_password; then
+    preserve_password_temp=0
+    printf 'Новый пароль сохранён: %b%s%b\n' "$GREEN" "$credential_file" "$WHITE"
+  else
+    credentials_saved=0
+    password_recovery_reported=1
+    printf 'Пароль MariaDB изменён, но сохранить %bcredentials%b %bне удалось%b.\n' "$GREEN" "$WHITE" "$RED" "$WHITE" >&2
+    printf 'Подготовленный файл с новым паролем: %b%s%b\n' "$GREEN" "$RISH_MARIADB_PASSWORD_TEMP_FILE" "$WHITE" >&2
+    echo >&2
+    echo "Восстановите credentials из этого файла; старый пароль уже недействителен." >&2
+  fi
+  cms_database_offer_updates "$password" || return 1
+  ((credentials_saved == 1))
+)
+
 database_actions_menu() {
   local db_name="$1"
   local size_label
@@ -522,7 +732,7 @@ database_actions_menu() {
   while true; do
     action_menu_y=$((LAST_DATABASE_SELECTED_ROW - 1))
     draw_database_action_connector
-    vertical_menu "$action_menu_y" "$LAST_DATABASE_MENU_ACTION_X" 0 5 "Инфо о базе: ${size_label}" "Удалить базу данных" "Назад"
+    vertical_menu "$action_menu_y" "$LAST_DATABASE_MENU_ACTION_X" 0 5 "Инфо о базе: ${size_label}" "Сменить пароль пользователя MariaDB" "Удалить базу данных" "Назад"
     choice=$?
 
     case "$choice" in
@@ -531,6 +741,11 @@ database_actions_menu() {
         return
         ;;
       1)
+        change_database_password "$db_name"
+        wait_for_enter
+        return
+        ;;
+      2)
         clear
         echo
         echo -e "База данных: ${GREEN}${db_name}${WHITE}"
@@ -539,7 +754,7 @@ database_actions_menu() {
         wait_for_enter
         return
         ;;
-      2 | 255)
+      3 | 255)
         return
         ;;
     esac
