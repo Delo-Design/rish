@@ -3736,6 +3736,28 @@ PY
   done <<<"$result"
 }
 
+rish_fw_access_prefix() {
+  python3 - "$1" "$2" <<'PY'
+import ipaddress, json, sys
+try:
+    with open(sys.argv[1], encoding='utf-8') as handle:
+        owners = json.load(handle)
+    address = ipaddress.ip_address(sys.argv[2])
+    prefix = owners.get(str(address), {}).get('prefix', '')
+    if not isinstance(prefix, str) or '%' in prefix:
+        sys.exit(1)
+    network = ipaddress.ip_network(prefix, strict=False)
+    loopback = ipaddress.ip_network('127.0.0.0/8' if network.version == 4 else '::1/128')
+    if (network.version != address.version or address not in network or
+            not 0 < network.prefixlen < address.max_prefixlen or
+            network.network_address.is_unspecified or network.overlaps(loopback)):
+        sys.exit(1)
+    print(network)
+except (OSError, ValueError, TypeError, AttributeError):
+    sys.exit(1)
+PY
+}
+
 rish_fw_access_details() {
   python3 - "$1" "$2" "$3" "$RISH_FW_GREEN" "$RISH_FW_YELLOW" "$RISH_FW_RESET" <<'PY'
 import json, sys
@@ -3773,7 +3795,8 @@ PY
 
 rish_fw_access_menu() (
   local work lines=20000 top=20 refresh=1 columns height choice count new_lines new_top exported export_dir=/root
-  local address detail_choice result
+  local address prefix detail_choice result
+  local -a detail_labels=() detail_targets=()
   [[ -n "$RISH_FW_SITE_NAME" && -n "$RISH_FW_SITE_LOG" ]] || return 1
   work=$(mktemp -d) || return 1
   trap 'rm -rf -- "$work"' EXIT
@@ -3807,11 +3830,17 @@ rish_fw_access_menu() (
       address="${RISH_FW_ACCESS_IPS[$choice]}"
       clear
       rish_fw_access_details "${work}/stats.json" "${work}/owners.json" "$address"
+      detail_labels=("Назад" "Заблокировать $address")
+      detail_targets=("" "$address")
+      prefix=$(rish_fw_access_prefix "${work}/owners.json" "$address") || prefix=""
+      if [[ -n "$prefix" ]]; then
+        detail_labels+=("Заблокировать подсеть $prefix"); detail_targets+=("$prefix")
+      fi
       detail_choice=0
-      vertical_menu current 2 0 25 nomouse default=0 "Назад" "Заблокировать $address" || detail_choice=$?
-      if [[ "$detail_choice" == 1 ]]; then
+      vertical_menu current 2 0 25 nomouse default=0 "${detail_labels[@]}" || detail_choice=$?
+      if ((detail_choice > 0 && detail_choice < ${#detail_targets[@]})); then
         result=0
-        rish_fw_block_menu "$address" || result=$?
+        rish_fw_block_menu "${detail_targets[$detail_choice]}" || result=$?
         if [[ "$result" != 2 ]]; then vertical_menu current 2 0 25 nomouse "Нажмите Enter"; fi
       fi
     else
