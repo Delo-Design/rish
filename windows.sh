@@ -268,7 +268,7 @@ print_vertical_menu_selected_row() {
   cursor_to $(($top_y + $selected + 1)) $(($left_x))
   printf "│ "
   print_selected_on
-  printf " ${menu_item}"
+  printf ' %s' "$menu_item"
   repl " " $(($MaxWindowWidth - ${#menu_item}))
   print_selected_off
   print_vertical_menu_right_border "$selected" "$height" "$shift_y" "$item_count"

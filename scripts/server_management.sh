@@ -98,7 +98,11 @@ ServerManagementMenu() {
       Up
       echo -e "Идет получение списка доступных версий ${GREEN}PHP${WHITE}. Ждите."
       Down
-      php_multi_install
+      if ! php_multi_install; then
+        Down
+        echo -e "Выбор или установка ${RED}PHP${WHITE} прерваны. Проверьте сообщения выше."
+        vertical_menu "current" 2 0 5 "Нажмите Enter"
+      fi
       clear
       # Рисуем разделительную линию
       cursor_to $((${rim} + 1)) 1

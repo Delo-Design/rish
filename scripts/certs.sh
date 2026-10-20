@@ -302,17 +302,24 @@ function revoke_certbot_certificate_for_site() {
   local fullchain_file
   local private_key_file
   local lineage_dir
+  local lineage_name
   local certificate_file
+  local certificate_end_date
+  local certificate_end_timestamp
+  local current_timestamp
+  local certificate_expired=0
+  local confirmation_label="Отозвать и удалить"
   local other_vhost=""
   local temp_dir
   local choice
   local required_command
+  local -a certbot_args=()
 
   if ! certbot_certificate_is_configured_for_site "$site_name"; then
     echo "Для этого сайта не найдена SSL-конфигурация Let’s Encrypt." >&2
     return 1
   fi
-  for required_command in certbot apachectl systemctl; do
+  for required_command in certbot apachectl systemctl openssl date; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
       echo -e "Не найдена необходимая команда ${YELLOW}${required_command}${WHITE}." >&2
       return 1
@@ -322,21 +329,38 @@ function revoke_certbot_certificate_for_site() {
   fullchain_file="$(apache_vhost_directive_value "$vhost_file" SSLCertificateFile)"
   private_key_file="$(apache_vhost_directive_value "$vhost_file" SSLCertificateKeyFile)"
   lineage_dir="${fullchain_file%/fullchain.pem}"
+  lineage_name="${lineage_dir##*/}"
   certificate_file="${lineage_dir}/cert.pem"
   if [[ ! -f "$certificate_file" ]]; then
     echo -e "Не найден сертификат Certbot: ${YELLOW}${certificate_file}${WHITE}." >&2
     return 1
   fi
+  if ! certificate_end_date="$(openssl x509 -in "$certificate_file" -noout -enddate 2>/dev/null)" ||
+    [[ "$certificate_end_date" != notAfter=* ]] ||
+    ! certificate_end_timestamp="$(date -d "${certificate_end_date#notAfter=}" +%s 2>/dev/null)" ||
+    ! current_timestamp="$(date +%s)"; then
+    echo -e "Не удалось определить срок действия сертификата Certbot: ${YELLOW}${certificate_file}${WHITE}." >&2
+    return 1
+  fi
+  if ((certificate_end_timestamp <= current_timestamp)); then
+    certificate_expired=1
+  fi
   if other_vhost="$(find_other_vhost_certificate_reference \
     "$fullchain_file" "$private_key_file" "$vhost_file")"; then
     echo -e "Сертификат Certbot также использует ${YELLOW}${other_vhost}${WHITE}." >&2
-    echo "Автоматический отзыв остановлен, чтобы не нарушить работу другого vhost." >&2
+    echo "Операция остановлена, чтобы не нарушить работу другого vhost." >&2
     return 1
   fi
 
-  echo -e "Отозвать и удалить сертификат Let’s Encrypt для сайта ${YELLOW}${site_name}${WHITE}?"
+  if ((certificate_expired)); then
+    echo -e "Удалить истёкший сертификат Let’s Encrypt для сайта ${YELLOW}${site_name}${WHITE}?"
+    echo "Срок действия сертификата истёк; отзыв не требуется."
+    confirmation_label="Удалить истёкший"
+  else
+    echo -e "Отозвать и удалить сертификат Let’s Encrypt для сайта ${YELLOW}${site_name}${WHITE}?"
+  fi
   echo "Сайт останется доступен по HTTP."
-  vertical_menu "current" 2 0 42 "Отозвать и удалить" "Отмена"
+  vertical_menu "current" 2 0 42 "$confirmation_label" "Отмена"
   choice=$?
   [[ "$choice" == "0" ]] || return 0
 
@@ -364,23 +388,46 @@ function revoke_certbot_certificate_for_site() {
     return 1
   fi
 
-  if ! certbot revoke \
-    --cert-path "$certificate_file" \
-    --delete-after-revoke \
-    --non-interactive; then
-    echo "Не удалось полностью отозвать и удалить сертификат Certbot." >&2
-    echo "SSL-конфигурация сайта удалена; сайт оставлен на HTTP, поскольку состояние отзыва неизвестно." >&2
+  if ! certificate_end_date="$(openssl x509 -in "$certificate_file" -noout -enddate 2>/dev/null)" ||
+    [[ "$certificate_end_date" != notAfter=* ]] ||
+    ! certificate_end_timestamp="$(date -d "${certificate_end_date#notAfter=}" +%s 2>/dev/null)" ||
+    ! current_timestamp="$(date +%s)"; then
+    echo -e "Не удалось повторно определить срок действия сертификата Certbot: ${YELLOW}${certificate_file}${WHITE}." >&2
+    echo "SSL-конфигурация сайта удалена; сайт оставлен на HTTP." >&2
+    rm -rf -- "$temp_dir"
+    return 1
+  fi
+  certificate_expired=0
+  if ((certificate_end_timestamp <= current_timestamp)); then
+    certificate_expired=1
+    certbot_args=(delete --cert-name "$lineage_name" --non-interactive)
+  else
+    certbot_args=(revoke --cert-path "$certificate_file" --delete-after-revoke --non-interactive)
+  fi
+
+  if ! certbot "${certbot_args[@]}"; then
+    if ((certificate_expired)); then
+      echo "Не удалось полностью удалить истёкший сертификат Certbot." >&2
+      echo "SSL-конфигурация сайта удалена; сайт оставлен на HTTP." >&2
+    else
+      echo "Не удалось полностью отозвать и удалить сертификат Certbot." >&2
+      echo "SSL-конфигурация сайта удалена; сайт оставлен на HTTP, поскольку состояние отзыва неизвестно." >&2
+    fi
     if [[ -f "$certificate_file" ]]; then
       echo -e "Lineage Certbot сохранен в ${YELLOW}${lineage_dir}${WHITE} для повторной попытки." >&2
     else
-      echo "Файлы lineage уже удалены. Проверьте журнал Certbot, чтобы уточнить результат отзыва." >&2
+      echo "Файлы lineage уже удалены. Проверьте журнал Certbot, чтобы уточнить результат операции." >&2
     fi
     rm -rf -- "$temp_dir"
     return 1
   fi
 
   rm -rf -- "$temp_dir"
-  echo -e "Сертификат Let’s Encrypt отозван и удален для сайта ${GREEN}${site_name}${WHITE}."
+  if ((certificate_expired)); then
+    echo -e "Истёкший сертификат Let’s Encrypt удален для сайта ${GREEN}${site_name}${WHITE}."
+  else
+    echo -e "Сертификат Let’s Encrypt отозван и удален для сайта ${GREEN}${site_name}${WHITE}."
+  fi
 }
 
 function remove_configured_certificate_for_site() {

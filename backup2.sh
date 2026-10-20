@@ -1259,6 +1259,7 @@ configcnf() {
 remote_info() {
     local selected_remote="$rclone_remote"
     local remote_features about_supported about_output
+    local folder_output folder_status connection_output
 
     echo
     echo -e "Информация о подключении"
@@ -1281,28 +1282,42 @@ remote_info() {
     fi
 
     case "$about_supported" in
-        true)
-            echo "Общая информация о хранилище:"
-            if ! rclone about "${selected_remote}:"; then
-                echo -e "${YELLOW}Не удалось получить общую информацию о хранилище.${WHITE}"
-            fi
-            ;;
         false)
             echo "Общая квота хранилища не предоставляется этим типом подключения."
             ;;
         *)
-            if about_output="$(rclone about "${selected_remote}:" 2>/dev/null)"; then
-                echo "Общая информация о хранилище:"
-                printf '%s\n' "$about_output"
+            if about_output="$(rclone about "${selected_remote}:")"; then
+                if [[ "$about_output" =~ [^[:space:]] ]]; then
+                    echo "Общая информация о хранилище:"
+                    printf '%s\n' "$about_output"
+                else
+                    echo "Хранилище не предоставило данные о квоте."
+                fi
             else
-                echo "Общая квота хранилища не предоставляется этим типом подключения."
+                echo "Не удалось получить общую информацию о хранилище."
             fi
             ;;
     esac
     echo
-    echo "Размер папки бэкапов:"
-    if ! rclone size "${selected_remote}:${server}"; then
-        echo -e "${YELLOW}Не удалось получить размер папки ${server}.${WHITE}"
+    if folder_output="$(rclone lsf --dirs-only --max-depth 1 "${selected_remote}:${server}" 2>&1)"; then
+        echo "Размер папки бэкапов:"
+        if ! rclone size "${selected_remote}:${server}"; then
+            echo -e "Не удалось получить размер папки ${YELLOW}${server}${WHITE}."
+        fi
+    else
+        folder_status=$?
+        if [[ "$folder_status" -eq 3 ]]; then
+            # Проверяем корень, чтобы не принять недоступный путь подключения за отсутствие папки бэкапов.
+            if connection_output="$(rclone lsf --dirs-only --max-depth 1 "${selected_remote}:" 2>&1)"; then
+                echo -e "Папка бэкапов ${YELLOW}${server}${WHITE} ещё не создана."
+            else
+                echo -e "Не удалось проверить доступ к хранилищу ${YELLOW}${selected_remote}${WHITE}."
+                printf '%s\n' "$connection_output"
+            fi
+        else
+            echo -e "Не удалось проверить папку бэкапов ${YELLOW}${server}${WHITE}."
+            printf '%s\n' "$folder_output"
+        fi
     fi
     echo
 }

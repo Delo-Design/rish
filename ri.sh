@@ -281,11 +281,15 @@ fi
 
 Install() {
     local ensure_latest=0
+    local optional=0
 
-    if [[ "${1:-}" == "--ensure-latest" ]]; then
-        ensure_latest=1
+    while [[ "${1:-}" == "--ensure-latest" || "${1:-}" == "--optional" ]]; do
+        case "$1" in
+            --ensure-latest) ensure_latest=1 ;;
+            --optional) optional=1 ;;
+        esac
         shift
-    fi
+    done
 
     if ((ensure_latest == 1)) || ! rpm -q "$@" >/dev/null 2>&1; then
         Up
@@ -311,6 +315,10 @@ Install() {
             else
                 Up
                 echo -e "Установить ${RED}${*}${WHITE} не удалось даже после очистки кэша"
+                if ((optional)); then
+                    Down
+                    return 1
+                fi
                 RemoveRim
                 exit 1
             fi
@@ -1057,7 +1065,20 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
   fi
 
   STEP=2900
-  if ! check_step "$STEP"; then
+  php_setup_needed=1
+  if check_step "$STEP"; then
+    php_installed_versions_need_setup
+    php_setup_status=$?
+    case "$php_setup_status" in
+      0) ;;
+      1) php_setup_needed=0 ;;
+      *)
+        echo "Не удалось проверить готовность установленных версий PHP. Установка RISH остановлена."
+        exit 1
+        ;;
+    esac
+  fi
+  if ((php_setup_needed)); then
     echo -e "Выбор и установка нужных версий ${GREEN}PHP${WHITE}"
     Down
     echo -e "Идет получение списка доступных версий ${GREEN}PHP${WHITE}. Ждите."
