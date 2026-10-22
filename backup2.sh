@@ -3049,7 +3049,6 @@ download_site_snapshot_archive() {
     local has_sql="${9:-0}"
     local tmp_dir target_dir archive_extension age_suffix archive_filename
     local download_filename download_sql_filename
-    local download_prefix="${user_name}_"
     local legacy_filename="" sql_filename="" assembled_archive="" assembled_sql=""
     local target_archive="" target_sql="" staged_archive="" staged_sql=""
     local archive_combined=0
@@ -3115,15 +3114,10 @@ download_site_snapshot_archive() {
         age_suffix=""
     fi
 
-    # Новое имя архива CRON уже содержит пользователя.
-    if [[ "$site_name" == "cron_${user_name}" ]]; then
-        download_prefix=""
-    fi
-
     tmp_dir="$(mktemp -d)" || return 1
     target_dir="$(pwd)"
     archive_filename="${site_name}_${ts_part}${archive_extension}${age_suffix}"
-    download_filename="${download_prefix}${archive_filename}"
+    download_filename="$archive_filename"
     assembled_archive="${tmp_dir}/${archive_filename}"
 
     cursor_to "$status_row" 1
@@ -3182,8 +3176,8 @@ download_site_snapshot_archive() {
         fi
     fi
 
-    # Имя на хранилище сохраняется; локальные копии разных пользователей различаются.
-    download_filename="${download_prefix}${archive_filename}"
+    # Сохраняем исходное имя для восстановления сайта и базы данных.
+    download_filename="$archive_filename"
     target_archive="${target_dir}/${download_filename}"
     if [[ -d "$target_archive" ]]; then
         echo -e "Путь назначения ${LRED}${target_archive}${WHITE} занят каталогом."
@@ -3191,7 +3185,7 @@ download_site_snapshot_archive() {
         return 1
     fi
     if [[ -n "$assembled_sql" ]]; then
-        download_sql_filename="${user_name}_${sql_filename}"
+        download_sql_filename="$sql_filename"
         target_sql="${target_dir}/${download_sql_filename}"
         if [[ -d "$target_sql" ]]; then
             echo -e "Путь назначения ${LRED}${target_sql}${WHITE} занят каталогом."

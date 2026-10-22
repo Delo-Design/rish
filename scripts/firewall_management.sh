@@ -30,6 +30,7 @@ rish_fw_paths() {
     RISH_FW_LOCK_FILE="${RISH_FW_STATE_DIR}/lock"
   fi
   RISH_FW_LEDGER="${RISH_FW_STATE_DIR}/temporary.tsv"
+  RISH_FW_SERVER_LOCK_FILE="${RISH_FW_STATE_DIR}/server-lock.tsv"
 }
 
 rish_fw_cmd() { command firewall-cmd "$@"; }
@@ -116,6 +117,8 @@ rish_fw_header() {
       rish_fw_field "Адреса зоны" "$sources"
     fi
   fi
+  rish_fw_server_lock_refresh
+  rish_fw_server_lock_summary
 }
 rish_fw_now() {
   if [[ "${RISH_FIREWALL_TEST_MODE:-0}" == 1 && "${RISH_FIREWALL_NOW:-}" =~ ^[0-9]+$ ]]; then
@@ -672,6 +675,447 @@ rish_fw_set_rule() {
   printf 'rule priority="-100" family="ipv%s" source ipset="%s" drop' "$1" "$(rish_fw_set_name "$1")"
 }
 
+# Server isolation is runtime-only and never grants the peer additional ports.
+# Keep its journal after expiry/reload until old firewalld timeout handles have
+# been cancelled; reusing an identical rule with an orphan timer is unsafe.
+rish_fw_server_lock_peer() {
+  python3 - "${SSH_CONNECTION:-}" "${SSH_CLIENT:-}" <<'PY'
+import ipaddress, sys
+try:
+    connection, client = sys.argv[1:]
+    parts = (connection or client).split()
+    if len(parts) != (4 if connection else 3):
+        raise ValueError('нет достоверного SSH-контекста')
+    peer = ipaddress.ip_address(parts[0])
+    if '%' in parts[0] or peer.is_unspecified or peer.is_multicast:
+        raise ValueError('недопустимый адрес SSH-клиента')
+    ports = (parts[1], parts[3]) if connection else (parts[1], parts[2])
+    if any(not value.isdigit() or not 1 <= int(value) <= 65535 for value in ports):
+        raise ValueError('некорректные порты SSH-контекста')
+    if connection:
+        ipaddress.ip_address(parts[2])
+    if peer.version == 6 and peer.ipv4_mapped:
+        peer = peer.ipv4_mapped
+    print(peer)
+except (ValueError, IndexError) as error:
+    print('Не удалось определить IP текущего SSH-подключения: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+rish_fw_server_lock_icmptypes() {
+  printf '%s\n' neighbour-advertisement neighbour-solicitation router-advertisement redirect \
+    mld-listener-done mld-listener-query mld-listener-report mld2-listener-report
+}
+
+rish_fw_server_lock_rules() {
+  local peer="$1" family other kind
+  family=$(rish_fw_family "$peer"); other=6; [[ "$family" != 6 ]] || other=4
+  while IFS= read -r kind; do
+    printf 'rule priority="-32001" family="ipv6" icmp-type name="%s" accept\n' "$kind"
+  done < <(rish_fw_server_lock_icmptypes)
+  # Match the standard dhcpv6-client service without trusting service overrides.
+  # Replies to multicast DHCPv6 requests need not be conntrack ESTABLISHED.
+  printf 'rule priority="-32001" family="ipv6" destination address="fe80::/64" port port="546" protocol="udp" accept\n'
+  printf 'rule priority="-32000" family="ipv%s" source NOT address="%s" drop\n' "$family" "$peer"
+  printf 'rule priority="-32000" family="ipv%s" drop\n' "$other"
+}
+
+rish_fw_server_lock_read() {
+  local record
+  rish_fw_paths || return 1
+  [[ -e "$RISH_FW_SERVER_LOCK_FILE" || -L "$RISH_FW_SERVER_LOCK_FILE" ]] || return 0
+  rish_fw_secure_path "$RISH_FW_SERVER_LOCK_FILE" && [[ -f "$RISH_FW_SERVER_LOCK_FILE" ]] || return 1
+  record=$(python3 - "$RISH_FW_SERVER_LOCK_FILE" <<'PY'
+import ipaddress, re, sys
+try:
+    with open(sys.argv[1], encoding='utf-8') as handle:
+        rows = handle.read().splitlines()
+    if len(rows) != 1:
+        raise ValueError('ожидалась одна запись')
+    zone, peer, expiry = rows[0].split('\t')
+    address = ipaddress.ip_address(peer)
+    if (not re.fullmatch(r'[A-Za-z0-9_.-]+', zone) or str(address) != peer or
+            '%' in peer or address.is_unspecified or address.is_multicast or
+            not re.fullmatch(r'0|[1-9][0-9]{0,11}', expiry)):
+        raise ValueError('некорректные поля')
+    print('\t'.join((zone, peer, expiry)))
+except (OSError, UnicodeError, ValueError) as error:
+    print('Не удалось прочитать журнал блокировки сервера: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+  ) || return 1
+  IFS=$'\t' read -r RISH_FW_SERVER_LOCK_ZONE RISH_FW_SERVER_LOCK_IP RISH_FW_SERVER_LOCK_EXPIRY <<<"$record"
+}
+
+# Validate active bindings separately: a default zone is not necessarily the
+# zone actually receiving traffic. An empty list can use the implicit default.
+rish_fw_server_lock_zone_check() {
+  local expected="$1" current active
+  current=$(rish_fw_cmd --get-default-zone) && active=$(rish_fw_cmd --get-active-zones) || return 1
+  [[ "$current" == "$expected" ]] || { rish_fw_error "Рабочая зона изменилась. Откройте раздел firewall заново."; return 1; }
+  python3 - "$expected" "$active" <<'PY'
+import re, sys
+try:
+    zone, text = sys.argv[1:]
+    seen = set()
+    current = None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            match = re.fullmatch(r'([A-Za-z0-9_.-]+)( \(default\))?', line)
+            if not match or match[1] in seen:
+                raise ValueError('неизвестный формат активных зон')
+            current = match[1]
+            if match[2] and current != zone:
+                raise ValueError('несогласованная пометка зоны по умолчанию')
+            seen.add(current)
+        elif current is None or not re.match(r'^\s+(interfaces|sources):', line):
+            raise ValueError('неизвестный формат привязок зоны')
+    others = seen - {zone}
+    if others:
+        raise ValueError('есть другие активные зоны: ' + ', '.join(sorted(others)))
+except ValueError as error:
+    print('Блокировка сервера недоступна: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+rish_fw_server_lock_refresh() {
+  local diagnostics="${1:-quiet}" rule rc rules work output expected_count=0
+  RISH_FW_SERVER_LOCK_STATE=unknown
+  RISH_FW_SERVER_LOCK_IP=""; RISH_FW_SERVER_LOCK_ZONE=""; RISH_FW_SERVER_LOCK_EXPIRY=""
+  RISH_FW_SERVER_LOCK_PRESENT=0; RISH_FW_SERVER_LOCK_DROPS=0
+  rish_fw_server_lock_read || return 1
+  if [[ -z "$RISH_FW_SERVER_LOCK_IP" ]]; then
+    [[ -n "$RISH_FW_ZONE" ]] || return 1
+    rules=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --list-rich-rules) || return 1
+    # Reserved priorities without a valid journal have no proven owner.
+    if grep -Eq 'priority="?-3200[01]"?([[:space:]]|$)' <<<"$rules"; then return 1; fi
+    RISH_FW_SERVER_LOCK_STATE=off
+    return 0
+  fi
+  while IFS= read -r rule; do
+    expected_count=$((expected_count + 1))
+    rish_fw_cmd --zone="$RISH_FW_SERVER_LOCK_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+    case "$rc" in
+      0)
+        RISH_FW_SERVER_LOCK_PRESENT=$((RISH_FW_SERVER_LOCK_PRESENT + 1))
+        [[ "$rule" != *' drop' ]] || RISH_FW_SERVER_LOCK_DROPS=$((RISH_FW_SERVER_LOCK_DROPS + 1)) ;;
+      1) ;;
+      *) return 1 ;;
+    esac
+  done < <(rish_fw_server_lock_rules "$RISH_FW_SERVER_LOCK_IP")
+  if ((RISH_FW_SERVER_LOCK_DROPS == 0)); then
+    RISH_FW_SERVER_LOCK_STATE=off
+  elif ((RISH_FW_SERVER_LOCK_PRESENT == expected_count && RISH_FW_SERVER_LOCK_DROPS == 2)) &&
+      [[ "$RISH_FW_SERVER_LOCK_EXPIRY" == 0 || "$RISH_FW_SERVER_LOCK_EXPIRY" -gt "$(rish_fw_now)" ]]; then
+    # A newly added policy/direct rule can bypass otherwise intact zone rules.
+    # Recheck coverage instead of treating our journal as proof of isolation.
+    work=$(mktemp -d) || return 1
+    if output=$(local RISH_FW_ZONE="$RISH_FW_SERVER_LOCK_ZONE"; rish_fw_server_lock_preflight "$work" "$RISH_FW_SERVER_LOCK_IP" 2>&1); then
+      RISH_FW_SERVER_LOCK_STATE=active
+    else
+      RISH_FW_SERVER_LOCK_STATE=partial
+      if [[ "$diagnostics" == verbose && -n "$output" ]]; then printf '%s\n' "$output" >&2; fi
+    fi
+    rm -rf -- "$work"
+  else
+    RISH_FW_SERVER_LOCK_STATE=partial
+  fi
+}
+
+rish_fw_server_lock_summary() {
+  case "$RISH_FW_SERVER_LOCK_STATE" in
+    off) return 0 ;;
+    active)
+      rish_fw_field "Блокировка сервера" "включена" "$RISH_FW_YELLOW"
+      rish_fw_field "Разрешённый IP" "$RISH_FW_SERVER_LOCK_IP"
+      rish_fw_field "Зона ограничения" "$RISH_FW_SERVER_LOCK_ZONE"
+      if [[ "$RISH_FW_SERVER_LOCK_EXPIRY" == 0 ]]; then
+        rish_fw_field "Срок" "до ручного снятия / перезагрузки" "$RISH_FW_YELLOW"
+      else
+        rish_fw_field "Действует до" "$(rish_fw_date "$RISH_FW_SERVER_LOCK_EXPIRY")" "$RISH_FW_YELLOW"
+      fi ;;
+    partial)
+      rish_fw_field "Блокировка сервера" "требует сверки" "$RISH_FW_YELLOW"
+      rish_fw_field "Разрешённый IP режима" "$RISH_FW_SERVER_LOCK_IP"
+      printf 'Правила режима применены не полностью или настройки изменились.\n' ;;
+    unknown) rish_fw_field "Блокировка сервера" "не удалось проверить" "$RISH_FW_YELLOW" ;;
+  esac
+}
+
+rish_fw_server_lock_preflight() {
+  local work="$1" own_peer="${2:-}" output help kind
+  rish_fw_active && rish_fw_server_lock_zone_check "$RISH_FW_ZONE" || return 1
+  for kind in rules chains passthroughs; do
+    output=$(rish_fw_cmd --direct "--get-all-${kind}") || { rish_fw_error "Не удалось проверить direct-правила."; return 1; }
+    [[ -z "${output//[[:space:]]/}" ]] || { rish_fw_error "Есть direct-правила/цепочки. Блокировка сервера требует отдельной проверки."; return 1; }
+  done
+  rish_fw_cmd --list-all-zones >"${work}/zones" && rish_fw_cmd --get-icmptypes >"${work}/icmptypes" || return 1
+  rish_fw_object_snapshot zones "${work}/zones" >/dev/null || return 1
+  help=$(LC_ALL=C rish_fw_cmd --help) || return 1
+  grep -Eq '^[[:space:]]*--list-all-zones([[:space:]]|$)' <<<"$help" || {
+    rish_fw_error "Не удалось распознать возможности firewall-cmd. Блокировка отменена."; return 1;
+  }
+  : >"${work}/policies" || return 1
+  if grep -Eq '^[[:space:]]*--list-all-policies([[:space:]]|$)' <<<"$help"; then
+    rish_fw_cmd --list-all-policies >"${work}/policies" || return 1
+    rish_fw_object_snapshot policies "${work}/policies" >/dev/null || return 1
+  fi
+  rish_fw_server_lock_icmptypes >"${work}/required-icmp" || return 1
+  : >"${work}/own-rules" || return 1
+  [[ -z "$own_peer" ]] || rish_fw_server_lock_rules "$own_peer" >"${work}/own-rules" || return 1
+  python3 - "$RISH_FW_ZONE" "$work" <<'PY'
+import os, re, shlex, sys
+zone, work = sys.argv[1:]
+def read(name):
+    with open(os.path.join(work, name), encoding='utf-8') as handle:
+        return handle.read()
+def objects(text):
+    result, item = {}, None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            match = re.fullmatch(r'([A-Za-z0-9_.-]+)(?: \(([^()]*)\))?', line)
+            if not match:
+                raise ValueError('неизвестный заголовок зоны/политики')
+            name = match[1]
+            item = {'rules': [], 'attributes': set((match[2] or '').split(', ')) - {''}}
+            result[name] = item
+        elif item is None:
+            raise ValueError('строка без зоны/политики')
+        elif line.strip().startswith('rule '):
+            item['rules'].append(shlex.split(line.strip()))
+        elif line.strip() == 'rich rules:':
+            continue
+        elif ':' in line:
+            key, value = line.strip().split(':', 1)
+            if key in item:
+                raise ValueError('повторное поле конфигурации')
+            item[key] = value.strip()
+        else:
+            raise ValueError('неизвестное поле конфигурации')
+    return result
+try:
+    required = set(read('required-icmp').split())
+    own_rules = [shlex.split(line) for line in read('own-rules').splitlines()]
+    if not required <= set(read('icmptypes').split()):
+        raise ValueError('firewalld не поддерживает необходимые служебные типы ICMPv6')
+    zones = objects(read('zones'))
+    if zone not in zones:
+        raise ValueError('рабочая зона не найдена')
+    for name, item in zones.items():
+        if 'forward-ports' not in item or item['forward-ports']:
+            raise ValueError('не подтверждено отсутствие перенаправления портов в зоне ' + name)
+        for rule in item['rules']:
+            if 'forward-port' in rule:
+                raise ValueError('есть rich-перенаправление портов в зоне ' + name)
+            priorities = [int(t.split('=', 1)[1]) for t in rule if t.startswith('priority=')]
+            if name == zone and any(p <= -32000 for p in priorities) and rule not in own_rules:
+                raise ValueError('есть конфликтующее приоритетное правило в зоне ' + name)
+    # Policies precede zones. Permit only the strict service-ICMPv6 shape of
+    # the standard host policy; its name alone is not a safety guarantee.
+    for name, item in objects(read('policies')).items():
+        disabled = 'disabled' in item['attributes']
+        disable = item.get('disable', 'no')
+        if (disable not in ('yes', 'no') or disabled != (disable == 'yes') or
+                disabled and 'active' in item['attributes']):
+            raise ValueError('не удалось подтвердить состояние политики ' + name)
+        # Since firewalld 2.4, bundled gateway templates are listed even when
+        # explicitly disabled. They cannot bypass this host's zone rules.
+        if disabled:
+            continue
+        if item.get('forward-ports') or any('forward-port' in r for r in item['rules']):
+            raise ValueError('есть перенаправление портов в политике ' + name)
+        egress = item.get('egress-zones', '').split()
+        if not egress or not item.get('ingress-zones'):
+            raise ValueError('не удалось определить направление политики ' + name)
+        if 'HOST' not in egress:
+            continue
+        allowed_fields = {'priority', 'target', 'ingress-zones', 'egress-zones',
+                          'services', 'ports', 'protocols', 'masquerade',
+                          'forward-ports', 'source-ports', 'icmp-blocks', 'rules',
+                          'disable', 'attributes'}
+        if (set(item) - allowed_fields or item.get('target') != 'CONTINUE' or
+                int(item.get('priority', '0')) >= 0 or egress != ['HOST'] or
+                item['ingress-zones'].split() != ['ANY'] or
+                item.get('masquerade', 'no') != 'no' or
+                any(item.get(k) for k in ('services', 'ports', 'protocols', 'source-ports', 'icmp-blocks'))):
+            raise ValueError('политика может обходить ограничение: ' + name)
+        for rule in item['rules']:
+            if (len(rule) != 5 or rule[:3] != ['rule', 'family=ipv6', 'icmp-type'] or
+                    not rule[3].startswith('name=') or rule[3][5:] not in required or rule[4] != 'accept'):
+                raise ValueError('нестандартное правило политики ' + name)
+except (OSError, UnicodeError, ValueError) as error:
+    print('Блокировка сервера недоступна: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+# Remove DROP first so cleanup cannot break IPv6 neighbour discovery. Absent
+# timed rules still need their old callbacks cancelled before journal removal.
+rish_fw_server_lock_cleanup() {
+  local rules rule rc kind cancel_absent="${1:-yes}" pending_timers=0
+  [[ -n "$RISH_FW_SERVER_LOCK_IP" && -n "$RISH_FW_SERVER_LOCK_ZONE" ]] || return 1
+  local RISH_FW_ZONE="$RISH_FW_SERVER_LOCK_ZONE"
+  rules=$(rish_fw_server_lock_rules "$RISH_FW_SERVER_LOCK_IP") || return 1
+  for kind in drop accept; do
+    while IFS= read -r rule; do
+      [[ "$rule" == *" $kind" ]] || continue
+      rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+      case "$rc" in
+        0) rish_fw_remove_rule_checked "$rule" || return 1 ;;
+        1)
+          if [[ "$RISH_FW_SERVER_LOCK_EXPIRY" != 0 ]]; then
+            if [[ "$cancel_absent" == yes ]]; then
+              rish_fw_clear_orphan_timer "$rule" "проверки состояния блокировки сервера" || return 1
+            else
+              pending_timers=1
+            fi
+          fi ;;
+        *) return 1 ;;
+      esac
+      rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+      [[ "$rc" == 1 ]] || return 1
+    done <<<"$rules"
+  done
+  # An intervening external reload may leave callbacks even during rollback.
+  # Preserve ownership until the next explicit cleanup cancels those handles.
+  [[ "$pending_timers" == 1 ]] || rm -f -- "$RISH_FW_SERVER_LOCK_FILE"
+}
+
+rish_fw_server_lock_enable() (
+  local peer="$1" seconds="$2" actual work expiry rule result remaining rc failed=0
+  [[ "$seconds" == 0 || "$seconds" == 900 || "$seconds" == 3600 || "$seconds" == 86400 ]] || return 1
+  actual=$(rish_fw_server_lock_peer) || return 1
+  [[ "$actual" == "$peer" ]] || { rish_fw_error "IP не совпадает с текущим SSH-клиентом."; return 1; }
+  rish_fw_active && rish_fw_lock && rish_fw_server_lock_refresh || return 1
+  [[ "$RISH_FW_SERVER_LOCK_STATE" == off ]] || { rish_fw_error "Сначала снимите или проверьте существующее ограничение сервера."; return 1; }
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  # Clean expired/reloaded rules and their old timers before another attempt.
+  if [[ -n "$RISH_FW_SERVER_LOCK_IP" ]]; then rish_fw_server_lock_cleanup || return 1; fi
+  rish_fw_server_lock_preflight "$work" || return 1
+  expiry=0; [[ "$seconds" == 0 ]] || expiry=$(($(rish_fw_now) + seconds))
+  printf '%s\t%s\t%s\n' "$RISH_FW_ZONE" "$peer" "$expiry" >"${work}/journal" || return 1
+  # Reserve ownership before any firewalld mutation, including interrupted adds.
+  rish_fw_atomic_file "${work}/journal" "$RISH_FW_SERVER_LOCK_FILE" || return 1
+  RISH_FW_SERVER_LOCK_ZONE="$RISH_FW_ZONE"; RISH_FW_SERVER_LOCK_IP="$peer"; RISH_FW_SERVER_LOCK_EXPIRY="$expiry"
+  trap 'rish_fw_server_lock_cleanup no || rish_fw_error "Очистка правил режима не завершена; журнал сохранён."; exit 130' INT TERM HUP
+  while IFS= read -r rule; do
+    remaining=0
+    if [[ "$expiry" != 0 ]]; then
+      remaining=$((expiry - $(rish_fw_now)))
+      ((remaining > 0)) || { failed=1; break; }
+      # IPv6 support must outlive DROP, even if several D-Bus calls take time.
+      [[ "$rule" != *' accept' ]] || remaining=$((remaining + 30))
+    fi
+    result=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" --timeout="${remaining}s" 2>&1); rc=$?
+    if [[ "$rc" != 0 || "$result" == *ALREADY_ENABLED* || "$result" == *NOT_ENABLED* ]]; then
+      [[ -z "$result" ]] || printf '%s\n' "$result" >&2
+      failed=1; break
+    fi
+  done < <(rish_fw_server_lock_rules "$peer")
+  if [[ "$failed" == 0 ]]; then
+    rish_fw_server_lock_refresh verbose || failed=1
+    [[ "$RISH_FW_SERVER_LOCK_STATE" == active ]] || failed=1
+  fi
+  if [[ "$failed" == 1 ]]; then
+    rish_fw_server_lock_cleanup no || rish_fw_error "Откат выполнен не полностью. Откройте проверку состояния блокировки сервера; журнал сохранён."
+    rish_fw_error "Блокировка сервера не включена полностью."
+    return 1
+  fi
+  trap - INT TERM HUP
+  rish_fw_server_lock_summary
+)
+
+rish_fw_server_lock_disable() (
+  rish_fw_lock && rish_fw_server_lock_refresh || {
+    rish_fw_error "Не удалось достоверно прочитать состояние режима. Правила не изменены."; return 1;
+  }
+  [[ -n "$RISH_FW_SERVER_LOCK_IP" ]] || { rish_fw_error "Учтённая блокировка сервера не найдена."; return 1; }
+  rish_fw_server_lock_cleanup || { rish_fw_error "Не все правила режима сняты; журнал сохранён для повторной попытки."; return 1; }
+  printf 'Блокировка сервера %sснята%s.\n' "$RISH_FW_GREEN" "$RISH_FW_RESET"
+  printf 'Обычные правила firewall сохранены.\n'
+)
+
+# A long explanation/confirmation flow can scroll an early error off screen.
+# Collect both streams and show the complete operation result on a fresh screen.
+rish_fw_server_lock_run() {
+  local operation="$1" output rc
+  shift
+  case "$operation" in enable|disable) ;; *) return 2 ;; esac
+  printf '\nВыполняется операция с блокировкой сервера…\n'
+  output=$("rish_fw_server_lock_${operation}" "$@" 2>&1); rc=$?
+  clear
+  printf 'Результат операции с блокировкой сервера\n\n'
+  if [[ "$rc" != 0 ]]; then
+    if [[ "$operation" == enable ]]; then
+      rish_fw_error "Включение блокировки сервера не завершено."
+    else
+      rish_fw_error "Снятие блокировки сервера не завершено."
+    fi
+    printf '\nПричина и результаты проверки:\n'
+  fi
+  [[ -z "$output" ]] || printf '%s\n' "$output"
+  return "$rc"
+}
+
+rish_fw_server_lock_menu() {
+  local expected="${1:-}" peer choice=0 seconds label
+  rish_fw_server_lock_refresh || true
+  printf '\n'
+  if [[ -n "$expected" && "$expected" != "$RISH_FW_SERVER_LOCK_STATE" ]]; then
+    printf 'Состояние блокировки сервера изменилось. Меню будет обновлено.\n'
+    rish_fw_server_lock_summary
+    return 0
+  fi
+  case "$RISH_FW_SERVER_LOCK_STATE" in
+    active)
+      rish_fw_server_lock_summary
+      printf '\nБудут удалены только правила этого режима.\nОбычные правила firewall продолжат действовать.\n'
+      rish_fw_confirm "Снять блокировку сервера?" || return 0
+      rish_fw_server_lock_run disable ;;
+    off)
+      peer=$(rish_fw_server_lock_peer) || return 1
+      printf 'Будут заблокированы новые входящие подключения всех, кроме указанного IP.\n'
+      printf 'Остальные пользователи потеряют доступ к сайтам и другим службам сервера.\n'
+      printf 'Установленные соединения, ответы на исходящие запросы\nи необходимый служебный трафик IPv6 сохраняются.\n'
+      printf 'Для разрешённого IP останутся доступны ранее разрешённые порты.\n\n'
+      rish_fw_field "Разрешённый IP текущего SSH" "$peer"
+      rish_fw_field "Рабочая зона" "$RISH_FW_ZONE"
+      printf '\nВыберите срок ограничения:\n'
+      vertical_menu current 2 0 38 default=4 "15 минут" "1 час" "24 часа" "До ручного снятия" "Отмена" || choice=$?
+      case "$choice" in
+        0) seconds=900; label="15 минут" ;;
+        1) seconds=3600; label="1 час" ;;
+        2) seconds=86400; label="24 часа" ;;
+        3) seconds=0; label="до ручного снятия" ;;
+        *) return 0 ;;
+      esac
+      printf '\n'; rish_fw_field "Срок" "$label" "$RISH_FW_YELLOW"
+      printf 'Перезагрузка сервера или reload firewalld также %sснимает ограничение%s.\n' "$RISH_FW_YELLOW" "$RISH_FW_RESET"
+      printf 'Для досрочного снятия используйте пункт «Снять блокировку сервера».\n'
+      rish_fw_confirm "Включить блокировку сервера для всех кроме указанного IP?" || return 0
+      rish_fw_server_lock_run enable "$peer" "$seconds" ;;
+    *)
+      rish_fw_server_lock_summary
+      printf '\nПолная блокировка сервера не подтверждена.\n'
+      if [[ -n "$RISH_FW_SERVER_LOCK_IP" && "$RISH_FW_SERVER_LOCK_STATE" == partial ]]; then
+        printf 'Можно очистить собственные правила режима и затем включить его заново.\n'
+        rish_fw_confirm "Очистить оставшиеся правила режима?" || return 0
+        rish_fw_server_lock_run disable
+      else
+        printf 'Проверьте доступность firewalld и журнал режима:\n'
+        rish_fw_field "Журнал" "$RISH_FW_SERVER_LOCK_FILE"
+        return 1
+      fi ;;
+  esac
+}
+
 rish_fw_secure_path() {
   local path="$1" parent uid mode attributes
   [[ "$path" == /* ]] || return 1
@@ -993,6 +1437,10 @@ PY
 
 rish_fw_reload_preview() {
   local work runtime permanent name mode output now net zone expiry rule
+  rish_fw_server_lock_refresh || { rish_fw_error "Не удалось проверить блокировку сервера. Применение сохранённых правил отменено."; return 1; }
+  [[ "$RISH_FW_SERVER_LOCK_STATE" == off ]] || {
+    rish_fw_error "Сначала снимите блокировку сервера или очистите правила режима через меню."; return 1;
+  }
   work=$(mktemp -d) || return 1
   runtime="${work}/runtime"; permanent="${work}/permanent"
   now=$(rish_fw_now)
@@ -1407,7 +1855,7 @@ rish_fw_remove_rule_checked() {
 # timeout=0 preserves that callback's handle; exact removal then cancels it.
 # Never overwrite the handle with a fresh positive timeout before this succeeds.
 rish_fw_clear_orphan_timer() {
-  local rule="$1" result query_rc
+  local rule="$1" menu_label="${2:-временных блокировок}" result query_rc
   result=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" --timeout=0 2>&1)
   if [[ $? != 0 || "$result" == *ALREADY_ENABLED* || "$result" == *NOT_ENABLED* ]]; then
     printf '%s\n' "$result" >&2
@@ -1421,7 +1869,7 @@ rish_fw_clear_orphan_timer() {
   rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1
   query_rc=$?
   if [[ "$query_rc" == 0 ]]; then
-    rish_fw_error "В зоне ${RISH_FW_ZONE} осталась блокировка с неизвестным сроком. Снимите её через меню временных блокировок."
+    rish_fw_error "В зоне ${RISH_FW_ZONE} осталась блокировка с неизвестным сроком. Снимите её через меню ${menu_label}."
   else
     rish_fw_error "Очистка прежнего срока блокировки не подтверждена. Новый срок не задан; запись сохранена для повторной попытки."
   fi
@@ -3867,7 +4315,7 @@ rish_fw_access_menu() (
 )
 
 rish_fw_menu() {
-  local choice columns width menu_width site_label i
+  local choice columns width menu_width site_label i server_lock_state
   local -a labels=() actions=()
   if ! declare -F vertical_menu >/dev/null 2>&1; then
     source "${RISH_FIREWALL_HOME}/windows.sh" || return 1
@@ -3875,18 +4323,25 @@ rish_fw_menu() {
   while true; do
     clear
     rish_fw_header
+    server_lock_state="$RISH_FW_SERVER_LOCK_STATE"
     columns=$(tput cols 2>/dev/null) || columns=80
     [[ "$columns" =~ ^[0-9]{1,5}$ ]] || columns=80
     width=$((columns-9)); ((width >= 1)) || width=1
     menu_width=46; ((menu_width <= width)) || menu_width="$width"
     labels=("Заблокировать адрес / подсеть" "Списки блокировок" "Импорт списка" "Порты и службы" "Проверить IP")
     actions=(block lists import ports lookup)
+    case "$RISH_FW_SERVER_LOCK_STATE" in
+      off) labels+=("Блокировка сервера для всех кроме моего IP") ;;
+      active) labels+=("Снять блокировку сервера") ;;
+      *) labels+=("Проверить состояние блокировки сервера") ;;
+    esac
+    actions+=(server-lock)
     if [[ -n "$RISH_FW_SITE_NAME" ]]; then
       site_label="Самые активные IP ${RISH_FW_SITE_NAME}"
       if ((${#site_label} > width)); then rish_fw_field "Сайт" "$RISH_FW_SITE_NAME"; fi
       labels+=("$site_label"); actions+=(access)
     fi
-    labels+=("Проверить конфигурацию" "Назад"); actions+=(check back)
+    labels+=("Проверить конфигурацию" "Выйти"); actions+=(check back)
     for ((i=0; i<${#labels[@]}; i++)); do
       if ((${#labels[i]} > width)); then labels[i]="${labels[i]:0:$((width-1))}…"; fi
     done
@@ -3897,6 +4352,10 @@ rish_fw_menu() {
       lists) rish_fw_lists_menu && continue ;;
       import) rish_fw_import_menu ;;
       ports) rish_fw_ports_menu; continue ;;
+      server-lock)
+        rish_fw_server_lock_menu "$server_lock_state"
+        vertical_menu current 2 0 25 nomouse "Нажмите Enter"
+        continue ;;
       lookup) rish_fw_ip_lookup_menu; continue ;;
       access) rish_fw_access_menu; continue ;;
       check) rish_fw_check_config ;;

@@ -777,6 +777,188 @@ function inspect_tar_archive_layout() {
 }
 
 
+restore_cron() (
+  local archive_path="$1"
+  local decrypt_identity="${2:-}"
+  local filename logical_filename source_user cron_entry archive_entries archive_details
+  local temp_dir new_cron current_cron latest_cron cron_error install_cron user_path candidate target_user
+  local choice action_choice default_index current_exists cron_exists=0
+  local -a users=() menu_items=()
+
+  if [[ "$(id -u)" != "0" ]]; then
+    echo -e "Восстановление CRON доступно только пользователю ${YELLOW}root${WHITE}."
+    return 1
+  fi
+  if [[ ! -f "$archive_path" ]]; then
+    echo -e "Файл архива ${RED}не найден${WHITE}."
+    return 1
+  fi
+
+  filename="$(basename "$archive_path")"
+  logical_filename="$filename"
+  if [[ -n "$decrypt_identity" && "$filename" == *.age ]]; then
+    logical_filename="${filename%.age}"
+  fi
+  if [[ ! "$logical_filename" =~ ^cron_(.+)_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}\.tar\.gz$ ]]; then
+    echo -e "Ожидается архив ${YELLOW}cron_<user>_<YYYY-MM-DD_HH-MM>.tar.gz${WHITE} (или .tar.gz.age)."
+    return 1
+  fi
+  source_user="${BASH_REMATCH[1]}"
+  if [[ ! "$source_user" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*[$]?$ ]]; then
+    echo -e "Имя пользователя в архиве ${RED}некорректно${WHITE}."
+    return 1
+  fi
+  cron_entry="crontab_${source_user}.txt"
+
+  umask 077
+  temp_dir="$(mktemp -d)" || return 1
+  trap 'rm -rf -- "$temp_dir"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
+  trap 'exit 143' TERM
+  new_cron="${temp_dir}/new-crontab.txt"
+  current_cron="${temp_dir}/current-crontab.txt"
+  latest_cron="${temp_dir}/latest-crontab.txt"
+  cron_error="${temp_dir}/crontab-error.txt"
+
+  read_cron_archive() {
+    local tar_mode="$1"
+    shift
+    if [[ -n "$decrypt_identity" ]]; then
+      (set -o pipefail; age -d -i "$decrypt_identity" "$archive_path" 2>/dev/null \
+        | LC_ALL=C tar "$tar_mode" - "$@")
+    else
+      LC_ALL=C tar "$tar_mode" "$archive_path" "$@"
+    fi
+  }
+
+  read_current_cron() {
+    local output_file="$1"
+    local cron_status
+
+    cron_exists=0
+    if LC_ALL=C crontab -l -u "$target_user" > "$output_file" 2> "$cron_error"; then
+      cron_exists=1
+      return 0
+    else
+      cron_status=$?
+    fi
+    if [[ "$cron_status" -eq 1 && "$(cat "$cron_error")" == "no crontab for ${target_user}" && ! -s "$output_file" ]]; then
+      return 0
+    fi
+    echo -e "Не удалось ${RED}прочитать текущий CRON${WHITE} пользователя ${YELLOW}${target_user}${WHITE}. Восстановление прервано."
+    cat -- "$cron_error"
+    return 1
+  }
+
+  if ! archive_entries="$(read_cron_archive -tzf)" ||
+    ! archive_details="$(read_cron_archive -tvzf)"; then
+    echo -e "Не удалось ${RED}прочитать архив CRON${WHITE}. Проверьте архив и ключ расшифрования."
+    return 1
+  fi
+  # Только один обычный файл в корне: без каталогов, ссылок и дополнительных записей.
+  if [[ "$archive_entries" != "$cron_entry" || "$archive_details" != -* || "$archive_details" == *$'\n'* ]]; then
+    echo -e "Архив должен содержать единственный обычный файл ${YELLOW}${cron_entry}${WHITE}."
+    return 1
+  fi
+  if ! read_cron_archive -xOzf -- "$cron_entry" > "$new_cron" || [[ ! -s "$new_cron" ]]; then
+    echo -e "Не удалось извлечь ${RED}непустой файл CRON${WHITE} из архива."
+    return 1
+  fi
+
+  # Как в меню CRON: root, пользователи /home и владельцы существующих crontab.
+  # Исходного пользователя включаем и при нестандартном домашнем каталоге.
+  for candidate in root "$source_user"; do
+    if id -u "$candidate" >/dev/null 2>&1 && [[ " ${users[*]} " != *" ${candidate} "* ]]; then
+      users+=("$candidate")
+    fi
+  done
+  for user_path in /home/* /var/spool/cron/*; do
+    [[ -d "$user_path" || -f "$user_path" ]] || continue
+    candidate="${user_path##*/}"
+    if [[ "$candidate" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*[$]?$ ]] &&
+      id -u "$candidate" >/dev/null 2>&1 && [[ " ${users[*]} " != *" ${candidate} "* ]]; then
+      users+=("$candidate")
+    fi
+  done
+  default_index=${#users[@]}
+  for candidate in "${users[@]}"; do
+    if [[ "$candidate" == "$source_user" ]]; then
+      default_index=${#menu_items[@]}
+    fi
+    menu_items+=("Восстановить CRON для ${candidate}")
+  done
+  menu_items+=("Отмена")
+
+  echo -e "Архив CRON пользователя ${YELLOW}${source_user}${WHITE}: ${GREEN}${filename}${WHITE}"
+  if ! id -u "$source_user" >/dev/null 2>&1; then
+    echo -e "Пользователь ${YELLOW}${source_user}${WHITE} отсутствует. Выберите другого пользователя или отмените восстановление."
+  fi
+  vertical_menu "current" 2 12 50 "default=${default_index}" "${menu_items[@]}"
+  choice=$?
+  if ((choice == 255 || choice >= ${#users[@]})); then
+    echo -e "Восстановление CRON ${YELLOW}отменено${WHITE}."
+    return 0
+  fi
+  target_user="${users[$choice]}"
+  read_current_cron "$current_cron" || return 1
+  current_exists=$cron_exists
+
+  echo
+  echo -e "Задания из архива (пользователь ${YELLOW}${source_user}${WHITE}):"
+  cat -- "$new_cron"
+  echo
+  printf '    │\n    ▼\n\n'
+  echo -e "Текущие задания cron (пользователь ${YELLOW}${target_user}${WHITE}):"
+  if [[ -s "$current_cron" ]]; then
+    cat -- "$current_cron"
+  elif ((current_exists == 1)); then
+    echo "Crontab пуст."
+  else
+    echo "Crontab не создан."
+  fi
+  echo
+  vertical_menu "current" 2 0 50 "default=2" \
+    "Заменить текущие задания архивными" \
+    "Добавить архивные в конец текущих" \
+    "Отмена"
+  action_choice=$?
+  if ((action_choice != 0 && action_choice != 1)); then
+    echo -e "Восстановление CRON ${YELLOW}отменено${WHITE}."
+    return 0
+  fi
+  if ! id -u "$target_user" >/dev/null 2>&1; then
+    echo -e "Пользователь ${RED}${target_user}${WHITE} больше не существует. Восстановление прервано."
+    return 1
+  fi
+
+  read_current_cron "$latest_cron" || return 1
+  if ((cron_exists != current_exists)) || ! cmp -s -- "$current_cron" "$latest_cron"; then
+    echo -e "Текущий CRON пользователя ${YELLOW}${target_user}${WHITE} изменился после показа. Повторите восстановление для просмотра актуальных заданий."
+    return 1
+  fi
+
+  install_cron="$new_cron"
+  if ((action_choice == 1)) && [[ -s "$current_cron" ]]; then
+    install_cron="${temp_dir}/merged-crontab.txt"
+    if ! { cat -- "$current_cron" && printf '\n' && cat -- "$new_cron"; } > "$install_cron"; then
+      echo -e "Не удалось ${RED}объединить задания CRON${WHITE}. Восстановление прервано."
+      return 1
+    fi
+  fi
+
+  if ! id -u "$target_user" >/dev/null 2>&1 || ! crontab -u "$target_user" "$install_cron"; then
+    echo -e "Не удалось ${RED}восстановить CRON${WHITE} пользователя ${YELLOW}${target_user}${WHITE}."
+    return 1
+  fi
+  if ((action_choice == 1)); then
+    echo -e "Задания из архива добавлены в CRON пользователя ${GREEN}${target_user}${WHITE}."
+  else
+    echo -e "CRON пользователя ${GREEN}${target_user}${WHITE} заменён заданиями из архива."
+  fi
+)
+
+
 function restore_folder() {
   local archive_path="$1"
   local site_guess="$2"
@@ -1495,6 +1677,7 @@ decrypt_age_file() {
 
 decrypt_age_archive() (
   local encrypted_file="$1"
+  local requested_action="${2:-}"
   local filename parent_dir plain_filename temp_dir plain_file
   local key_temp_dir=""
   local companion_encrypted="" companion_filename="" companion_plain=""
@@ -1540,11 +1723,15 @@ decrypt_age_archive() (
     echo -e "Найден соседний архив: ${GREEN}$(basename "$companion_encrypted")${WHITE}"
   fi
   echo
-  vertical_menu "current" 2 0 54 \
-    "Открыть и восстановить содержимое" \
-    "Расшифровать в обычный архив" \
-    "Выйти"
-  choice=$?
+  if [[ "$requested_action" == "restore_cron" ]]; then
+    choice=0
+  else
+    vertical_menu "current" 2 0 54 \
+      "Открыть и восстановить содержимое" \
+      "Расшифровать в обычный архив" \
+      "Выйти"
+    choice=$?
+  fi
   if [[ "$choice" -eq 255 || "$choice" -eq 2 ]]; then
     return 0
   fi
@@ -1617,7 +1804,11 @@ decrypt_age_archive() (
 
   if [[ "$choice" -eq 0 ]]; then
     echo -e "Открываем ${GREEN}${filename}${WHITE} без создания промежуточного расшифрованного архива..."
-    extract "$encrypted_file" "$parent_dir" "$identity_file" "$companion_encrypted"
+    if [[ "$requested_action" == "restore_cron" ]]; then
+      restore_cron "$encrypted_file" "$identity_file"
+    else
+      extract "$encrypted_file" "$parent_dir" "$identity_file" "$companion_encrypted"
+    fi
     return $?
   fi
 
@@ -1716,6 +1907,9 @@ function extract() {
 
   # Список действий
   local options=()
+  if [[ "$filename" == cron_* ]]; then
+    options+=("restore_cron::Восстановить CRON")
+  fi
   if [[ "$ext" == "tar.gz" ]]; then
     options+=("restore_folder::Восстановить папку из архива $db_guess")
     options+=("restore_site::Восстановить сайт из архива $db_guess")
@@ -1769,6 +1963,7 @@ function extract() {
   local action="${options[$choice]%%::*}"
 
   case "$action" in
+    restore_cron) restore_cron "$file" "$decrypt_identity" ;;
     restore_folder) restore_folder "$file" "$db_guess" "manual" "$decrypt_identity" ;;
     restore_site) restore_site "$file" "$db_guess" "$restore_site_path" "$decrypt_identity" "$encrypted_companion" ;;
     restore_db_auto) restore_db_auto "$file" "$db_guess" "$decrypt_identity" ;;
@@ -1822,9 +2017,28 @@ function extract() {
 
 # Если скрипт вызван напрямую — запускаем функцию
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  requested_action=""
+  if [[ "${1:-}" == "--restore-cron" ]]; then
+    requested_action="restore_cron"
+    shift
+  fi
   fullpath="$2/$1"
 
-  if [[ -f "$fullpath" ]]; then
+  if [[ "$requested_action" == "restore_cron" ]]; then
+    if [[ ! -f "$fullpath" ]]; then
+      echo -e "Файл архива ${RED}не найден${WHITE}."
+      restore_status=1
+    else
+      if [[ "$fullpath" == *.age ]]; then
+        decrypt_age_archive "$fullpath" "restore_cron"
+      else
+        restore_cron "$fullpath"
+      fi
+      restore_status=$?
+    fi
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+    exit "$restore_status"
+  elif [[ -f "$fullpath" ]]; then
     filename="$(basename "$fullpath")"
     case "$filename" in
       *.age)

@@ -36,15 +36,114 @@ cms_database_joomla_name() {
 }
 
 cms_database_joomla_inspect() {
-  "$2" "${RISH_HOME}/scripts/cms_database_config.php" inspect "$1/configuration.php"
+  local config="$1/configuration.php" php_bin="$2" line key value literal checksum
+  local property_re="^[[:blank:]]*(public|var)[[:blank:]]+[$](db|user|host)[[:blank:]]*=[[:blank:]]*('([^'\\\\]|\\\\.)*'|\"([^\"\\\\]|\\\\.)*\")[[:blank:]]*;.*$"
+  local -A values=()
+
+  [[ -f "$config" && ! -L "$config" && -r "$config" ]] || return 1
+  checksum="$(sha256sum < "$config")" || return 1
+  "$php_bin" -n -l < "$config" >/dev/null 2>&1 || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ $property_re ]] || continue
+    key="${BASH_REMATCH[2]}"
+    literal="${BASH_REMATCH[3]}"
+    [[ -z "${values[$key]+present}" ]] || return 1
+    value="${literal:1:${#literal}-2}"
+    if [[ "${literal:0:1}" == "'" ]]; then
+      value="${value//\\\'/\'}"
+      value="${value//\\\\/\\}"
+    else
+      [[ "$value" != *\\* && "$value" != *'$'* ]] || return 1
+    fi
+    [[ -n "$value" && "$value" != *[[:cntrl:]]* ]] || return 1
+    values["$key"]="$value"
+  done < "$config"
+  [[ -n "${values[db]:-}" && -n "${values[user]:-}" && -n "${values[host]:-}" ]] || return 1
+  [[ "$(sha256sum < "$config")" == "$checksum" ]] || return 1
+  printf '%s\t%s\t%s\t%s\n' "${values[db]}" "${values[user]}" "${values[host]}" "${checksum%% *}"
 }
 
-cms_database_joomla_update() {
-  local site_path="$1" php_bin="$2" fingerprint="$3" db_user="$4" db_name="$5" db_host="$6"
+cms_database_joomla_update() (
+  local site_path="$1" php_bin="$2" fingerprint="$3" config="$1/configuration.php"
+  local password literal line ending matches=0 config_fd temporary="" backup_temporary=""
+  local password_re="^([[:blank:]]*(public|var)[[:blank:]]+[$]password[[:blank:]]*=[[:blank:]]*)('([^'\\\\]|\\\\.)*'|\"([^\"\\\\]|\\\\.)*\")([[:blank:]]*;.*)$"
 
-  "$php_bin" "${RISH_HOME}/scripts/cms_database_config.php" update \
-    "$site_path/configuration.php" "$fingerprint" "$db_user" "$db_name" "$db_host"
-}
+  trap 'rm -f -- "$temporary" "$backup_temporary"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  if IFS= read -r -d '' password || [[ -z "$password" || "$password" == *[[:cntrl:]]* ]]; then
+    echo 'Новый пароль пуст или содержит недопустимые символы.' >&2
+    return 1
+  fi
+  [[ -f "$config" && ! -L "$config" ]] || return 1
+  exec {config_fd}< "$config" || return 1
+  if ! flock -n "$config_fd"; then
+    echo 'Конфигурация занята другим процессом.' >&2
+    return 1
+  fi
+  if [[ ! "$fingerprint" =~ ^[a-f0-9]{64}$ || "$(sha256sum < "$config")" != "$fingerprint  -" ]]; then
+    echo 'Конфигурация изменилась после выбора сайта; запись отменена.' >&2
+    return 1
+  fi
+  temporary="$(mktemp --suffix=.php -- "$site_path/.rish-configuration.XXXXXX")" || return 1
+  backup_temporary="$(mktemp --suffix=.php -- "$site_path/.rish-configuration.XXXXXX")" || return 1
+  if ! chown --reference="$config" -- "$temporary" "$backup_temporary" ||
+    ! chmod 600 -- "$temporary" "$backup_temporary"; then
+    echo 'Не удалось сохранить владельца и права временных файлов.' >&2
+    return 1
+  fi
+
+  literal="${password//\\/\\\\}"
+  literal="'${literal//\'/\\\'}'"
+  # Copy all other bytes, including CRLF and a missing final newline, unchanged.
+  while :; do
+    ending=$'\n'
+    IFS= read -r line || ending=""
+    [[ -n "$line$ending" ]] || break
+    if [[ "$line" =~ $password_re ]]; then
+      matches=$((matches + 1))
+      line="${BASH_REMATCH[1]}${literal}${BASH_REMATCH[6]}"
+    fi
+    if ! printf '%s%s' "$line" "$ending"; then
+      echo 'Не удалось записать временную конфигурацию.' >&2
+      return 1
+    fi
+    [[ -n "$ending" ]] || break
+  done < "$config" > "$temporary"
+  if ((matches != 1)); then
+    echo 'В configuration.php нужна ровно одна строка с объявлением $password.' >&2
+    return 1
+  fi
+  if ! "$php_bin" -n -l < "$temporary" >/dev/null 2>&1; then
+    echo 'После замены пароля обнаружена ошибка синтаксиса PHP; запись отменена.' >&2
+    return 1
+  fi
+  if ! cp -- "$config" "$backup_temporary" || ! chmod --reference="$config" -- "$temporary"; then
+    echo 'Не удалось подготовить резервную копию или сохранить права конфигурации.' >&2
+    return 1
+  fi
+  if [[ -e /sys/fs/selinux/enforce ]] &&
+    ! chcon --reference="$config" -- "$temporary" "$backup_temporary"; then
+    echo 'Не удалось сохранить контекст SELinux; запись отменена.' >&2
+    return 1
+  fi
+  if [[ "$(sha256sum < "$config")" != "$fingerprint  -" ]]; then
+    echo 'Конфигурация была изменена другим процессом; запись отменена.' >&2
+    return 1
+  fi
+  if ! mv -fT -- "$backup_temporary" "$config.bak.php"; then
+    echo 'Не удалось сохранить резервную копию; конфигурация не изменена.' >&2
+    return 1
+  fi
+  backup_temporary=""
+  if [[ "$(sha256sum < "$config")" != "$fingerprint  -" ]] || ! mv -fT -- "$temporary" "$config"; then
+    echo 'Не удалось заменить конфигурацию. Резервная копия уже обновлена; configuration.php не изменён этой операцией.' >&2
+    return 1
+  fi
+  temporary=""
+)
 
 cms_database_has_affected_database() {
   local wanted_database="$1" db_name

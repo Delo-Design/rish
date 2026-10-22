@@ -51,6 +51,9 @@ UpdateMcMenu() {
   echo -e "Меню Midnight Commander ${GREEN}обновлено${WHITE}."
 }
 
+# Удаление устаревшего обработчика конфигурации Joomla
+rm -f -- /root/rish/scripts/cms_database_config.php
+
 # Удаление устаревших копий шаблонов из корня RISH
 if [[ -f /root/rish/templates/mc.menu ]]; then
   rm -f /root/rish/mc.menu

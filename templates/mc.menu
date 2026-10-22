@@ -3,6 +3,10 @@ shell_patterns=0
 1  Apxивиpoвать/Paзapxивиpoвaть/Импopт DB
   bash /root/rish/archive.sh "%f" "%d"
 
++ t r & f ^cron_
+k  Восстановить CRON
+  bash /root/rish/archive.sh --restore-cron "%f" "%d"
+
 + d /var/www/ & t d
 2  Создать/Удалить сайт
   bash /root/rish/scripts/site_manager.sh "%f" "%d"
