@@ -53,12 +53,12 @@ Update() {
       echo "Но если нужно - вы можете переустановить RISH."
       echo
       update_label="Переустановить RISH ${archive_version}"
-      def="default=4"
+      def="default=5"
     fi
     if [[ "$RISH_SETTINGS_NEED_FIX" -eq 1 ]]; then
       def="default=1"
     fi
-    vertical_menu "current" 2 0 50 ${def} "${update_label}" "Проверка и восстановление настроек RISH" "Проверка обновлений PHP" "Проверка обновлений Apache" "Выйти"
+    vertical_menu "current" 2 0 50 ${def} "${update_label}" "Проверка и восстановление настроек RISH" "Проверка обновлений PHP" "Проверка обновлений Apache" "Проверка обновлений MariaDB" "Выйти"
     choice=$?
     case "$choice" in
       0)
@@ -100,6 +100,9 @@ Update() {
         ;;
       3)
         bash "${RISH_HOME}/scripts/package_updates.sh" apache
+        ;;
+      4)
+        bash "${RISH_HOME}/scripts/package_updates.sh" mariadb
         ;;
       *)
         echo "RISH не был обновлен"
