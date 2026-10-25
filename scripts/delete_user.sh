@@ -2,8 +2,84 @@
 
 # This module is sourced by scripts/user_management.sh.
 # shellcheck disable=SC2154
+check_user_home_for_deletion() {
+  local user="$1"
+  local home_dir="$2"
+  local user_uid="${3:-}"
+  local home_uid
+  local canonical_home
+  local mounted_paths
+  local passwd_entries
+  local other_user
+  local other_home
+
+  if [[ ! "$user" =~ ^[a-z0-9_][a-z0-9_-]*$ || "$home_dir" != "/home/${user}" ]]; then
+    echo -e "Небезопасный путь домашнего каталога: ${RED}${home_dir}${WHITE}."
+    return 1
+  fi
+  if [[ ! "$user_uid" =~ ^[0-9]+$ ]]; then
+    echo -e "Не удалось подтвердить исходный UID пользователя ${RED}${user}${WHITE}."
+    return 1
+  fi
+  if [[ ! -d /home || -L /home ]]; then
+    echo -e "Каталог ${RED}/home${WHITE} отсутствует или является символической ссылкой."
+    return 1
+  fi
+  if [[ (-e "$home_dir" || -L "$home_dir") && (! -d "$home_dir" || -L "$home_dir") ]]; then
+    echo -e "Домашний каталог имеет неожиданный тип: ${RED}${home_dir}${WHITE}."
+    return 1
+  fi
+  if ! canonical_home="$(realpath -m -- "$home_dir" 2>/dev/null)" || [[ "$canonical_home" != "$home_dir" ]]; then
+    echo -e "Не удалось подтвердить безопасный путь домашнего каталога ${RED}${home_dir}${WHITE}."
+    return 1
+  fi
+  if [[ -d "$home_dir" ]]; then
+    if ! home_uid="$(stat -c '%u' -- "$home_dir" 2>/dev/null)" || [[ ! "$home_uid" =~ ^[0-9]+$ ]]; then
+      echo -e "Не удалось определить владельца домашнего каталога ${RED}${home_dir}${WHITE}."
+      return 1
+    fi
+    if [[ "$home_uid" != 0 && "$home_uid" != "$user_uid" ]]; then
+      echo -e "Удаление каталога ${RED}${home_dir}${WHITE} запрещено: UID владельца ${YELLOW}${home_uid}${WHITE}, разрешены ${YELLOW}0${WHITE} и ${YELLOW}${user_uid}${WHITE}."
+      return 1
+    fi
+  fi
+
+  # Mountinfo also detects bind mounts on the same filesystem.
+  if [[ ! -r /proc/self/mountinfo ]] || ! mounted_paths="$(
+    awk -v home="$home_dir" '$5 == home || index($5, home "/") == 1 { print $5 }' /proc/self/mountinfo
+  )"; then
+    echo -e "Не удалось проверить монтирования в домашнем каталоге ${RED}${home_dir}${WHITE}."
+    return 1
+  fi
+  if [[ -n "$mounted_paths" ]]; then
+    echo -e "Удаление каталога ${RED}${home_dir}${WHITE} запрещено: в нем есть точки монтирования."
+    printf '%s\n' "$mounted_paths"
+    return 1
+  fi
+
+  if ! passwd_entries="$(getent passwd)"; then
+    echo -e "Не удалось проверить домашние каталоги других пользователей перед удалением ${RED}${home_dir}${WHITE}."
+    return 1
+  fi
+  while IFS=: read -r other_user _ _ _ _ other_home _; do
+    [[ "$other_user" == "$user" || "$other_home" != /* ]] && continue
+    if ! canonical_home="$(realpath -m -- "$other_home" 2>/dev/null)"; then
+      echo -e "Не удалось проверить домашний каталог пользователя ${RED}${other_user}${WHITE}."
+      return 1
+    fi
+    if [[ "$other_home" == "$home_dir" || "$other_home" == "$home_dir/"* ||
+      "$canonical_home" == "$home_dir" || "$canonical_home" == "$home_dir/"* ]]; then
+      echo -e "Удаление каталога ${RED}${home_dir}${WHITE} запрещено: он содержит домашний каталог пользователя ${YELLOW}${other_user}${WHITE}."
+      return 1
+    fi
+  done <<< "$passwd_entries"
+
+  return 0
+}
+
 DeleteUser() {
   local user="$1"
+  local user_uid
   local user_root
   local sites_dir
   local home_dir
@@ -76,11 +152,16 @@ DeleteUser() {
     return 1
   fi
 
+  if ! user_uid="$(id -u "$user" 2>/dev/null)" || [[ ! "$user_uid" =~ ^[0-9]+$ ]]; then
+    echo -e "Не удалось определить UID пользователя ${RED}${user}${WHITE}."
+    return 1
+  fi
   home_dir="$(getent passwd "$user" | awk -F: '{ print $6 }')"
   if [[ "$home_dir" != "/home/${user}" ]]; then
     echo -e "Домашний каталог пользователя ${RED}${user}${WHITE} не соответствует структуре RISH: ${YELLOW}${home_dir:-не определен}${WHITE}."
     return 1
   fi
+  check_user_home_for_deletion "$user" "$home_dir" "$user_uid" || return 1
 
   user_root="/var/www/${user}"
   sites_dir="${user_root}/www"
@@ -237,7 +318,7 @@ DeleteUser() {
     echo "Как подготовить пользователя к удалению:"
     echo
     echo -e "  1. В Midnight Commander нажмите ${YELLOW}F2${WHITE}, чтобы открыть меню RISH."
-    echo -e "     Выберите ${YELLOW}Создать/Удалить сайт${WHITE} → ${YELLOW}Удалить сайт${WHITE}"
+    echo -e "     Выберите ${YELLOW}Управление сайтом${WHITE} → ${YELLOW}Удалить сайт${WHITE}"
     echo "     и последовательно удалите каждый сайт пользователя."
     echo
     echo -e "  2. В меню RISH выберите ${YELLOW}Базы данных${WHITE}"
@@ -433,7 +514,7 @@ DeleteUser() {
     fi
   fi
 
-  if ! userdel --remove "$user"; then
+  if ! check_user_home_for_deletion "$user" "$home_dir" "$user_uid" || ! userdel --remove "$user"; then
     if id "$user" > /dev/null 2>&1; then
       echo -e "Не удалось удалить учетную запись Linux ${RED}${user}${WHITE}."
       rollback_failed=0
@@ -489,6 +570,22 @@ DeleteUser() {
   fi
   [[ -n "$backup_dir" ]] && rm -rf -- "$backup_dir"
 
+  if [[ -e "$home_dir" || -L "$home_dir" ]]; then
+    if id "$user" > /dev/null 2>&1; then
+      echo -e "Очистка остановлена: учетная запись Linux ${RED}${user}${WHITE} снова существует."
+      return 1
+    fi
+    if ! check_user_home_for_deletion "$user" "$home_dir" "$user_uid"; then
+      echo -e "Домашний каталог ${YELLOW}${home_dir}${WHITE} сохранен: проверка безопасности не пройдена."
+      deletion_errors=1
+    elif ! rm -rf --one-file-system -- "$home_dir"; then
+      echo -e "Не удалось удалить оставшийся домашний каталог ${RED}${home_dir}${WHITE}."
+      deletion_errors=1
+    elif [[ ! -e "$home_dir" && ! -L "$home_dir" ]]; then
+      echo -e "Оставшийся домашний каталог ${YELLOW}${home_dir}${WHITE} удален."
+    fi
+  fi
+
   if group_entry="$(getent group "$user")"; then
     group_members="${group_entry##*:}"
     if tr ',' '\n' <<< "$group_members" | grep -Fxq apache; then
@@ -537,10 +634,14 @@ DeleteUser() {
     echo -e "Не удалось обновить ${RED}hotlist Midnight Commander${WHITE}."
     deletion_errors=1
   fi
+  if [[ -e "$home_dir" || -L "$home_dir" ]]; then
+    echo -e "После удаления пользователя остался домашний каталог ${RED}${home_dir}${WHITE}."
+    deletion_errors=1
+  fi
 
   if ((deletion_errors != 0)); then
     echo
-    echo -e "Учетная запись Linux ${GREEN}${user}${WHITE} удалена, но часть сопутствующих данных удалить не удалось."
+    echo -e "Учетная запись Linux ${GREEN}${user}${WHITE} удалена, но при очистке сопутствующих данных возникли ошибки."
     return 1
   fi
 

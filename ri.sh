@@ -12,6 +12,14 @@ YELLOW='\033[0;33m'
 CURSORUP='\033[1A'
 ERASEUNTILLENDOFLINE='\033[K'
 
+RISH_HOME="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || exit 1
+export RISH_HOME
+
+# Совместимость с прежним запуском управления через ri.sh.
+if grep -q "MYSQLPASS" ~/.bashrc 2>/dev/null; then
+  exec bash "${RISH_HOME}/scripts/server_management.sh"
+fi
+
 RISH_CPU_ARCH=""
 RISH_CPU_MODEL=""
 RISH_CPU_ISA_LEVEL="не определён"
@@ -120,30 +128,8 @@ add_var_if_not_exists() {
 
 OS_VERSION=$( hostnamectl | grep -Eo 'Operating.*' |  sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 
-size=$(stty size)
-lines=${size% *}
-columns=${size#* }
-upperY=1
-downY=$((${lines}/2))
-rim=$(( ${downY} - 2 ))
-whereCursorIs="down"
 SYSTEM_UPDATE_MARKER="/run/rish/system-update-performed"
 EARLY_REBOOT_REASONS=()
-
-# save the home dir
-declare _script_name=${BASH_SOURCE[0]}
-declare _script_dir=${_script_name%/*}
-
-if [[ "$_script_name" == "$_script_dir" ]]
-then
-  # _script name has no path
-  _script_dir="."
-fi
-
-# convert to an absolute path
-_script_dir=$(cd -- "${_script_dir}" && pwd -P) || exit 1
-
-export RISH_HOME=${_script_dir}
 
 cd "${RISH_HOME}" || exit
 
@@ -152,6 +138,7 @@ if ! initialize_completed_steps true; then
   exit 1
 fi
 source windows.sh
+source scripts/server_common.sh
 source php_multi_install.sh
 source php_helpers.sh
 source scripts/mariadb_install.sh
@@ -161,9 +148,13 @@ source scripts/ssh_authentication.sh
 source scripts/cron_access.sh
 source scripts/user_credentials.sh
 source scripts/create_user.sh
-source scripts/server_management.sh
+source scripts/dns_management.sh
 source scripts/install_rclone.sh
 source scripts/epel.sh
+
+if ! rish_initialize_split_screen; then
+  exit 1
+fi
 
 if ! check_step "$RISH_DNS_MANAGEMENT_MIGRATION_STEP"; then
   rish_dns_management_migrate_legacy_state
@@ -196,49 +187,7 @@ if (( lines < 40 || columns < 140 )); then
   fi
 fi
 
-# Если настройка скрипта уже была произведена, но сессия не была перезапущена - подгрузим пароль базы данных
-if [[ -z "${MYSQLPASS}" ]]
-then
-  if grep -q "MYSQLPASS" ~/.bashrc
-  then
-    MYSQLPASS=`cat ~/.bashrc | grep MYSQLPASS | awk -F= '{ print $2}'`
-  fi
-fi
-
-Up() {
-  if [[ ${whereCursorIs} == "down" ]]
-  then
-    downY=$( get_cursor_row )
-    whereCursorIs="up"
-    # ограничить скрол верхней части экрана
-    echo -e ${ESC}"[1;${rim}r"
-    cursor_to ${upperY} 1
-  fi
-}
-
-Down() {
-  if [[ ${whereCursorIs} == "up" ]]
-  then
-    upperY=$( get_cursor_row )
-    echo -e ${ESC}"[$(( ${rim}+2));${lines}r"
-    # Ограничить скрол нижней частью экрана
-    cursor_to ${downY} 1
-    whereCursorIs="down"
-  fi
-}
-
-RemoveRim () {
-  echo -e ${ESC}"[;r"
-  cursor_to $(( ${rim} +1 )) 1
-  echo -en ${ESC}"[0J"
-}
-
-clear
-# Рисуем разделительную линию
-cursor_to $(( ${rim} +1 )) 1
-repl "─" $(( ${columns} ))
-cursor_to $(( ${rim} +2 )) 1
-Up
+rish_draw_split_screen
 
 if [[ -s "${RISH_HOME}/version" ]]; then
   RISH_VERSION=$(tr -d '\r' < "${RISH_HOME}/version" | awk '{$1=$1; print; exit}')
@@ -278,58 +227,6 @@ then
   FedoraVersion=$( cat /etc/fedora-release | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
 fi
 
-
-Install() {
-    local ensure_latest=0
-    local optional=0
-
-    while [[ "${1:-}" == "--ensure-latest" || "${1:-}" == "--optional" ]]; do
-        case "$1" in
-            --ensure-latest) ensure_latest=1 ;;
-            --optional) optional=1 ;;
-        esac
-        shift
-    done
-
-    if ((ensure_latest == 1)) || ! rpm -q "$@" >/dev/null 2>&1; then
-        Up
-        if ((ensure_latest == 1)); then
-            echo -e "Устанавливаем или обновляем ${GREEN}${*}${WHITE}"
-        else
-            echo -e "Ставим ${GREEN}${*}${WHITE}"
-        fi
-        Down
-        if yum -y install "$@"; then
-            (( upperY -- ))
-            Up
-            echo -e "${GREEN}${*}${WHITE} установлен"
-        else
-            Up
-            echo -e "Установить ${RED}${*}${WHITE} не удалось, очищаем кэш и пытаемся снова"
-            Down
-            yum clean all
-            yum makecache
-            if yum -y install "$@"; then
-                Up
-                echo -e "${GREEN}${*}${WHITE} установлен после очистки кэша"
-            else
-                Up
-                echo -e "Установить ${RED}${*}${WHITE} не удалось даже после очистки кэша"
-                if ((optional)); then
-                    Down
-                    return 1
-                fi
-                RemoveRim
-                exit 1
-            fi
-        fi
-        echo
-    else
-        Up
-        echo -e "${GREEN}${*}${WHITE} уже установлен"
-    fi
-    Down
-}
 
 InstallOptional() {
     local package="$1"
@@ -1749,6 +1646,4 @@ EOF
     mark_step_completed "$STEP"
   fi
 
-else
-  ServerManagementMenu
 fi

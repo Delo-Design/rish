@@ -1,74 +1,23 @@
 shell_patterns=0
 
-1  Apxивиpoвать/Paзapxивиpoвaть/Импopт DB
+1  Архивы и импорт БД
   bash /root/rish/archive.sh "%f" "%d"
 
 + t r & f ^cron_
 k  Восстановить CRON
   bash /root/rish/archive.sh --restore-cron "%f" "%d"
 
-+ d /var/www/ & t d
-2  Создать/Удалить сайт
+2  Управление сайтом
   bash /root/rish/scripts/site_manager.sh "%f" "%d"
-
-+ d /var/www/ & t d
-7       Сменить версию PHP для сайта
-  bash /root/rish/change_php_version.sh "%f" "%d"
-
-+ d /var/www/ & t d & x /root/rish/composer/.enabled
-8       Composer для сайта
-  bash /root/rish/scripts/composer_manager.sh site-menu "%d" "%f"
 
 3  Базы данных
   bash /root/rish/scripts/database_manager.sh "%d" "%f"
 
-+ d /var/www/ & t d & x /root/rish/dns/.enabled
-d  DNS
-  bash /root/rish/scripts/dns/dns.sh menu-from-mc "%d" "%f"
-
-4  Управление CRON
-  bash /root/rish/scripts/cron_users.sh
-
-+ d /var/www/ & t d
-6  Пoлyчить/Oтoзвaть/Пpoдлить SSL cert.
-	bash /root/rish/scripts/certs.sh %f
-
-r  Перезaпуск и стaтус серверa apache
-  bash /root/rish/scripts/apache_restart.sh
-
-f       Статус и перезапуск php-fpm
-  bash /root/rish/scripts/php_restart.sh
-
-m       Статус и перезапуск MariaDB
-  bash /root/rish/scripts/mariadb_restart.sh
-
 w  Firewall / блокировки IP
   bash /root/rish/scripts/firewall_management.sh menu-from-mc "%d" "%f"
 
-i       IP адрес сервера
-	clear
-	ipaddress=$( ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' |  awk '{print $NF;exit}' )
-	echo $ipaddress
-	echo "Нажмите Enter"
-	sed -i "s/^i       IP адрес сервера.*$/i       IP адрес сервера ${ipaddress}/" /etc/mc/mc.menu
-	read
-
-+ d /var/www/ & t dl
-5  Установка/управление CMS/PMA
-  bash /root/rish/scripts/cms_install.sh "%d" "%f"
-
-+ d /var/www/ & t d
-9       Нacтpoить пpaвa дocтyпa кaтaлoгa
-  bash /root/rish/scripts/fix_permissions.sh "%d" "%f"
-
 s  Управление сервером
-  r=$(pwd)
-  if cd /root/rish; then
-    ./ri.sh
-  fi
-  if ! cd "$r" 2>/dev/null; then
-    cd /var/www || cd /
-  fi
+  bash /root/rish/scripts/server_management.sh
 
 u  Пользователи сервера
   r=$(pwd)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Sourcing this module only defines functions. HTTPS settings are changed from the Apache menu.
+# Sourcing this module only defines functions. Direct execution opens the HTTPS menu.
 rish_https_paths() {
   if [[ "${RISH_HTTPS_TEST_MODE:-0}" == 1 ]]; then
     RISH_HTTPS_CONFIG_DIR="${RISH_HTTPS_CONF_DIR:?test configuration directory required}"
@@ -433,6 +433,7 @@ rish_https_menu() {
     inventory=$(rish_https_inventory) || return 1
     if [[ -z "$inventory" ]]; then
       echo "HTTPS-сайты не найдены."
+      vertical_menu "current" 2 0 5 "Нажмите Enter"
       return 0
     fi
     site_keys=() site_names=() site_titles=() site_states=()
@@ -538,3 +539,21 @@ rish_https_menu() {
     rish_https_confirm "$mode" "$scope" "$names"
   done
 }
+
+rish_https_main() {
+  local script_dir menu_status
+
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || return 1
+  # shellcheck source=../windows.sh
+  source "${script_dir}/../windows.sh" || return 1
+  rish_https_menu
+  menu_status=$?
+  if ((menu_status != 0)); then
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+  fi
+  return "$menu_status"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  rish_https_main "$@"
+fi

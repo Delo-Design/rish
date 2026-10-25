@@ -4,7 +4,7 @@ function apache_restart() {
   local RED='\033[0;31m'
   local WHITE='\033[0m'
   local YELLOW='\033[0;33m'
-  local choice stop_rc active_rc script_dir
+  local choice stop_rc active_rc
   local status_output status_key status_value active_state="" sub_state=""
   local status_label="статус недоступен" status_color="$YELLOW"
   local -a options
@@ -42,7 +42,6 @@ function apache_restart() {
     options=("Быстрый перезапуск Apache (reload) "
       "Полный перезапуск Apache (restart)"
       "Статус Apache (status)"
-      "Режим HTTPS"
       "Остановить Apache (stop)"
       "Выйти")
     vertical_menu "current" 2 0 30 "${options[@]}"
@@ -78,15 +77,6 @@ function apache_restart() {
       systemctl --no-pager status httpd
       ;;
     3)
-      script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || return 1
-      # shellcheck disable=SC1091
-      if source "${script_dir}/https_compatibility.sh"; then
-        rish_https_menu
-      else
-        echo -e "Не удалось загрузить ${RED}режим HTTPS${WHITE}"
-      fi
-      ;;
-    4)
       echo "Остановка Apache сделает сайты сервера недоступными."
       if vertical_menu "current" 2 0 30 default=1 "Остановить Apache" "Отмена"; then
         systemctl stop httpd
@@ -105,7 +95,7 @@ function apache_restart() {
       fi
       ;;
     *)
-      echo "Никаких действий не было произведено."
+      return 0
       ;;
     esac
     vertical_menu "current" 2 0 5 "Нажмите Enter"

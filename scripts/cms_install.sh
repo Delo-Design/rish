@@ -1,27 +1,7 @@
 #!/usr/bin/env bash
 
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[0;33m'
-WHITE='\033[0m'
-LRED='\033[1;31m'
-
-source /root/rish/windows.sh
-source /root/rish/scripts/site_helpers.sh
-
-directory="$1"
-folder="$2"
-site_root_path="${directory}/${folder}"
-site_path=""
-site_name="${folder}"
-site_cms=""
-joomla_version=""
-site_is_joomla=0
-site_has_joomla_cli=0
-site_supports_joomla_user_cli=0
-site_phpmyadmin_path=""
-site_phpmyadmin_version=""
-joomla_users_full_list_limit=200
+# Sourcing defines the API and legacy handlers without loading dependencies or
+# opening menus. Operational handlers run in their own CLI process.
 
 wait_for_enter() {
   vertical_menu "current" 2 0 5 "Нажмите Enter"
@@ -1271,64 +1251,183 @@ fix_joomla_site_configuration() {
   wait_for_enter
 }
 
-clear
-
-if [[ -z "$directory" || -z "$folder" || "$folder" == "." || "$folder" == ".." || ! -d "$site_root_path" ]]; then
-  echo -e "Установите курсор на ${RED}папку сайта${WHITE}."
-  wait_for_enter
-  exit 1
-fi
-
-if ! echo "$site_name" | grep -Eq '^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'; then
-  echo -e "Имя выбранной папки не похоже на домен: ${RED}${site_name}${WHITE}."
-  echo "Установите курсор на папку сайта."
-  wait_for_enter
-  exit 1
-fi
-
-if [[ ! -f "/etc/httpd/conf.d/${site_name}.conf" ]]; then
-  echo -e "Не найден Apache vhost для сайта ${RED}${site_name}${WHITE}."
-  echo "Вначале создайте сайт (vhost)."
-  wait_for_enter
-  exit 1
-fi
-
-site_path=$(awk '$1 == "DocumentRoot" { print $2; exit }' "/etc/httpd/conf.d/${site_name}.conf")
-if [[ -z "$site_path" || ! -d "$site_path" ]]; then
-  echo -e "Не удалось определить DocumentRoot сайта ${RED}${site_name}${WHITE}."
-  wait_for_enter
-  exit 1
-fi
-if [[ "$site_path" != "$site_root_path" && "$site_path" != "$site_root_path/"* ]]; then
-  echo -e "DocumentRoot сайта ${RED}не относится${WHITE} к выбранной папке."
-  echo -e "Выбрано: ${GREEN}${site_root_path}${WHITE}"
-  echo -e "DocumentRoot: ${GREEN}${site_path}${WHITE}"
-  wait_for_enter
-  exit 1
-fi
-
-php_bin=$(get_site_php_bin)
-if [[ -f "${site_path}/configuration.php" &&
-  -f "${site_path}/administrator/manifests/files/joomla.xml" ]]; then
-  site_is_joomla=1
-  joomla_version=$(
-    sed -nE 's@.*<version>[[:space:]]*([0-9]+(\.[0-9]+)+)[[:space:]]*</version>.*@\1@p' \
-      "${site_path}/administrator/manifests/files/joomla.xml" |
-      head -n 1
-  )
-  if [[ -n "$joomla_version" ]]; then
-    site_cms="Joomla ${joomla_version}"
-  else
-    site_cms="Joomla"
+cms_initialize_runtime() {
+  if [[ -z "${RISH_HOME:-}" ]]; then
+    RISH_HOME="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 1
   fi
-  if [[ -f "${site_path}/cli/joomla.php" ]]; then
-    site_has_joomla_cli=1
+  export RISH_HOME
+  GREEN='\033[0;32m'
+  RED='\033[0;31m'
+  YELLOW='\033[0;33m'
+  WHITE='\033[0m'
+  source "${RISH_HOME}/windows.sh" || return 1
+  source "${RISH_HOME}/scripts/site_helpers.sh" || return 1
+}
+
+cms_prepare_context() {
+  local canonical_directory document_root canonical_root
+
+  cms_initialize_runtime || return 1
+  directory="${1:-}"
+  directory="${directory%/}"
+  folder="${2:-}"
+  site_root_path="${directory}/${folder}"
+  site_path=""
+  site_name="$folder"
+  site_cms=""
+  joomla_version=""
+  site_is_joomla=0
+  site_has_joomla_cli=0
+  site_supports_joomla_user_cli=0
+  site_phpmyadmin_path=""
+  site_phpmyadmin_version=""
+  joomla_users_full_list_limit=200
+  php_bin=""
+
+  if [[ -z "$directory" || -z "$folder" || "$folder" == "." || "$folder" == ".." || ! -d "$site_root_path" ]]; then
+    printf 'Установите курсор на папку сайта.\n' >&2
+    return 1
   fi
-  if [[ "$joomla_version" =~ ^[56]\. ]]; then
-    site_supports_joomla_user_cli=1
+  if ! validate_site_name "$site_name"; then
+    printf 'Имя выбранной папки не похоже на домен: %s.\n' "$site_name" >&2
+    return 1
   fi
-fi
-if [[ -n "$php_bin" ]]; then
+  if [[ ! -f "/etc/httpd/conf.d/${site_name}.conf" ]]; then
+    printf 'Не найден Apache vhost для сайта %s. Вначале создайте сайт (vhost).\n' "$site_name" >&2
+    return 1
+  fi
+  canonical_directory="$(realpath -e -- "$directory" 2>/dev/null)" || return 1
+  canonical_root="$(realpath -e -- "$site_root_path" 2>/dev/null)" || return 1
+  if [[ "$canonical_root" != "$canonical_directory/"* ]]; then
+    printf 'Фактический путь сайта выходит за пределы выбранного каталога.\n' >&2
+    return 1
+  fi
+  document_root="$(awk '
+    tolower($1) == "documentroot" {
+      sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, "")
+      if ($0 ~ /^"/) {
+        sub(/^"/, "")
+        sub(/".*$/, "")
+      } else {
+        sub(/[[:space:]].*$/, "")
+      }
+      print
+      exit
+    }
+  ' "/etc/httpd/conf.d/${site_name}.conf")"
+  if [[ "$document_root" != /* ]] ||
+    ! site_path="$(realpath -e -- "$document_root" 2>/dev/null)" || [[ ! -d "$site_path" ]]; then
+    printf 'Не удалось определить DocumentRoot сайта %s.\n' "$site_name" >&2
+    return 1
+  fi
+  if [[ "$site_path" != "$canonical_root" && "$site_path" != "$canonical_root/"* ]]; then
+    printf 'DocumentRoot сайта не относится к выбранной папке.\n' >&2
+    return 1
+  fi
+  php_bin="$(get_site_php_bin)" || php_bin=""
+  if [[ -z "$php_bin" ]]; then
+    printf 'Не удалось определить PHP сайта. Проверьте vhost и наличие /bin/phpXX.\n' >&2
+    return 1
+  fi
+
+  if [[ -f "${site_path}/configuration.php" &&
+    -f "${site_path}/administrator/manifests/files/joomla.xml" ]]; then
+    site_is_joomla=1
+    joomla_version=$(
+      sed -nE 's@.*<version>[[:space:]]*([0-9]+(\.[0-9]+)+)[[:space:]]*</version>.*@\1@p' \
+        "${site_path}/administrator/manifests/files/joomla.xml" |
+        head -n 1
+    )
+    if [[ -n "$joomla_version" ]]; then
+      site_cms="Joomla ${joomla_version}"
+    else
+      site_cms="Joomla"
+    fi
+    if [[ -f "${site_path}/cli/joomla.php" ]]; then
+      site_has_joomla_cli=1
+    fi
+    if [[ "$joomla_version" =~ ^[56]\. ]]; then
+      site_supports_joomla_user_cli=1
+    fi
+  fi
+  detect_phpmyadmin_installations || true
+  return 0
+}
+
+cms_build_actions() {
+  local first_entry
+
+  CMS_ACTION_LABELS=()
+  CMS_ACTION_TOKENS=()
+  if ((site_is_joomla == 1)); then
+    CMS_ACTION_LABELS+=("Проверить расширения Joomla")
+    CMS_ACTION_TOKENS+=(audit_joomla_extensions)
+    if ((site_has_joomla_cli == 1)); then
+      CMS_ACTION_LABELS+=("Обновление Joomla")
+      CMS_ACTION_TOKENS+=(update_joomla)
+      if ((site_supports_joomla_user_cli == 1)); then
+        CMS_ACTION_LABELS+=("Управление пользователями Joomla")
+        CMS_ACTION_TOKENS+=(manage_joomla_users)
+      fi
+      CMS_ACTION_LABELS+=("Выполнить CLI команду Joomla")
+      CMS_ACTION_TOKENS+=(run_manual_joomla_cli_command)
+    fi
+  fi
+  if [[ -f "${site_path}/configuration.php" ]]; then
+    CMS_ACTION_LABELS+=("Настроить Joomla configuration.php")
+    CMS_ACTION_TOKENS+=(fix_joomla_site_configuration)
+  fi
+  if first_entry="$(find "$site_path" -mindepth 1 -maxdepth 1 -printf x -quit 2>/dev/null)" &&
+    [[ -z "$first_entry" ]]; then
+    CMS_ACTION_LABELS+=("Установка Joomla" "Установка WordPress" "Установка OpenCart")
+    CMS_ACTION_TOKENS+=(install_joomla install_wordpress install_opencart)
+  fi
+  CMS_ACTION_LABELS+=("Установка/обновление phpMyAdmin")
+  CMS_ACTION_TOKENS+=(install_phpmyadmin)
+}
+
+cms_describe() {
+  local index
+
+  cms_prepare_context "${1:-}" "${2:-}" || return 1
+  cms_build_actions
+  printf '%s\0' rish-cms-v1 "$site_path" "$php_bin" "$site_cms" \
+    "$site_phpmyadmin_version" "$site_phpmyadmin_path"
+  for index in "${!CMS_ACTION_TOKENS[@]}"; do
+    printf '%s\0%s\0' "${CMS_ACTION_TOKENS[$index]}" "${CMS_ACTION_LABELS[$index]}"
+  done
+}
+
+cms_dispatch_action() {
+  local action="${1:-}" token allowed=0
+
+  cms_prepare_context "${2:-}" "${3:-}" || return 1
+  cms_build_actions
+  for token in "${CMS_ACTION_TOKENS[@]}"; do
+    if [[ "$action" == "$token" ]]; then
+      allowed=1
+      break
+    fi
+  done
+  if ((allowed == 0)); then
+    printf 'Действие CMS недоступно для текущего состояния сайта: %s.\n' "$action" >&2
+    return 1
+  fi
+  case "$action" in
+    audit_joomla_extensions) audit_joomla_extensions ;;
+    update_joomla) update_joomla ;;
+    manage_joomla_users) manage_joomla_users ;;
+    run_manual_joomla_cli_command) run_manual_joomla_cli_command ;;
+    fix_joomla_site_configuration) fix_joomla_site_configuration ;;
+    install_joomla) install_joomla ;;
+    install_wordpress) install_wordpress ;;
+    install_opencart) install_opencart ;;
+    install_phpmyadmin) install_phpmyadmin ;;
+    *) return 1 ;;
+  esac
+}
+
+cms_print_info() {
   echo -e "Установка/управление CMS/phpMyAdmin для сайта: ${GREEN}${site_name}${WHITE}"
   echo
   echo -e "DocumentRoot сайта: ${GREEN}${site_path}${WHITE}"
@@ -1336,46 +1435,54 @@ if [[ -n "$php_bin" ]]; then
   if [[ -n "$site_cms" ]]; then
     echo -e "CMS сайта: ${GREEN}${site_cms}${WHITE}"
   fi
-  if detect_phpmyadmin_installations; then
+  if [[ -n "$site_phpmyadmin_version" ]]; then
     echo -e "phpMyAdmin: ${GREEN}${site_phpmyadmin_version}${WHITE} (установлен в ${site_phpmyadmin_path})"
   fi
-else
-  echo -e "Не удалось определить PHP сайта из конфигурации ${RED}Apache${WHITE}."
-  echo "Проверьте vhost выбранного сайта и наличие /bin/phpXX."
-  wait_for_enter
-  exit 1
-fi
+}
 
-echo
-echo "Выберите действие:"
-menu_items=()
-menu_actions=()
-if (( site_is_joomla == 1 )); then
-  menu_items+=("Проверить расширения Joomla")
-  menu_actions+=("audit_joomla_extensions")
-  if (( site_has_joomla_cli == 1 )); then
-    menu_items+=("Обновление Joomla")
-    menu_actions+=("update_joomla")
-    if (( site_supports_joomla_user_cli == 1 )); then
-      menu_items+=("Управление пользователями Joomla")
-      menu_actions+=("manage_joomla_users")
-    fi
-    menu_items+=("Выполнить CLI команду Joomla")
-    menu_actions+=("run_manual_joomla_cli_command")
+cms_main() {
+  local choice action selected_directory selected_name
+
+  case "${1:-}" in
+    --describe)
+      (($# == 3)) || return 2
+      cms_describe "$2" "$3"
+      return $?
+      ;;
+    --action)
+      (($# == 4)) || return 2
+      cms_dispatch_action "$2" "$3" "$4"
+      return $?
+      ;;
+  esac
+  if (($# != 2)); then
+    printf 'Использование: bash %s <каталог> <сайт> | --describe <каталог> <сайт> | --action <действие> <каталог> <сайт>\n' "${BASH_SOURCE[0]}" >&2
+    return 2
   fi
-fi
-if [[ -f "${site_path}/configuration.php" ]]; then
-  menu_items+=("Настроить Joomla configuration.php")
-  menu_actions+=("fix_joomla_site_configuration")
-fi
-menu_items+=("Установка Joomla" "Установка WordPress" "Установка OpenCart" "Установка/обновление phpMyAdmin" "Выйти")
-menu_actions+=("install_joomla" "install_wordpress" "install_opencart" "install_phpmyadmin" "exit")
+  selected_directory="$1"
+  selected_name="$2"
+  if ! cms_prepare_context "$selected_directory" "$selected_name"; then
+    if declare -F vertical_menu >/dev/null 2>&1; then
+      wait_for_enter
+    fi
+    return 1
+  fi
+  clear
+  cms_print_info
+  echo
+  echo "Выберите действие:"
+  cms_build_actions
+  vertical_menu "current" 2 0 30 "${CMS_ACTION_LABELS[@]}" "Выйти"
+  choice=$?
+  if ((choice == 255 || choice >= ${#CMS_ACTION_TOKENS[@]})); then
+    echo "Выход. Никаких действий произведено не было."
+    wait_for_enter
+    return 0
+  fi
+  action="${CMS_ACTION_TOKENS[$choice]}"
+  cms_dispatch_action "$action" "$selected_directory" "$selected_name"
+}
 
-vertical_menu "current" 2 0 30 "${menu_items[@]}"
-choice=$?
-if (( choice == 255 )) || [[ "${menu_actions[${choice}]}" == "exit" ]]; then
-  echo "Выход. Никаких действий произведено не было."
-  wait_for_enter
-else
-  "${menu_actions[${choice}]}"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  cms_main "$@"
 fi

@@ -20,7 +20,7 @@ source /root/rish/php_helpers.sh
 source /root/rish/scripts/ssh_authentication.sh
 source /root/rish/scripts/cron_access.sh
 source /root/rish/scripts/user_credentials.sh
-source /root/rish/scripts/server_management.sh
+source /root/rish/scripts/dns_management.sh
 source /root/rish/scripts/install_rclone.sh
 LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)

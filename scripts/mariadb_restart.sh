@@ -27,7 +27,7 @@ function mariadb_restart() {
     systemctl --no-pager status mariadb
     ;;
   *)
-    echo "Никаких действий не было произведено."
+    return 0
     ;;
   esac
   vertical_menu "current" 2 0 5 "Нажмите Enter"

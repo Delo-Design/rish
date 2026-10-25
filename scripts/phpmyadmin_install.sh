@@ -298,12 +298,17 @@ if [[ -z "$SITE_OWNER" || "$SITE_OWNER" == "$SITE_PARENT_PATH" ]]; then
   fail "Не удалось определить пользователя сайта по пути: ${SITE_PARENT_PATH}"
 fi
 
-echo -e "${WHITE}В какую папку на сайте ставить phpMyAdmin?${WHITE}"
-echo "Рекомендуется создать отдельный домен/сайт для phpMyAdmin."
-echo "Если ставите в папку, используйте нестандартное имя: не pma и не phpmyadmin."
-echo "Пустое имя установит phpMyAdmin прямо в корень выбранного сайта (мы не рекомендуем так делать - лучше ставить в папку)."
-echo "Для отмены введите: q"
-read -e -p $'\001\033[0m\002> \001\033[0;32m\002' -i "pppma" PMA_NAME
+printf 'Куда установить phpMyAdmin на сайте %b%s%b?\n' "$GREEN" "$SITE_ENTRY" "$WHITE"
+echo
+echo "Рекомендуем выделить для phpMyAdmin отдельный сайт."
+echo "Если здесь уже работает CMS, используйте отдельную папку."
+echo
+echo "Enter — выбрать папку pppma."
+echo "Другая папка — замените pppma нужным именем."
+echo "Корень сайта — очистите поле и нажмите Enter."
+echo "Отмена — замените имя на q и нажмите Enter."
+echo
+read -e -p $'\001\033[0m\002Имя папки: \001\033[0;32m\002' -i "pppma" PMA_NAME
 echo -e "${WHITE}"
 
 case "${PMA_NAME,,}" in

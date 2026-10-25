@@ -22,25 +22,19 @@ php_check_fpm_configuration() {
   fi
 }
 
-php_check_rish_configuration() {
+# Проверяем значения RISH только сразу после установки и настройки новой версии.
+php_check_new_install_configuration() {
   local php_version="$1"
   local php_ini="/etc/opt/remi/${php_version}/php.ini"
   local pool_dir="/etc/opt/remi/${php_version}/php-fpm.d"
   local www_template="${RISH_HOME}/templates/php-fpm-www.conf.template"
-  local pool_file expected_pool ini_mismatch
+  local expected_pool ini_mismatch
   local failed=0
 
   if [[ ! -r "$php_ini" ]]; then
     echo -e "Не удалось прочитать конфигурацию ${RED}${php_ini}${WHITE}."
     return 1
   fi
-
-  # Пользовательские пулы означают существующую настройку сервера: базовые лимиты не навязываем.
-  for pool_file in "$pool_dir"/*.conf; do
-    if [[ -f "$pool_file" && "${pool_file##*/}" != "www.conf" ]]; then
-      return 0
-    fi
-  done
 
   if [[ ! -r "$www_template" ]]; then
     echo -e "Не найден или недоступен шаблон ${RED}${www_template}${WHITE}."
@@ -92,12 +86,12 @@ php_check_rish_configuration() {
       exit failed
     }
   ' "$php_ini")"; then
-    echo -e "Базовые настройки ${YELLOW}${php_ini}${WHITE} не завершены или отличаются от RISH:"
+    echo -e "Настройки новой установки ${YELLOW}${php_ini}${WHITE} отличаются от ожидаемых:"
     [[ -z "$ini_mismatch" ]] || printf '%s\n' "$ini_mismatch"
     failed=1
   fi
   if ((failed)); then
-    echo "Автоматическое завершение невозможно. Проверьте указанные конфиги и повторите установку."
+    echo "Проверьте указанные конфиги и повторите установку PHP."
   fi
   return "$failed"
 }
@@ -118,8 +112,7 @@ php_fpm_needs_setup() {
 
   ! systemctl is-active --quiet "${php_version}-php-fpm" ||
     ! systemctl is-enabled --quiet "${php_version}-php-fpm" ||
-    ! php_fpm_systemd_security_is_effective "$php_version" ||
-    ! php_check_rish_configuration "$php_version" >/dev/null 2>&1
+    ! php_fpm_systemd_security_is_effective "$php_version"
 }
 
 php_installed_versions_need_setup() {
@@ -139,7 +132,6 @@ php_verify_installed_versions() {
   installed_versions="$(php_get_installed_fpm_versions)" || return 1
   while IFS= read -r php_version; do
     [[ -n "$php_version" ]] || continue
-    php_check_rish_configuration "$php_version" || return 1
     php_check_cli "$php_version" || return 1
     php_check_fpm_configuration "$php_version" || return 1
     if ! systemctl is-active --quiet "${php_version}-php-fpm"; then
@@ -219,7 +211,6 @@ php_finalize_fpm_setup() {
   local service_action="start"
   local restore_service=2
 
-  php_check_rish_configuration "$php_version" || return 1
   php_check_cli "$php_version" || return 1
   php_check_fpm_configuration "$php_version" || return 1
   if systemctl is-active --quiet "${php_version}-php-fpm"; then
@@ -348,14 +339,13 @@ function php_multi_install() {
     for item in "${installed_versions[@]}"; do
       phpver="${item%% *}"
       if php_fpm_needs_setup "$phpver"; then
-        options+=("$phpver (завершить настройку)")
+        options+=("$phpver (настроить и запустить PHP-FPM)")
       fi
     done
 
     if [ ${#options[@]} -eq 0 ]; then
       echo "Пакеты всех доступных версий PHP уже установлены."
-      php_verify_installed_versions
-      return $?
+      return 0
     fi
 
     echo
@@ -416,15 +406,14 @@ function php_multi_install() {
     local ret=$?
     echo -en "${ESC}[1A${ESC}[K"
     if (( ret == 255 )) || (( ret == ${#options[@]}-1 )); then
-      php_verify_installed_versions
-      return $?
+      return 0
     fi
     local selected_line=${options[${ret}]}
     local selected_version
     selected_version=$(echo "$selected_line" | grep -oP '^php[0-9]{2}')
 
-    if [[ "$selected_line" == *" (завершить настройку)" ]]; then
-      echo -e "Завершаем настройку ${GREEN}${selected_version}${WHITE} с существующими конфигурациями PHP и пулов."
+    if [[ "$selected_line" == *" (настроить и запустить PHP-FPM)" ]]; then
+      echo -e "Настраиваем и запускаем ${GREEN}${selected_version}-php-fpm${WHITE} с существующими конфигурациями PHP и пулов."
       php_finalize_fpm_setup "$selected_version" || return 1
       echo -e "Настройка ${GREEN}${selected_version}${WHITE} завершена. PHP-FPM работает."
       continue
@@ -524,6 +513,7 @@ function php_multi_install() {
       fi
     fi
 
+    php_check_new_install_configuration "$selected_version" || return 1
     php_finalize_fpm_setup "$selected_version" || return 1
     Up
     echo -e "${GREEN}${selected_version}${WHITE} успешно установлен. PHP-FPM работает."

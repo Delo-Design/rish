@@ -699,6 +699,7 @@ function create_self_signed_cert_for_site() {
 }
 
 certs() {
+  RISH_CERTS_EXIT_WITHOUT_PAUSE=0
   clear
   local site_name="$1"
   local vhost="/etc/httpd/conf.d/${site_name}.conf"
@@ -826,6 +827,7 @@ certs() {
   vertical_menu "current" 2 0 6 "${certificate_menu_items[@]}"
   choice=$?
   if ((choice == 255 || choice >= ${#certificate_menu_actions[@]})); then
+    RISH_CERTS_EXIT_WITHOUT_PAUSE=1
     return 0
   fi
   action="${certificate_menu_actions[$choice]}"
@@ -868,6 +870,7 @@ certs() {
     remove_configured_certificate_for_site "$site_name"
     ;;
   exit)
+    RISH_CERTS_EXIT_WITHOUT_PAUSE=1
     return 0
     ;;
   esac
@@ -876,5 +879,9 @@ certs() {
 # Если идёт прямой вызов — выполняем функцию.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   certs "$1"
-  vertical_menu "current" 2 0 5 "Нажмите Enter"
+  certs_status=$?
+  if [[ "${RISH_CERTS_EXIT_WITHOUT_PAUSE:-0}" != 1 ]]; then
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+  fi
+  exit "$certs_status"
 fi
