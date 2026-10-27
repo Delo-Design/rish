@@ -38,6 +38,7 @@ rish_register_step 700 "Проверка и включение swap файла, 
 rish_register_step 800 "Выбор типа установки сервера"
 rish_register_step 900 "Установка mc, cronie, logrotate, idn2, epel-release, wget, tar"
 rish_register_step 950 "Проверка ветки EPEL для минорной версии EL"
+rish_register_step 975 "Добавление резервного зеркала Cisco OpenH264"
 rish_register_step 1000 "Установка age для шифрования бэкапов"
 rish_register_step 1100 "Установка pv"
 rish_register_step 1200 "Ограничение пользовательского CRON через cron.allow"

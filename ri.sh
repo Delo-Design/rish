@@ -472,6 +472,11 @@ df -h -P -l -x tmpfs -x devtmpfs
 echo ""
 
 if ! grep -q "MYSQLPASS" ~/.bashrc; then
+  # На сервере с уже подключённым EPEL OpenH264 может понадобиться до шага 900.
+  if ! check_step 975 && ! rish_configure_openh264_mirror; then
+    echo "Не удалось настроить резервное зеркало OpenH264. Установка RISH продолжается."
+  fi
+
   STEP=200
   if ! check_step "$STEP"; then
     Install dnf-utils
@@ -755,6 +760,16 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
       exit 1
     fi
     mark_step_completed "$STEP"
+  fi
+
+  STEP=975
+  if ! check_step "$STEP"; then
+    if rish_configure_openh264_mirror; then
+      mark_step_completed "$STEP"
+    else
+      echo "Не удалось настроить резервное зеркало OpenH264. Установка RISH продолжается."
+      echo "Настройка будет повторена при следующем запуске установки или обновления RISH."
+    fi
   fi
 
   STEP=1000

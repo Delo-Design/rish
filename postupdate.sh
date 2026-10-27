@@ -22,6 +22,7 @@ source /root/rish/scripts/cron_access.sh
 source /root/rish/scripts/user_credentials.sh
 source /root/rish/scripts/dns_management.sh
 source /root/rish/scripts/install_rclone.sh
+source /root/rish/scripts/epel.sh
 LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
@@ -300,6 +301,16 @@ rollback_php_fpm_hardening_update() {
     echo -e "  ${YELLOW}${php_version}-php-fpm${WHITE}: предыдущая конфигурация восстановлена"
   fi
 }
+
+STEP=975
+if ! check_step "$STEP"; then
+  if rish_configure_openh264_mirror; then
+    mark_step_completed "$STEP"
+  else
+    echo "Не удалось настроить резервное зеркало OpenH264. Обновление RISH продолжается."
+    echo "Настройка будет повторена при следующем обновлении RISH."
+  fi
+fi
 
 STEP=200
 if ! check_step "$STEP"; then

@@ -1,6 +1,129 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016
 
+_rish_epel_prepare_openh264_mirror() {
+    local source_file="$1"
+    local prepared_file="$2"
+    local os_major="$3"
+    local mirror_url='https://mirror.yandex.ru/mirrors/codecs.fedoraproject.org/openh264/epel/$releasever_major/$basearch/'
+
+    case "$os_major" in
+        9) mirror_url+='os/' ;;
+        10) ;;
+        *) return 1 ;;
+    esac
+
+    # Сохраняем metalink: DNF добавляет baseurl к полученным из него зеркалам.
+    # Пользовательские источники и остальные секции репозиториев не меняем.
+    awk -v mirror_url="$mirror_url" '
+        function flush_section(    i, key, value, official_metalink, other_source) {
+            official_metalink = 0
+            other_source = 0
+            if (repository_id == "epel-cisco-openh264") {
+                for (i = 1; i <= line_count; i++) {
+                    if (lines[i] !~ /^[[:space:]]*(baseurl|metalink|mirrorlist)[[:space:]]*=/) continue
+                    key = lines[i]
+                    sub(/=.*/, "", key)
+                    gsub(/[[:space:]]/, "", key)
+                    value = lines[i]
+                    sub(/^[^=]*=[[:space:]]*/, "", value)
+                    sub(/[[:space:]]*$/, "", value)
+                    if (key == "metalink" &&
+                        value ~ /^https?:\/\/mirrors\.fedoraproject\.org\/metalink\?/ &&
+                        value ~ /[?&]repo=epel-cisco-openh264-/) {
+                        official_metalink = 1
+                    } else {
+                        other_source = 1
+                    }
+                }
+            }
+
+            for (i = 1; i <= line_count; i++) print lines[i]
+            if (official_metalink && !other_source) {
+                print "# RISH: резервное зеркало для недоступных пакетов Cisco OpenH264."
+                print "baseurl=" mirror_url
+                changed = 1
+            }
+        }
+
+        /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+            flush_section()
+            delete lines
+            line_count = 0
+            repository_id = $0
+            sub(/^[[:space:]]*\[/, "", repository_id)
+            sub(/\][[:space:]]*$/, "", repository_id)
+        }
+        { lines[++line_count] = $0 }
+        END {
+            flush_section()
+            if (!changed) exit 2
+        }
+    ' "$source_file" >"$prepared_file"
+}
+
+rish_configure_openh264_mirror() {
+    local os_major
+    local repository_file
+    local prepared_file
+    local prepare_status
+    local backup_dir=""
+
+    if ! os_major="$(awk -F= '$1 == "VERSION_ID" { gsub(/["\047]/, "", $2); split($2, version, "."); print version[1]; exit }' /etc/os-release)"; then
+        echo "Не удалось определить версию ОС для настройки зеркала OpenH264." >&2
+        return 1
+    fi
+    # На AlmaLinux 8 репозитория Cisco в EPEL нет, отдельное зеркало не требуется.
+    # Для AlmaLinux 9 и 10 добавляем резерв только к существующему репозиторию.
+    [[ "$os_major" == "9" || "$os_major" == "10" ]] || return 0
+
+    for repository_file in /etc/yum.repos.d/*.repo; do
+        [[ -f "$repository_file" ]] || continue
+        grep -qE '^[[:space:]]*\[epel-cisco-openh264\][[:space:]]*$' "$repository_file" || continue
+        if [[ -L "$repository_file" ]]; then
+            echo "Не удалось настроить зеркало OpenH264: файл является ссылкой: $repository_file" >&2
+            return 1
+        fi
+        if ! prepared_file="$(mktemp "${repository_file}.rish-openh264.XXXXXX")"; then
+            echo "Не удалось создать временный файл репозитория OpenH264." >&2
+            return 1
+        fi
+        _rish_epel_prepare_openh264_mirror "$repository_file" "$prepared_file" "$os_major"
+        prepare_status=$?
+        case "$prepare_status" in
+            0) ;;
+            2)
+                rm -f -- "$prepared_file"
+                continue
+                ;;
+            *)
+                rm -f -- "$prepared_file"
+                echo "Не удалось подготовить настройки зеркала OpenH264: $repository_file" >&2
+                return 1
+                ;;
+        esac
+        if cmp -s -- "$repository_file" "$prepared_file"; then
+            rm -f -- "$prepared_file"
+            continue
+        fi
+
+        if [[ -z "$backup_dir" ]]; then
+            backup_dir="${RISH_HOME:-/root/rish}/backups/repositories/openh264-$(date +%Y%m%d-%H%M%S)-$$"
+        fi
+        if ! install -d -m 700 "$backup_dir" ||
+            ! cp -a -- "$repository_file" "$backup_dir/" ||
+            ! cp --attributes-only --preserve=all -- "$repository_file" "$prepared_file" ||
+            ! touch -- "$prepared_file" ||
+            ! mv -f -- "$prepared_file" "$repository_file"; then
+            rm -f -- "$prepared_file"
+            echo "Не удалось сохранить настройки зеркала OpenH264: $repository_file" >&2
+            return 1
+        fi
+        echo "Для OpenH264 добавлено резервное зеркало Яндекса."
+        echo "Резервная копия конфигурации: $backup_dir"
+    done
+}
+
 _rish_epel_repository_max_minor() {
     local os_major="$1"
     shift
