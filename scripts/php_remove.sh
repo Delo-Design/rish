@@ -68,7 +68,9 @@ php_remove_is_packaged_dropin() {
   local filename="$1" version="$2" owner line stage=0
   case "$filename" in
     "$(php_remove_path "/etc/systemd/system/httpd.service.d/$version-php-fpm.conf")"|\
-    "$(php_remove_path "/etc/systemd/system/nginx.service.d/$version-php-fpm.conf")") ;;
+    "$(php_remove_path "/etc/systemd/system/nginx.service.d/$version-php-fpm.conf")"|\
+    "$(php_remove_path "/usr/lib/systemd/system/httpd.service.d/$version-php-fpm.conf")"|\
+    "$(php_remove_path "/usr/lib/systemd/system/nginx.service.d/$version-php-fpm.conf")") ;;
     *) return 1 ;;
   esac
   [[ -f "$filename" && -r "$filename" && ! -L "$filename" ]] || return 1
