@@ -24,10 +24,12 @@ rish_fw_paths() {
     RISH_FW_STATE_DIR="${RISH_FIREWALL_STATE_DIR:?test state directory required}"
     RISH_FW_LIST_DIR="${RISH_FIREWALL_LIST_DIR:?test list directory required}"
     RISH_FW_LOCK_FILE="${RISH_FIREWALL_LOCK_FILE:-${RISH_FW_STATE_DIR}/lock}"
+    RISH_FW_WHITELIST="${RISH_FIREWALL_WHITELIST_FILE:-${RISH_FW_LIST_DIR}/whitelist.txt}"
   else
     RISH_FW_STATE_DIR="/run/rish/firewall"
     RISH_FW_LIST_DIR="/etc/firewalld/blocklists"
     RISH_FW_LOCK_FILE="${RISH_FW_STATE_DIR}/lock"
+    RISH_FW_WHITELIST="/etc/firewalld/rish-whitelist.txt"
   fi
   RISH_FW_LEDGER="${RISH_FW_STATE_DIR}/temporary.tsv"
   RISH_FW_SERVER_LOCK_FILE="${RISH_FW_STATE_DIR}/server-lock.tsv"
@@ -240,6 +242,327 @@ except ValueError:
     sys.exit(1)
 PY
 }
+
+# Preserve the editable document separately from its validated network snapshot.
+# SOURCE is a dynamically scoped, internal transaction snapshot, never user input.
+rish_fw_whitelist_read() {
+  local target="$1" source_file
+  rish_fw_paths || return 1
+  source_file="${RISH_FW_WHITELIST_SOURCE:-$RISH_FW_WHITELIST}"
+  if [[ -z "${RISH_FW_WHITELIST_SOURCE:-}" ]]; then
+    rish_fw_secure_path "$source_file" || return 1
+  fi
+  [[ ! -e "$source_file" && ! -L "$source_file" ]] || [[ -f "$source_file" && ! -L "$source_file" ]] || return 1
+  python3 - "$source_file" "$target" <<'PY'
+import ipaddress, os, sys
+source, target = sys.argv[1:]
+try:
+    networks = set()
+    if os.path.exists(source):
+        with open(source, encoding='utf-8') as handle:
+            document = handle.read(1048577)
+        if len(document.encode('utf-8')) > 1048576:
+            raise ValueError('размер списка превышает 1 МиБ')
+        for number, line in enumerate(document.splitlines(), 1):
+            value = line.split('#', 1)[0].strip()
+            if not value:
+                continue
+            if '%' in value or len(value.split()) != 1:
+                raise ValueError('строка %d: требуется один IP или CIDR' % number)
+            try:
+                net = ipaddress.ip_network(value, strict=False)
+            except ValueError:
+                raise ValueError('строка %d: неверный IP или CIDR' % number)
+            if net.version == 6 and net.prefixlen < 96 and net.overlaps(ipaddress.ip_network('::ffff:0:0/96')):
+                raise ValueError('строка %d: слишком широкая IPv4-mapped подсеть' % number)
+            if net.version == 6 and net.network_address.ipv4_mapped:
+                if net.prefixlen < 96:
+                    raise ValueError('строка %d: слишком широкая IPv4-mapped подсеть' % number)
+                net = ipaddress.ip_network((net.network_address.ipv4_mapped, net.prefixlen - 96), strict=False)
+            loopback = ipaddress.ip_network('127.0.0.0/8' if net.version == 4 else '::1/128')
+            if net.prefixlen == 0 or net.network_address.is_unspecified or net.overlaps(loopback) or net.is_multicast:
+                raise ValueError('строка %d: default route, неопределённый адрес, loopback и multicast запрещены' % number)
+            networks.add(net)
+            if len(networks) > 4096:
+                raise ValueError('допускается не более 4096 адресов и подсетей')
+    result = []
+    for family in (4, 6):
+        result.extend(ipaddress.collapse_addresses(n for n in networks if n.version == family))
+    with open(target, 'w', encoding='utf-8') as handle:
+        for net in result:
+            handle.write(str(net) + '\n')
+except (OSError, UnicodeError, ValueError) as error:
+    print('Ошибка белого списка: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+# Subtract ranges rather than accepting whitelist traffic ahead of port rules.
+rish_fw_whitelist_filter() (
+  local input="$1" output="$2" work
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  rish_fw_whitelist_read "$work/white" || return 1
+  python3 - "$input" "$output" "$work/white" <<'PY'
+import bisect, ipaddress, sys
+source, target, whitelist = sys.argv[1:]
+try:
+    with open(whitelist, encoding='utf-8') as handle:
+        white = [ipaddress.ip_network(line.strip()) for line in handle if line.strip()]
+    # Existing inet6 sets/journals may contain mapped addresses. Keep their
+    # native family and subtract the IPv6 equivalents of protected IPv4 ranges.
+    white.extend(ipaddress.ip_network((ipaddress.IPv6Address((0xffff << 32) | int(n.network_address)), n.prefixlen + 96))
+                 for n in list(white) if n.version == 4)
+    ranges = {}
+    for family in (4, 6):
+        nets = list(ipaddress.collapse_addresses(n for n in white if n.version == family))
+        ranges[family] = ([int(n.network_address) for n in nets], [int(n.broadcast_address) for n in nets])
+    result, seen, additional = set(), set(), 0
+    with open(source, encoding='utf-8') as handle:
+        for line in handle:
+            value = line.split('#', 1)[0].strip()
+            if not value:
+                continue
+            net = ipaddress.ip_network(value, strict=False)
+            if net in seen:
+                continue
+            seen.add(net)
+            fragments = []
+            starts, ends = ranges[net.version]
+            first, last = int(net.network_address), int(net.broadcast_address)
+            index = bisect.bisect_left(ends, first)
+            address_type = ipaddress.IPv4Address if net.version == 4 else ipaddress.IPv6Address
+            while index < len(starts) and starts[index] <= last:
+                if first < starts[index]:
+                    fragments.extend(ipaddress.summarize_address_range(address_type(first), address_type(starts[index] - 1)))
+                    if additional + max(0, len(fragments) - 1) > 8192:
+                        raise ValueError('исключение белого списка создаёт более 8192 дополнительных подсетей; уменьшите диапазон')
+                first = max(first, ends[index] + 1)
+                index += 1
+                if first > last:
+                    break
+            if first <= last:
+                fragments.extend(ipaddress.summarize_address_range(address_type(first), address_type(last)))
+            # Bound only fragmentation, not the size of an existing blocklist.
+            additional += max(0, len(fragments) - 1)
+            if additional > 8192:
+                raise ValueError('исключение белого списка создаёт более 8192 дополнительных подсетей; уменьшите диапазон')
+            result.update(fragments)
+    with open(target, 'w', encoding='utf-8') as handle:
+        for net in sorted(result, key=lambda n: (n.version, int(n.network_address), n.prefixlen)):
+            handle.write(str(net) + '\n')
+except (OSError, UnicodeError, ValueError) as error:
+    print('Не удалось исключить белый список: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+)
+
+rish_fw_whitelist_guard_file() (
+  local work
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  rish_fw_normalize "$1" "$work/before" preserve &&
+    rish_fw_whitelist_filter "$work/before" "$work/after" || return 1
+  cmp -s "$work/before" "$work/after" || {
+    rish_fw_error "Список пересекается с белым списком. Сначала сохраните белый список через его редактор для сверки блокировок."
+    return 1
+  }
+)
+
+rish_fw_whitelist_template() {
+  cat <<'TEXT'
+# Белый список RISH
+#
+# Указанные адреса исключаются из анализа активных IP
+# и из блокировок RISH, включая блокировку сервера.
+# Доступ по портам определяется настройками firewalld.
+#
+# Добавляйте один IPv4, IPv6 или подсеть CIDR на строку.
+# Подсеть исключает из анализа и блокировок все её адреса.
+# После символа # можно написать пояснение.
+# Пустые строки и комментарии игнорируются.
+# Default route /0, неопределённые адреса, loopback,
+# multicast и IPv6 zone ID (например %eth0) не допускаются.
+#
+# Примеры закомментированы. Добавьте свои адреса ниже:
+# 203.0.113.10       # Мой внешний IP
+# 198.51.100.0/24    # Доверенная подсеть
+# 2001:db8::10       # Доверенный IPv6
+#
+# Изменяйте список через пункт «Редактирование белого списка».
+# Сохраните файл и закройте редактор для применения.
+# При ошибке в адресах изменения не применяются.
+# Удаление из белого списка разрешает будущие блокировки;
+# ранее снятые блокировки автоматически не возвращаются.
+
+TEXT
+}
+
+# The editable file is committed last. Every native change keeps an undo log;
+# the same flock covers saving, imports, temporary bans and server isolation.
+rish_fw_whitelist_apply() (
+  local candidate="$1" expected="${2:-}" work ids id family mode path info state failed=0 rollback_failed=0
+  local temporary_changed=0 isolation_changed=0 item
+  local RISH_FW_LIST_ID RISH_FW_ATTACH_GATE=0 RISH_FW_WHITELIST_SOURCE
+  local -a whitelist_changes=()
+  rish_fw_active && rish_fw_lock || return 1
+  rish_fw_secure_path "$RISH_FW_WHITELIST" || return 1
+  [[ ! -e "$RISH_FW_WHITELIST" || -f "$RISH_FW_WHITELIST" ]] || return 1
+  umask 077
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  : >"$work/old-document" || return 1
+  if [[ -e "$RISH_FW_WHITELIST" ]]; then cp -- "$RISH_FW_WHITELIST" "$work/old-document" || return 1; fi
+  if [[ -n "$expected" ]] && ! cmp -s "$expected" "$work/old-document"; then
+    rish_fw_error "Белый список изменился в другой сессии. Откройте редактор заново."
+    return 1
+  fi
+  cp -- "$candidate" "$work/document" || return 1
+  RISH_FW_WHITELIST_SOURCE="$work/old-document"
+  if ! rish_fw_whitelist_read "$work/old-white" 2>"$work/old-error"; then
+    # Repairing an invalid document is safe when isolation is off. With active
+    # isolation its previous exceptions must remain recoverable for rollback.
+    rish_fw_server_lock_refresh || return 1
+    if [[ "$RISH_FW_SERVER_LOCK_STATE" != off ]]; then
+      cat -- "$work/old-error" >&2
+      rish_fw_error "Для исправления повреждённого белого списка сначала снимите блокировку сервера."
+      return 1
+    fi
+    : >"$work/old-white" || return 1
+  fi
+  RISH_FW_WHITELIST_SOURCE="$work/document"
+  rish_fw_whitelist_read "$work/new-white" || return 1
+  rish_fw_temporary_snapshot "$work/old-ledger" || return 1
+  ids=$(rish_fw_list_ids) || return 1
+  # Read all lists before the first mutation, including disabled/shared lists.
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    RISH_FW_LIST_ID="$id"
+    for family in 4 6; do
+      item="$work/$id-$family"
+      mkdir -- "$item" || return 1
+      for mode in runtime permanent; do
+        info=$(rish_fw_ipset_info "$family" "$mode"); state=$?
+        [[ "$state" == 0 || "$state" == 1 ]] || return 1
+        printf '%s\n' "$state" >"$item/state-$mode" || return 1
+        : >"$item/raw-$mode" || return 1
+        if [[ "$state" == 0 ]]; then rish_fw_entries_from_info "$family" "$info" >"$item/raw-$mode" || return 1; fi
+        rish_fw_normalize "$item/raw-$mode" "$item/$mode" preserve || return 1
+      done
+      if ! cmp -s "$item/state-runtime" "$item/state-permanent" || ! cmp -s "$item/runtime" "$item/permanent"; then
+        rish_fw_error "Список ${id}, IPv${family}: действующие и сохранённые данные различаются. Сначала требуется сверка."
+        return 1
+      fi
+      rish_fw_whitelist_filter "$item/permanent" "$item/desired" || return 1
+      path=$(rish_fw_list_path "$family") || return 1
+      rish_fw_secure_path "$path" || return 1
+      if [[ -e "$path" ]]; then
+        [[ -f "$path" ]] && cp -- "$path" "$item/file" || return 1
+        rish_fw_normalize "$path" "$item/file-normalized" preserve || return 1
+        if [[ $(cat "$item/state-permanent") == 0 ]] && ! cmp -s "$item/file-normalized" "$item/permanent"; then
+          rish_fw_error "Файл списка ${id}, IPv${family} отличается от firewalld. Сначала требуется сверка."
+          return 1
+        fi
+        rish_fw_whitelist_filter "$item/file-normalized" "$item/new-file" || return 1
+      fi
+    done
+  done <<<"$ids"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    RISH_FW_LIST_ID="$id"
+    for family in 4 6; do
+      item="$work/$id-$family"; path=$(rish_fw_list_path "$family") || { failed=1; break; }
+      if ! cmp -s "$item/permanent" "$item/desired"; then
+        whitelist_changes+=("$id/$family")
+        rish_fw_permanent_apply "$family" "$item/desired" preserve "$item/undo" || { failed=1; break; }
+      elif [[ -f "$item/file" ]] && ! cmp -s "$item/file-normalized" "$item/new-file"; then
+        whitelist_changes+=("$id/$family")
+        rish_fw_atomic_file "$item/new-file" "$path" || { failed=1; break; }
+      fi
+    done
+    [[ "$failed" == 0 ]] || break
+  done <<<"$ids"
+  if [[ "$failed" == 0 ]]; then
+    if rish_fw_temporary_whitelist_apply; then temporary_changed=1; else failed=1; fi
+  fi
+  if [[ "$failed" == 0 ]]; then
+    if rish_fw_server_lock_whitelist_apply; then isolation_changed=1; else failed=1; fi
+  fi
+  if [[ "$failed" == 0 ]]; then
+    rish_fw_atomic_file "$work/document" "$RISH_FW_WHITELIST" || failed=1
+  fi
+  if [[ "$failed" == 0 ]]; then
+    rish_fw_ui_changed || true
+    printf 'Белый список %sприменён и сохранён%s.\n' "$RISH_FW_GREEN" "$RISH_FW_RESET"
+    rish_fw_field "Файл" "$RISH_FW_WHITELIST"
+    return 0
+  fi
+  RISH_FW_WHITELIST_SOURCE="$work/old-white"
+  if [[ "$isolation_changed" == 1 ]]; then rish_fw_server_lock_whitelist_apply || rollback_failed=1; fi
+  if [[ "$temporary_changed" == 1 ]]; then rish_fw_temporary_restore "$work/old-ledger" || rollback_failed=1; fi
+  local index
+  for ((index=${#whitelist_changes[@]}-1; index>=0; index--)); do
+    id="${whitelist_changes[index]%/*}"; family="${whitelist_changes[index]##*/}"
+    RISH_FW_LIST_ID="$id"; item="$work/$id-$family"
+    RISH_FW_OPERATION_SET=$(rish_fw_set_name "$family") || { rollback_failed=1; continue; }
+    if [[ -f "$item/undo" ]]; then rish_fw_rollback_ops "$item/undo" || rollback_failed=1; fi
+    path=$(rish_fw_list_path "$family") || { rollback_failed=1; continue; }
+    if [[ -f "$item/file" ]]; then rish_fw_atomic_file "$item/file" "$path" || rollback_failed=1;
+    else rm -f -- "$path" || rollback_failed=1; fi
+    for mode in runtime permanent; do
+      rish_fw_current_entries "$family" "$mode" >"$item/verify-raw" &&
+        rish_fw_normalize "$item/verify-raw" "$item/verify" preserve &&
+        cmp -s "$item/$mode" "$item/verify" || rollback_failed=1
+    done
+  done
+  rish_fw_error "Белый список не сохранён; выполнен откат изменений блокировок."
+  [[ "$rollback_failed" == 0 ]] || rish_fw_error "Полный откат не подтверждён. Проверьте списки блокировок и состояние блокировки сервера."
+  return 1
+)
+
+rish_fw_whitelist_edit() (
+  local work choice
+  command -v mcedit >/dev/null 2>&1 || { rish_fw_error "Редактор mcedit не найден."; return 1; }
+  rish_fw_paths && rish_fw_secure_path "$RISH_FW_WHITELIST" || return 1
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  : >"$work/original" || return 1
+  if [[ -e "$RISH_FW_WHITELIST" ]]; then
+    [[ -f "$RISH_FW_WHITELIST" ]] && cp -- "$RISH_FW_WHITELIST" "$work/original" || return 1
+    cp -- "$work/original" "$work/edit.txt" || return 1
+  else rish_fw_whitelist_template >"$work/edit.txt" || return 1; fi
+  while true; do
+    mcedit "$work/edit.txt" || return 1
+    cmp -s "$work/original" "$work/edit.txt" && return 0
+    if rish_fw_whitelist_apply "$work/edit.txt" "$work/original"; then return 0; fi
+    choice=0
+    vertical_menu current 2 0 32 default=0 "Отмена" "Вернуться в редактор" || choice=$?
+    [[ "$choice" == 1 ]] || return 1
+  done
+)
+
+rish_fw_whitelist_add_peer() (
+  local peer work RISH_FW_WHITELIST_SOURCE
+  peer=$(rish_fw_server_lock_peer) || return 1
+  rish_fw_paths && rish_fw_secure_path "$RISH_FW_WHITELIST" || return 1
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  : >"$work/original" || return 1
+  if [[ -e "$RISH_FW_WHITELIST" ]]; then
+    [[ -f "$RISH_FW_WHITELIST" ]] && cp -- "$RISH_FW_WHITELIST" "$work/original" || return 1
+    cp -- "$work/original" "$work/edit" || return 1
+  else rish_fw_whitelist_template >"$work/edit" || return 1; fi
+  printf '%s\n' "$peer" >"$work/peer" || return 1
+  RISH_FW_WHITELIST_SOURCE="$work/original"
+  rish_fw_whitelist_filter "$work/peer" "$work/remaining" || return 1
+  if [[ ! -s "$work/remaining" ]]; then
+    printf 'IP %s%s%s уже входит в белый список.\n' "$RISH_FW_GREEN" "$peer" "$RISH_FW_RESET"
+    return 0
+  fi
+  printf '\n%s # Текущий SSH-IP\n' "$peer" >>"$work/edit" || return 1
+  rish_fw_whitelist_apply "$work/edit" "$work/original" || return 1
+  rish_fw_field "Добавленный IP" "$peer"
+)
 
 rish_fw_ip_lookup() {
   python3 - "$1" "$RISH_FW_GREEN" "$RISH_FW_YELLOW" "$RISH_FW_RESET" "${2:-}" "${3:-}" "${4:-10}" <<'PY'
@@ -630,6 +953,10 @@ import ipaddress, sys
 try:
     net = ipaddress.ip_network(sys.argv[1], strict=False)
     peer = ipaddress.ip_address(sys.argv[2].split()[0])
+    if peer.version == 6 and peer.ipv4_mapped:
+        peer = peer.ipv4_mapped
+    if peer.version == 4 and net.version == 6:
+        peer = ipaddress.IPv6Address((0xffff << 32) | int(peer))
     if peer.version == net.version and peer in net:
         raise ValueError()
 except (ValueError, IndexError):
@@ -658,8 +985,11 @@ try:
                     raise ValueError('Адрес текущего SSH-клиента неизвестен. Блокировка недоступна в этой сессии.')
                 if peer is None:
                     peer = ipaddress.ip_address(context.split()[0])
+                    if peer.version == 6 and peer.ipv4_mapped:
+                        peer = peer.ipv4_mapped
                 net = ipaddress.ip_network(value, strict=False)
-                if peer.version == net.version and peer in net:
+                comparable = ipaddress.IPv6Address((0xffff << 32) | int(peer)) if peer.version == 4 and net.version == 6 else peer
+                if comparable.version == net.version and comparable in net:
                     raise ValueError('CIDR включает текущий SSH-клиент')
 except (OSError, UnicodeError, ValueError, IndexError) as error:
     print('Блокировка запрещена: %s.' % error, file=sys.stderr)
@@ -708,7 +1038,7 @@ rish_fw_server_lock_icmptypes() {
     mld-listener-done mld-listener-query mld-listener-report mld2-listener-report
 }
 
-rish_fw_server_lock_rules() {
+rish_fw_server_lock_legacy_rules() {
   local peer="$1" family other kind
   family=$(rish_fw_family "$peer"); other=6; [[ "$family" != 6 ]] || other=4
   while IFS= read -r kind; do
@@ -721,8 +1051,63 @@ rish_fw_server_lock_rules() {
   printf 'rule priority="-32000" family="ipv%s" drop\n' "$other"
 }
 
+# Compute only DROP exclusions: trusted addresses still use the zone's ports.
+# A snapshot in the journal keeps cleanup independent of later whitelist edits.
+rish_fw_server_lock_rules() (
+  local peer="$1" work kind
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  rish_fw_whitelist_read "$work/whitelist" || return 1
+  python3 - "$peer" "$work/whitelist" >"$work/drops" <<'PY'
+import ipaddress, sys
+try:
+    peer = ipaddress.ip_address(sys.argv[1])
+    protected = [ipaddress.ip_network(str(peer))]
+    with open(sys.argv[2], encoding='utf-8') as handle:
+        protected.extend(ipaddress.ip_network(line.strip()) for line in handle if line.strip())
+    drops = []
+    def add_gap(first, last, address_type):
+        for net in ipaddress.summarize_address_range(address_type(first), address_type(last)):
+            if len(drops) >= 2048:
+                raise ValueError('белый список требует более 2048 правил ограничения; сократите число отдельных адресов')
+            drops.append(net)
+    for version in (4, 6):
+        address_type = ipaddress.IPv4Address if version == 4 else ipaddress.IPv6Address
+        first, last = 0, 2 ** (32 if version == 4 else 128) - 1
+        # Collapsed networks are sorted and disjoint. Visit each gap once;
+        # do not repeatedly rescan the growing complement for every address.
+        for allowed in ipaddress.collapse_addresses(net for net in protected if net.version == version):
+            start = int(allowed.network_address)
+            if first < start:
+                add_gap(first, start - 1, address_type)
+            first = int(allowed.broadcast_address) + 1
+        if first <= last:
+            add_gap(first, last, address_type)
+    for net in sorted(drops, key=lambda n: (n.version, int(n.network_address), n.prefixlen)):
+        print('rule priority="-32000" family="ipv%d" source address="%s" drop' % (net.version, net))
+except (OSError, UnicodeError, ValueError) as error:
+    print('Не удалось подготовить исключения блокировки сервера: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+  [[ $? == 0 ]] || return 1
+  while IFS= read -r kind; do
+    printf 'rule priority="-32001" family="ipv6" icmp-type name="%s" accept\n' "$kind"
+  done < <(rish_fw_server_lock_icmptypes)
+  printf 'rule priority="-32001" family="ipv6" destination address="fe80::/64" port port="546" protocol="udp" accept\n'
+  cat -- "$work/drops"
+)
+
+rish_fw_server_lock_owned_rules() {
+  if [[ -n "${RISH_FW_SERVER_LOCK_RULES:-}" ]]; then
+    printf '%s\n' "$RISH_FW_SERVER_LOCK_RULES"
+  else
+    rish_fw_server_lock_legacy_rules "$RISH_FW_SERVER_LOCK_IP"
+  fi
+}
+
 rish_fw_server_lock_read() {
   local record
+  RISH_FW_SERVER_LOCK_RULES=""
   rish_fw_paths || return 1
   [[ -e "$RISH_FW_SERVER_LOCK_FILE" || -L "$RISH_FW_SERVER_LOCK_FILE" ]] || return 0
   rish_fw_secure_path "$RISH_FW_SERVER_LOCK_FILE" && [[ -f "$RISH_FW_SERVER_LOCK_FILE" ]] || return 1
@@ -731,21 +1116,45 @@ import ipaddress, re, sys
 try:
     with open(sys.argv[1], encoding='utf-8') as handle:
         rows = handle.read().splitlines()
-    if len(rows) != 1:
-        raise ValueError('ожидалась одна запись')
+    if not rows or len(rows) > 4106:
+        raise ValueError('недопустимое число записей')
     zone, peer, expiry = rows[0].split('\t')
     address = ipaddress.ip_address(peer)
     if (not re.fullmatch(r'[A-Za-z0-9_.-]+', zone) or str(address) != peer or
             '%' in peer or address.is_unspecified or address.is_multicast or
             not re.fullmatch(r'0|[1-9][0-9]{0,11}', expiry)):
         raise ValueError('некорректные поля')
+    rules = rows[1:]
+    if rules:
+        if len(rules) != len(set(rules)):
+            raise ValueError('повторное правило')
+        kinds = {'neighbour-advertisement', 'neighbour-solicitation', 'router-advertisement', 'redirect',
+                 'mld-listener-done', 'mld-listener-query', 'mld-listener-report', 'mld2-listener-report'}
+        support = {'rule priority="-32001" family="ipv6" icmp-type name="%s" accept' % kind for kind in kinds}
+        support.add('rule priority="-32001" family="ipv6" destination address="fe80::/64" port port="546" protocol="udp" accept')
+        legacy = {'rule priority="-32000" family="ipv%d" source NOT address="%s" drop' % (address.version, address),
+                  'rule priority="-32000" family="ipv%d" drop' % (6 if address.version == 4 else 4)}
+        for rule in rules:
+            if rule in support or rule in legacy:
+                continue
+            match = re.fullmatch(r'rule priority="-32000" family="ipv([46])" source address="([^"\s]+)" drop', rule)
+            if not match:
+                raise ValueError('неизвестное правило снимка')
+            net = ipaddress.ip_network(match[2], strict=True)
+            if str(net.version) != match[1] or str(net) != match[2] or (net.version == address.version and address in net):
+                raise ValueError('некорректное DROP-правило снимка')
+        if not support <= set(rules):
+            raise ValueError('неполный служебный снимок')
     print('\t'.join((zone, peer, expiry)))
+    for rule in rules:
+        print(rule)
 except (OSError, UnicodeError, ValueError) as error:
     print('Не удалось прочитать журнал блокировки сервера: %s.' % error, file=sys.stderr)
     sys.exit(1)
 PY
   ) || return 1
   IFS=$'\t' read -r RISH_FW_SERVER_LOCK_ZONE RISH_FW_SERVER_LOCK_IP RISH_FW_SERVER_LOCK_EXPIRY <<<"$record"
+  if [[ "$record" == *$'\n'* ]]; then RISH_FW_SERVER_LOCK_RULES="${record#*$'\n'}"; fi
 }
 
 # Validate active bindings separately: a default zone is not necessarily the
@@ -783,7 +1192,7 @@ PY
 }
 
 rish_fw_server_lock_refresh() {
-  local diagnostics="${1:-quiet}" rule rc rules work output expected_count=0
+  local diagnostics="${1:-quiet}" rules work output expected_count=0 expected_drops=0 foreign_rules=0
   RISH_FW_SERVER_LOCK_STATE=unknown
   RISH_FW_SERVER_LOCK_IP=""; RISH_FW_SERVER_LOCK_ZONE=""; RISH_FW_SERVER_LOCK_EXPIRY=""
   RISH_FW_SERVER_LOCK_PRESENT=0; RISH_FW_SERVER_LOCK_DROPS=0
@@ -796,34 +1205,50 @@ rish_fw_server_lock_refresh() {
     RISH_FW_SERVER_LOCK_STATE=off
     return 0
   fi
-  while IFS= read -r rule; do
-    expected_count=$((expected_count + 1))
-    rish_fw_cmd --zone="$RISH_FW_SERVER_LOCK_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
-    case "$rc" in
-      0)
-        RISH_FW_SERVER_LOCK_PRESENT=$((RISH_FW_SERVER_LOCK_PRESENT + 1))
-        [[ "$rule" != *' drop' ]] || RISH_FW_SERVER_LOCK_DROPS=$((RISH_FW_SERVER_LOCK_DROPS + 1)) ;;
-      1) ;;
-      *) return 1 ;;
-    esac
-  done < <(rish_fw_server_lock_rules "$RISH_FW_SERVER_LOCK_IP")
-  if ((RISH_FW_SERVER_LOCK_DROPS == 0)); then
+  rules=$(rish_fw_server_lock_owned_rules) || return 1
+  work=$(mktemp -d) || return 1
+  if ! printf '%s\n' "$rules" >"$work/expected" ||
+      ! rish_fw_cmd --zone="$RISH_FW_SERVER_LOCK_ZONE" --list-rich-rules >"$work/actual"; then
+    rm -rf -- "$work"; return 1
+  fi
+  output=$(python3 - "$work" <<'PY'
+import os, shlex, sys
+try:
+    def read(name):
+        with open(os.path.join(sys.argv[1], name), encoding='utf-8') as handle:
+            return {tuple(sorted(shlex.split(line))) for line in handle if line.strip()}
+    expected, actual = read('expected'), read('actual')
+    if not expected or any(not row or 'rule' not in row for row in actual):
+        raise ValueError('неверный снимок rich rules')
+    present = expected & actual
+    foreign = sum(any(token.startswith('priority=') and int(token.split('=', 1)[1]) <= -32000
+                      for token in row) for row in actual - expected)
+    print(len(expected), sum('drop' in row for row in expected), len(present),
+          sum('drop' in row for row in present), foreign)
+except (OSError, UnicodeError, ValueError) as error:
+    print('Не удалось сверить правила блокировки сервера: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+  ) || { rm -rf -- "$work"; return 1; }
+  read -r expected_count expected_drops RISH_FW_SERVER_LOCK_PRESENT RISH_FW_SERVER_LOCK_DROPS foreign_rules <<<"$output"
+  if ((foreign_rules > 0)); then
+    RISH_FW_SERVER_LOCK_STATE=partial
+  elif ((RISH_FW_SERVER_LOCK_DROPS == 0)); then
     RISH_FW_SERVER_LOCK_STATE=off
-  elif ((RISH_FW_SERVER_LOCK_PRESENT == expected_count && RISH_FW_SERVER_LOCK_DROPS == 2)) &&
+  elif ((RISH_FW_SERVER_LOCK_PRESENT == expected_count && RISH_FW_SERVER_LOCK_DROPS == expected_drops)) &&
       [[ "$RISH_FW_SERVER_LOCK_EXPIRY" == 0 || "$RISH_FW_SERVER_LOCK_EXPIRY" -gt "$(rish_fw_now)" ]]; then
     # A newly added policy/direct rule can bypass otherwise intact zone rules.
     # Recheck coverage instead of treating our journal as proof of isolation.
-    work=$(mktemp -d) || return 1
     if output=$(local RISH_FW_ZONE="$RISH_FW_SERVER_LOCK_ZONE"; rish_fw_server_lock_preflight "$work" "$RISH_FW_SERVER_LOCK_IP" 2>&1); then
       RISH_FW_SERVER_LOCK_STATE=active
     else
       RISH_FW_SERVER_LOCK_STATE=partial
       if [[ "$diagnostics" == verbose && -n "$output" ]]; then printf '%s\n' "$output" >&2; fi
     fi
-    rm -rf -- "$work"
   else
     RISH_FW_SERVER_LOCK_STATE=partial
   fi
+  rm -rf -- "$work"
 }
 
 rish_fw_server_lock_summary() {
@@ -832,6 +1257,7 @@ rish_fw_server_lock_summary() {
     active)
       rish_fw_field "Блокировка сервера" "включена" "$RISH_FW_YELLOW"
       rish_fw_field "Разрешённый IP" "$RISH_FW_SERVER_LOCK_IP"
+      printf 'Исключения белого списка также сохраняют доступ по разрешённым портам.\n'
       rish_fw_field "Зона ограничения" "$RISH_FW_SERVER_LOCK_ZONE"
       if [[ "$RISH_FW_SERVER_LOCK_EXPIRY" == 0 ]]; then
         rish_fw_field "Срок" "до ручного снятия / перезагрузки" "$RISH_FW_YELLOW"
@@ -866,7 +1292,7 @@ rish_fw_server_lock_preflight() {
   fi
   rish_fw_server_lock_icmptypes >"${work}/required-icmp" || return 1
   : >"${work}/own-rules" || return 1
-  [[ -z "$own_peer" ]] || rish_fw_server_lock_rules "$own_peer" >"${work}/own-rules" || return 1
+  [[ -z "$own_peer" ]] || rish_fw_server_lock_owned_rules >"${work}/own-rules" || return 1
   python3 - "$RISH_FW_ZONE" "$work" <<'PY'
 import os, re, shlex, sys
 zone, work = sys.argv[1:]
@@ -901,7 +1327,7 @@ def objects(text):
     return result
 try:
     required = set(read('required-icmp').split())
-    own_rules = [shlex.split(line) for line in read('own-rules').splitlines()]
+    own_rules = {tuple(sorted(shlex.split(line))) for line in read('own-rules').splitlines()}
     if not required <= set(read('icmptypes').split()):
         raise ValueError('firewalld не поддерживает необходимые служебные типы ICMPv6')
     zones = objects(read('zones'))
@@ -914,7 +1340,7 @@ try:
             if 'forward-port' in rule:
                 raise ValueError('есть rich-перенаправление портов в зоне ' + name)
             priorities = [int(t.split('=', 1)[1]) for t in rule if t.startswith('priority=')]
-            if name == zone and any(p <= -32000 for p in priorities) and rule not in own_rules:
+            if name == zone and any(p <= -32000 for p in priorities) and tuple(sorted(rule)) not in own_rules:
                 raise ValueError('есть конфликтующее приоритетное правило в зоне ' + name)
     # Policies precede zones. Permit only the strict service-ICMPv6 shape of
     # the standard host policy; its name alone is not a safety guarantee.
@@ -961,7 +1387,7 @@ rish_fw_server_lock_cleanup() {
   local rules rule rc kind cancel_absent="${1:-yes}" pending_timers=0
   [[ -n "$RISH_FW_SERVER_LOCK_IP" && -n "$RISH_FW_SERVER_LOCK_ZONE" ]] || return 1
   local RISH_FW_ZONE="$RISH_FW_SERVER_LOCK_ZONE"
-  rules=$(rish_fw_server_lock_rules "$RISH_FW_SERVER_LOCK_IP") || return 1
+  rules=$(rish_fw_server_lock_owned_rules) || return 1
   for kind in drop accept; do
     while IFS= read -r rule; do
       [[ "$rule" == *" $kind" ]] || continue
@@ -988,7 +1414,7 @@ rish_fw_server_lock_cleanup() {
 }
 
 rish_fw_server_lock_enable() (
-  local peer="$1" seconds="$2" actual work expiry rule result remaining rc failed=0
+  local peer="$1" seconds="$2" actual work expiry rule result remaining rc rules failed=0
   [[ "$seconds" == 0 || "$seconds" == 900 || "$seconds" == 3600 || "$seconds" == 86400 ]] || return 1
   actual=$(rish_fw_server_lock_peer) || return 1
   [[ "$actual" == "$peer" ]] || { rish_fw_error "IP не совпадает с текущим SSH-клиентом."; return 1; }
@@ -996,14 +1422,17 @@ rish_fw_server_lock_enable() (
   [[ "$RISH_FW_SERVER_LOCK_STATE" == off ]] || { rish_fw_error "Сначала снимите или проверьте существующее ограничение сервера."; return 1; }
   work=$(mktemp -d) || return 1
   trap 'rm -rf -- "$work"' EXIT
+  rules=$(rish_fw_server_lock_rules "$peer") || return 1
   # Clean expired/reloaded rules and their old timers before another attempt.
   if [[ -n "$RISH_FW_SERVER_LOCK_IP" ]]; then rish_fw_server_lock_cleanup || return 1; fi
   rish_fw_server_lock_preflight "$work" || return 1
   expiry=0; [[ "$seconds" == 0 ]] || expiry=$(($(rish_fw_now) + seconds))
   printf '%s\t%s\t%s\n' "$RISH_FW_ZONE" "$peer" "$expiry" >"${work}/journal" || return 1
+  printf '%s\n' "$rules" >>"${work}/journal" || return 1
   # Reserve ownership before any firewalld mutation, including interrupted adds.
   rish_fw_atomic_file "${work}/journal" "$RISH_FW_SERVER_LOCK_FILE" || return 1
   RISH_FW_SERVER_LOCK_ZONE="$RISH_FW_ZONE"; RISH_FW_SERVER_LOCK_IP="$peer"; RISH_FW_SERVER_LOCK_EXPIRY="$expiry"
+  RISH_FW_SERVER_LOCK_RULES="$rules"
   trap 'rish_fw_server_lock_cleanup no || rish_fw_error "Очистка правил режима не завершена; журнал сохранён."; exit 130' INT TERM HUP
   while IFS= read -r rule; do
     remaining=0
@@ -1018,7 +1447,7 @@ rish_fw_server_lock_enable() (
       [[ -z "$result" ]] || printf '%s\n' "$result" >&2
       failed=1; break
     fi
-  done < <(rish_fw_server_lock_rules "$peer")
+  done <<<"$rules"
   if [[ "$failed" == 0 ]]; then
     rish_fw_server_lock_refresh verbose || failed=1
     [[ "$RISH_FW_SERVER_LOCK_STATE" == active ]] || failed=1
@@ -1040,6 +1469,116 @@ rish_fw_server_lock_disable() (
   rish_fw_server_lock_cleanup || { rish_fw_error "Не все правила режима сняты; журнал сохранён для повторной попытки."; return 1; }
   printf 'Блокировка сервера %sснята%s.\n' "$RISH_FW_GREEN" "$RISH_FW_RESET"
   printf 'Обычные правила firewall сохранены.\n'
+)
+
+rish_fw_server_lock_add_timed() {
+  local rule="$1" expiry="$2" remaining=0 output rc
+  if [[ "$expiry" != 0 ]]; then
+    remaining=$((expiry - $(rish_fw_now)))
+    ((remaining > 0)) || { rish_fw_error "Срок ограничения сервера уже истёк."; return 1; }
+    [[ "$rule" != *' accept' ]] || remaining=$((remaining + 30))
+  fi
+  output=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" --timeout="${remaining}s" 2>&1); rc=$?
+  if [[ "$rc" != 0 || "$output" == *ALREADY_ENABLED* || "$output" == *NOT_ENABLED* ]]; then
+    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+    return 1
+  fi
+}
+
+# Called by the whitelist transaction under the same flock. Keep the absolute
+# deadline and publish the union first so interrupted updates remain removable.
+rish_fw_server_lock_whitelist_apply() (
+  local work peer expiry old_rules new_rules union rule rc failed=0 rollback_failed=0
+  local -a attempted_add=() attempted_remove=()
+  rish_fw_lock && rish_fw_server_lock_refresh || return 1
+  [[ "$RISH_FW_SERVER_LOCK_STATE" != off ]] || return 0
+  [[ "$RISH_FW_SERVER_LOCK_STATE" == active ]] || {
+    rish_fw_error "Сначала проверьте или снимите неполную блокировку сервера."; return 1;
+  }
+  local RISH_FW_ZONE="$RISH_FW_SERVER_LOCK_ZONE"
+  peer="$RISH_FW_SERVER_LOCK_IP"; expiry="$RISH_FW_SERVER_LOCK_EXPIRY"
+  old_rules=$(rish_fw_server_lock_owned_rules) || return 1
+  new_rules=$(rish_fw_server_lock_rules "$peer") || return 1
+  [[ "$old_rules" != "$new_rules" ]] || return 0
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  cp -- "$RISH_FW_SERVER_LOCK_FILE" "$work/original" || return 1
+  rish_fw_server_lock_preflight "$work" "$peer" || return 1
+  printf '%s\n' "$old_rules" | LC_ALL=C sort -u >"$work/old" || return 1
+  printf '%s\n' "$new_rules" | LC_ALL=C sort -u >"$work/new" || return 1
+  LC_ALL=C comm -13 "$work/old" "$work/new" >"$work/add" || return 1
+  LC_ALL=C comm -23 "$work/old" "$work/new" >"$work/remove" || return 1
+  union=$(cat -- "$work/old" "$work/new" | LC_ALL=C sort -u) || return 1
+  printf '%s\t%s\t%s\n%s\n' "$RISH_FW_ZONE" "$peer" "$expiry" "$union" >"$work/union" || return 1
+  printf '%s\t%s\t%s\n%s\n' "$RISH_FW_ZONE" "$peer" "$expiry" "$new_rules" >"$work/journal" || return 1
+  rish_fw_atomic_file "$work/union" "$RISH_FW_SERVER_LOCK_FILE" || return 1
+  RISH_FW_SERVER_LOCK_RULES="$union"
+  # Add the new DROP coverage before removing old rules, avoiding an interval
+  # in which unrelated addresses escape the server restriction.
+  while IFS= read -r rule; do
+    [[ -n "$rule" ]] || continue
+    attempted_add+=("$rule")
+    if ! rish_fw_server_lock_add_timed "$rule" "$expiry"; then failed=1; break; fi
+  done <"$work/add"
+  if [[ "$failed" == 0 ]]; then
+    while IFS= read -r rule; do
+      [[ -n "$rule" ]] || continue
+      attempted_remove+=("$rule")
+      if ! rish_fw_remove_rule_checked "$rule"; then failed=1; break; fi
+    done <"$work/remove"
+  fi
+  if [[ "$failed" == 0 ]]; then
+    if ! rish_fw_atomic_file "$work/journal" "$RISH_FW_SERVER_LOCK_FILE" ||
+        ! rish_fw_server_lock_refresh verbose || [[ "$RISH_FW_SERVER_LOCK_STATE" != active ]]; then
+      failed=1
+    fi
+  fi
+  [[ "$failed" != 0 ]] || return 0
+  rish_fw_atomic_file "$work/union" "$RISH_FW_SERVER_LOCK_FILE" || rollback_failed=1
+  RISH_FW_SERVER_LOCK_RULES="$union"
+  if [[ "$expiry" != 0 && "$expiry" -le "$(rish_fw_now)" ]]; then
+    rish_fw_server_lock_cleanup || rish_fw_error "Очистка истёкшего ограничения не завершена; журнал сохранён."
+    rish_fw_error "Ограничение сервера истекло во время изменения белого списка."
+    return 1
+  fi
+  for rule in "${attempted_add[@]}"; do
+    rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+    case "$rc" in
+      0) rish_fw_remove_rule_checked "$rule" || rollback_failed=1 ;;
+      1) [[ "$expiry" == 0 ]] || rish_fw_clear_orphan_timer "$rule" "блокировки сервера" || rollback_failed=1 ;;
+      *) rollback_failed=1 ;;
+    esac
+  done
+  for rule in "${attempted_remove[@]}"; do
+    rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+    case "$rc" in
+      0) ;;
+      1)
+        if [[ "$expiry" != 0 ]] && ! rish_fw_clear_orphan_timer "$rule" "блокировки сервера"; then
+          rollback_failed=1; continue
+        fi
+        rish_fw_server_lock_add_timed "$rule" "$expiry" || rollback_failed=1 ;;
+      *) rollback_failed=1 ;;
+    esac
+  done
+  # Verify both restored rules and absence of newly introduced rules before
+  # restoring the original journal. Keep the union if recovery is uncertain.
+  while IFS= read -r rule; do
+    rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1 || rollback_failed=1
+  done <"$work/old"
+  while IFS= read -r rule; do
+    [[ -n "$rule" ]] || continue
+    rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+    [[ "$rc" == 1 ]] || rollback_failed=1
+  done <"$work/add"
+  if [[ "$rollback_failed" == 0 ]]; then
+    rish_fw_atomic_file "$work/original" "$RISH_FW_SERVER_LOCK_FILE" || rollback_failed=1
+  fi
+  if [[ "$rollback_failed" != 0 ]]; then
+    rish_fw_error "Откат исключений блокировки сервера не подтверждён; журнал сохранён для очистки."
+  fi
+  rish_fw_error "Исключения блокировки сервера не изменены полностью. Белый список не применён."
+  return 1
 )
 
 # A long explanation/confirmation flow can scroll an early error off screen.
@@ -1081,10 +1620,10 @@ rish_fw_server_lock_menu() {
       rish_fw_server_lock_run disable ;;
     off)
       peer=$(rish_fw_server_lock_peer) || return 1
-      printf 'Будут заблокированы новые входящие подключения всех, кроме указанного IP.\n'
+      printf 'Будут заблокированы новые входящие подключения всех,\nкроме текущего SSH-IP и адресов белого списка.\n'
       printf 'Остальные пользователи потеряют доступ к сайтам и другим службам сервера.\n'
       printf 'Установленные соединения, ответы на исходящие запросы\nи необходимый служебный трафик IPv6 сохраняются.\n'
-      printf 'Для разрешённого IP останутся доступны ранее разрешённые порты.\n\n'
+      printf 'Для исключений доступны порты, разрешённые настройками firewalld.\n\n'
       rish_fw_field "Разрешённый IP текущего SSH" "$peer"
       rish_fw_field "Рабочая зона" "$RISH_FW_ZONE"
       printf '\nВыберите срок ограничения:\n'
@@ -1099,7 +1638,7 @@ rish_fw_server_lock_menu() {
       printf '\n'; rish_fw_field "Срок" "$label" "$RISH_FW_YELLOW"
       printf 'Перезагрузка сервера или reload firewalld также %sснимает ограничение%s.\n' "$RISH_FW_YELLOW" "$RISH_FW_RESET"
       printf 'Для досрочного снятия используйте пункт «Снять блокировку сервера».\n'
-      rish_fw_confirm "Включить блокировку сервера для всех кроме указанного IP?" || return 0
+      rish_fw_confirm "Включить блокировку сервера с исключениями SSH-IP и белого списка?" || return 0
       rish_fw_server_lock_run enable "$peer" "$seconds" ;;
     *)
       rish_fw_server_lock_summary
@@ -1161,7 +1700,11 @@ rish_fw_atomic_file() {
   local source_file="$1" target="$2" directory temporary attributes
   directory="${target%/*}"
   rish_fw_secure_path "$target" || return 1
-  install -d -m 700 -- "$directory" || return 1
+  # The whitelist lives directly in /etc/firewalld; preserve that system
+  # directory's existing permissions while retaining private list directories.
+  if [[ "$target" != "${RISH_FW_WHITELIST:-}" || ! -d "$directory" ]]; then
+    install -d -m 700 -- "$directory" || return 1
+  fi
   [[ ! -e "$target" || -f "$target" ]] || return 1
   local owner=0
   [[ "${RISH_FIREWALL_TEST_MODE:-0}" != 1 ]] || owner="$EUID"
@@ -1686,10 +2229,11 @@ rish_fw_permanent_apply() (
   work=$(mktemp -d) || return 1
   trap 'rm -rf -- "$work"' EXIT
   desired="${work}/desired"; current_runtime="${work}/runtime"; current_permanent="${work}/permanent"
-  rish_fw_normalize "$desired_source" "$desired" "$normalize_mode" || return 1
+  rish_fw_normalize "$desired_source" "$work/unfiltered" "$normalize_mode" &&
+    rish_fw_whitelist_filter "$work/unfiltered" "$desired" || return 1
   case "$family" in
     4) if grep -q ':' "$desired"; then rish_fw_error "Список содержит IPv6."; return 1; fi ;;
-    6) if grep -q '\.' "$desired"; then rish_fw_error "Список содержит IPv4."; return 1; fi ;;
+    6) if grep -qv ':' "$desired"; then rish_fw_error "Список содержит IPv4."; return 1; fi ;;
     *) return 2 ;;
   esac
   rish_fw_current_entries "$family" runtime >"${work}/raw-runtime" || return 1
@@ -1729,7 +2273,8 @@ rish_fw_permanent_apply() (
     if [[ "$query_rc" == 1 ]]; then
       # Attaching a shared pre-populated set to a new zone must not lock out
       # the SSH peer through an entry that was already present before this edit.
-      rish_fw_ssh_guard_file "$current_permanent" "$desired" || failed=1
+      rish_fw_ssh_guard_file "$current_permanent" "$desired" &&
+        rish_fw_whitelist_guard_file "$current_permanent" || failed=1
       [[ "$failed" == 0 ]] || break
       result=$(rish_fw_cmd "${flag[@]}" --zone="$RISH_FW_ZONE" --add-rich-rule="$gate" 2>&1)
       if [[ $? != 0 ]]; then printf '%s\n' "$result" >&2; failed=1; break; fi
@@ -1859,6 +2404,18 @@ rish_fw_clear_orphan_timer() {
   result=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" --timeout=0 2>&1)
   if [[ $? != 0 || "$result" == *ALREADY_ENABLED* || "$result" == *NOT_ENABLED* ]]; then
     printf '%s\n' "$result" >&2
+    # A daemon failure can arrive after the technical untimed DROP was added.
+    # ALREADY_ENABLED does not prove this invocation created the live rule.
+    if [[ "$result" != *ALREADY_ENABLED* ]]; then
+      rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1
+      query_rc=$?
+      if [[ "$query_rc" == 0 ]]; then
+        rish_fw_remove_rule_checked "$rule" || rish_fw_remove_rule_checked "$rule" >/dev/null 2>&1 ||
+          rish_fw_error "Техническое правило без срока осталось в зоне ${RISH_FW_ZONE}. Очистите его через меню ${menu_label}."
+      elif [[ "$query_rc" != 1 ]]; then
+        rish_fw_error "Не удалось проверить техническое правило в зоне ${RISH_FW_ZONE}."
+      fi
+    fi
     rish_fw_error "Не удалось подготовить очистку прежнего таймера; новый срок не установлен."
     return 1
   fi
@@ -1876,64 +2433,303 @@ rish_fw_clear_orphan_timer() {
   return 1
 }
 
-rish_fw_temporary_add() (
-  local net seconds="$2" rule now expiry records old_net old_zone old_expiry old_rule result work query_rc
-  net=$(rish_fw_network "$1") || return 1
-  [[ "$seconds" =~ ^[0-9]+$ ]] && ((seconds >= 1 && seconds <= 31536000)) || { rish_fw_error "Срок: от 1 секунды до 365 дней."; return 1; }
-  rish_fw_active && rish_fw_ssh_guard "$net" && rish_fw_lock && rish_fw_temporary_coverage "$net" || return 1
-  records=$(rish_fw_read_ledger) || return 1
-  now=$(rish_fw_now); rule=$(rish_fw_temp_rule "$net")
-  work=$(mktemp) || return 1
-  trap 'rm -f -- "$work"' EXIT
-  while IFS=$'\t' read -r old_net old_zone old_expiry old_rule; do
-    [[ "$old_net" == "$net" && "$old_zone" == "$RISH_FW_ZONE" ]] || continue
-    rish_fw_cmd --zone="$old_zone" --query-rich-rule="$old_rule" >/dev/null 2>&1
-    query_rc=$?
-    if [[ "$query_rc" != 0 && "$query_rc" != 1 ]]; then rish_fw_error "Не удалось сверить временное правило."; return 1; fi
-    if [[ "$query_rc" == 0 ]]; then
-      if ((old_expiry <= now)); then
-        rish_fw_error "Правило действует после записанного срока либо его срок не подтверждён. Сначала снимите эту временную блокировку."
+# Keep inactive ledger rows as timer ownership, separately from proven live bans.
+# A reload may remove a timed rule before its GLib timer has been cancelled.
+rish_fw_temporary_snapshot() (
+  local target="$1" net zone expiry rule rc now
+  rish_fw_read_ledger >"$target" || return 1
+  : >"${target}.active" || return 1
+  now=$(rish_fw_now)
+  while IFS=$'\t' read -r net zone expiry rule; do
+    [[ -n "$net" ]] || continue
+    rish_fw_cmd --zone="$zone" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+    case "$rc" in
+      0)
+        ((expiry > now)) || {
+          rish_fw_error "Временное правило ${net} в зоне ${zone} действует с неподтверждённым сроком. Сначала снимите его через меню."
+          return 1
+        }
+        printf '%s\t%s\t%s\t%s\n' "$net" "$zone" "$expiry" "$rule" >>"${target}.active" || return 1 ;;
+      1) ;;
+      *) rish_fw_error "Не удалось проверить временную блокировку ${net} в зоне ${zone}."; return 1 ;;
+    esac
+  done <"$target"
+)
+
+# Both files form one snapshot: the ledger and its .active companion. Native
+# timeouts always use the remaining absolute deadline, including during rollback.
+rish_fw_temporary_reconcile() (
+  local desired="$1" work net zone expiry rule rc result remaining failed=0 rollback_failed=0 row
+  local RISH_FW_ZONE="$RISH_FW_ZONE"
+  local -a removed=() attempted=()
+  rish_fw_active && rish_fw_lock || return 1
+  [[ -f "$desired" && -f "${desired}.active" ]] || return 1
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  rish_fw_temporary_snapshot "$work/before" || return 1
+  python3 - "$work/before" "$desired" "$work" <<'PY'
+import ipaddress, os, re, sys
+before, desired, work = sys.argv[1:]
+def read(path):
+    rows = {}
+    with open(path, encoding='utf-8') as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            fields = line.rstrip('\n').split('\t')
+            if len(fields) != 4:
+                raise ValueError('неверная запись временного правила')
+            net, zone, expiry, rule = fields
+            network = ipaddress.ip_network(net, strict=True)
+            expected = 'rule priority="-110" family="ipv%d" source address="%s" drop' % (network.version, network)
+            if (not re.fullmatch(r'[A-Za-z0-9_.-]+', zone) or not expiry.isdigit() or rule != expected):
+                raise ValueError('неверные поля временного правила')
+            key = (zone, net)
+            if key in rows and rows[key] != fields:
+                raise ValueError('неоднозначный срок временного правила')
+            rows[key] = fields
+            if len(rows) > 8192:
+                raise ValueError('больше 8192 временных правил')
+    return rows
+def write(name, rows):
+    with open(os.path.join(work, name), 'w', encoding='utf-8') as handle:
+        for row in rows:
+            handle.write('\t'.join(row) + '\n')
+try:
+    old, old_active, new, new_active = (read(path) for path in (before, before + '.active', desired, desired + '.active'))
+    for ledger, active in ((old, old_active), (new, new_active)):
+        if any(ledger.get(key) != row or int(row[2]) <= 0 for key, row in active.items()):
+            raise ValueError('активный снимок не соответствует журналу')
+    write('remove', (row for key, row in old_active.items() if new_active.get(key) != row))
+    write('add', (row for key, row in new_active.items() if old_active.get(key) != row))
+    # Cancel an absent rule's old callback before dropping ownership or before
+    # reusing its exact identity for a fresh positive timeout.
+    write('cleanup', (row for key, row in old.items() if key not in old_active and
+                     (key not in new or key in new_active)))
+    write('desired', new.values())
+    write('desired.active', new_active.values())
+except (ValueError, OSError, UnicodeError) as error:
+    print('Не удалось подготовить временные правила: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+  [[ $? == 0 ]] || return 1
+  # A rule absent from our ledger must never be adopted or removed as ours.
+  while IFS=$'\t' read -r net zone expiry rule; do
+    [[ -n "$net" ]] || continue
+    rish_fw_cmd --zone="$zone" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+    [[ "$rc" == 0 || "$rc" == 1 ]] || return 1
+    if [[ "$rc" == 0 ]] && ! grep -Fqx -- "$net"$'\t'"$zone"$'\t'"$expiry"$'\t'"$rule" "$work/remove"; then
+      # An extension has the same rule with a different expiry in remove.
+      if ! awk -F '\t' -v z="$zone" -v r="$rule" '$2==z && $4==r { found=1 } END { exit !found }' "$work/remove"; then
+        rish_fw_error "Временное правило ${net} уже существует без подходящей записи RISH."
         return 1
       fi
-      printf 'Блокировка уже действует до %s%s%s; срок %sне изменён%s.\n' \
-        "$RISH_FW_YELLOW" "$(rish_fw_date "$old_expiry")" "$RISH_FW_RESET" "$RISH_FW_YELLOW" "$RISH_FW_RESET"
-      return 0
     fi
-    # Zero means no active deadline is confirmed. Persist this before creating
-    # the technical untimed rule, so a cleanup failure cannot claim an old TTL.
-    rish_fw_ledger_replace "$records" "$net" 0 >"$work" || return 1
-    rish_fw_atomic_file "$work" "$RISH_FW_LEDGER" || return 1
-    rish_fw_clear_orphan_timer "$old_rule" || return 1
-    break
-  done <<<"$records"
-  rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1
-  query_rc=$?
-  if [[ "$query_rc" != 0 && "$query_rc" != 1 ]]; then rish_fw_error "Не удалось проверить наличие правила."; return 1; fi
-  if [[ "$query_rc" == 0 ]]; then
-    rish_fw_error "Такое правило уже существует без записи RISH. Его срок и владелец неизвестны."
+  done <"$work/add"
+  while IFS=$'\t' read -r net zone expiry rule; do
+    [[ -n "$net" ]] || continue
+    RISH_FW_ZONE="$zone"
+    rish_fw_clear_orphan_timer "$rule" || return 1
+  done <"$work/cleanup"
+  while IFS=$'\t' read -r net zone expiry rule; do
+    [[ -n "$net" ]] || continue
+    RISH_FW_ZONE="$zone"
+    removed+=("$net"$'\t'"$zone"$'\t'"$expiry"$'\t'"$rule")
+    if ! rish_fw_remove_rule_checked "$rule"; then failed=1; break; fi
+  done <"$work/remove"
+  if [[ "$failed" == 0 ]]; then
+    while IFS=$'\t' read -r net zone expiry rule; do
+      [[ -n "$net" ]] || continue
+      remaining=$((expiry - $(rish_fw_now)))
+      ((remaining > 0)) || continue
+      attempted+=("$net"$'\t'"$zone"$'\t'"$expiry"$'\t'"$rule")
+      result=$(rish_fw_cmd --zone="$zone" --add-rich-rule="$rule" --timeout="${remaining}s" 2>&1)
+      if [[ $? != 0 || "$result" == *ALREADY_ENABLED* || "$result" == *NOT_ENABLED* ]]; then
+        printf '%s\n' "$result" >&2; failed=1; break
+      fi
+    done <"$work/add"
+  fi
+  if [[ "$failed" == 0 ]]; then
+    while IFS=$'\t' read -r net zone expiry rule; do
+      [[ -n "$net" ]] || continue
+      rish_fw_cmd --zone="$zone" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+      if [[ "$rc" != 0 && ( "$rc" != 1 || "$expiry" -gt "$(rish_fw_now)" ) ]]; then failed=1; break; fi
+    done <"$work/desired.active"
+  fi
+  if [[ "$failed" == 0 ]]; then
+    while IFS=$'\t' read -r net zone expiry rule; do
+      [[ -n "$net" ]] || continue
+      # The same identity may have just been re-added with an extended expiry.
+      if awk -F '\t' -v z="$zone" -v r="$rule" '$2==z && $4==r { found=1 } END { exit !found }' "$work/desired.active"; then continue; fi
+      rish_fw_cmd --zone="$zone" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+      [[ "$rc" == 1 ]] || { failed=1; break; }
+    done <"$work/remove"
+  fi
+  if [[ "$failed" == 0 ]]; then
+    rish_fw_atomic_file "$work/desired" "$RISH_FW_LEDGER" || failed=1
+  fi
+  [[ "$failed" != 0 ]] || return 0
+  rish_fw_error "Временные правила не применены. Восстанавливаю прежние сроки."
+  for row in "${attempted[@]}"; do
+    IFS=$'\t' read -r net zone expiry rule <<<"$row"
+    RISH_FW_ZONE="$zone"
+    rish_fw_cmd --zone="$zone" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+    case "$rc" in
+      0) rish_fw_remove_rule_checked "$rule" || rollback_failed=1 ;;
+      1) rish_fw_clear_orphan_timer "$rule" || rollback_failed=1 ;;
+      *) rollback_failed=1 ;;
+    esac
+  done
+  for row in "${removed[@]}"; do
+    IFS=$'\t' read -r net zone expiry rule <<<"$row"
+    remaining=$((expiry - $(rish_fw_now)))
+    ((remaining > 0)) || continue
+    RISH_FW_ZONE="$zone"
+    rish_fw_cmd --zone="$zone" --query-rich-rule="$rule" >/dev/null 2>&1; rc=$?
+    case "$rc" in
+      0) continue ;;
+      1) rish_fw_clear_orphan_timer "$rule" || { rollback_failed=1; continue; } ;;
+      *) rollback_failed=1; continue ;;
+    esac
+    # Queries and orphan cleanup may consume the remaining lifetime.
+    remaining=$((expiry - $(rish_fw_now)))
+    ((remaining > 0)) || continue
+    result=$(rish_fw_cmd --zone="$zone" --add-rich-rule="$rule" --timeout="${remaining}s" 2>&1)
+    if [[ $? != 0 || "$result" == *ALREADY_ENABLED* || "$result" == *NOT_ENABLED* ]]; then
+      printf '%s\n' "$result" >&2; rollback_failed=1
+    fi
+    rish_fw_cmd --zone="$zone" --query-rich-rule="$rule" >/dev/null 2>&1 || rollback_failed=1
+  done
+  ((rollback_failed == 0)) || rish_fw_error "Откат временных блокировок не подтверждён. Проверьте правила firewalld и журнал RISH."
+  return 1
+)
+
+rish_fw_temporary_restore() {
+  rish_fw_temporary_reconcile "$1"
+}
+
+rish_fw_temporary_whitelist_apply() (
+  local work net zone expiry rule fragment
+  rish_fw_active && rish_fw_lock || return 1
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  rish_fw_temporary_snapshot "$work/before" || return 1
+  cp -- "$work/before" "$work/desired" || return 1
+  : >"$work/desired.active" || return 1
+  : >"$work/replacements" || return 1
+  while IFS=$'\t' read -r net zone expiry rule; do
+    [[ -n "$net" ]] || continue
+    printf '%s\n' "$net" >"$work/input" || return 1
+    rish_fw_whitelist_filter "$work/input" "$work/filtered" || return 1
+    # Mark all original live identities for replacement, including full removal.
+    printf '%s\t%s\n' "$zone" "$net" >>"$work/replacements" || return 1
+    while IFS= read -r fragment; do
+      [[ -n "$fragment" ]] || continue
+      printf '%s\t%s\t%s\t%s\n' "$fragment" "$zone" "$expiry" "$(rish_fw_temp_rule "$fragment")" >>"$work/desired.active" || return 1
+    done <"$work/filtered"
+  done <"$work/before.active"
+  python3 - "$work/before" "$work/replacements" "$work/desired.active" "$work/desired" <<'PY'
+import sys
+before, replacements, active, desired = sys.argv[1:]
+try:
+    with open(replacements, encoding='utf-8') as handle:
+        replaced = {tuple(line.rstrip('\n').split('\t')) for line in handle}
+    rows = {}
+    with open(before, encoding='utf-8') as handle:
+        for line in handle:
+            row = line.rstrip('\n').split('\t')
+            if (row[1], row[0]) not in replaced:
+                rows[(row[1], row[0])] = row
+    live = {}
+    with open(active, encoding='utf-8') as handle:
+        for line in handle:
+            row = line.rstrip('\n').split('\t')
+            key = row[1], row[0]
+            if key not in live or int(row[2]) > int(live[key][2]):
+                live[key] = row
+    rows.update(live)
+    if len(rows) > 8192:
+        raise ValueError('после исключения белого списка больше 8192 временных правил')
+    for path, records in ((desired, rows), (active, live)):
+        with open(path, 'w', encoding='utf-8') as handle:
+            for row in records.values():
+                handle.write('\t'.join(row) + '\n')
+except (ValueError, OSError, UnicodeError) as error:
+    print('Не удалось исключить белый список из временных правил: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+  [[ $? == 0 ]] || return 1
+  rish_fw_temporary_reconcile "$work/desired"
+)
+
+rish_fw_temporary_whitelist_guard() (
+  local work
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  printf '%s\n' "$1" >"$work/input" || return 1
+  rish_fw_whitelist_filter "$work/input" "$work/output" || return 1
+  cmp -s "$work/input" "$work/output" || {
+    rish_fw_error "Блокировка пересекается с белым списком. Выберите один из оставшихся незашищённых диапазонов."
     return 1
-  fi
-  result=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" --timeout="${seconds}s" 2>&1)
-  if [[ $? != 0 || "$result" == *ALREADY_ENABLED* ]]; then
-    printf '%s\n' "$result" >&2
-    rish_fw_error "Не удалось подтвердить новую временную блокировку. Новый срок не сохранён."
-    return 1
-  fi
-  expiry=$(($(rish_fw_now) + seconds))
-  rish_fw_ledger_replace "$records" "$net" "$expiry" >"$work" || return 1
-  if ! rish_fw_atomic_file "$work" "$RISH_FW_LEDGER"; then
-    rish_fw_quiet --zone="$RISH_FW_ZONE" --remove-rich-rule="$rule" || rish_fw_error "Откат временной блокировки не выполнен."
-    rish_fw_error "Не удалось сохранить учёт срока."; return 1
-  fi
-  printf 'Адрес %s%s%s %sзаблокирован%s.\n' "$RISH_FW_GREEN" "$net" "$RISH_FW_RESET" "$RISH_FW_GREEN" "$RISH_FW_RESET"
-  rish_fw_field "Срок" "$(rish_fw_duration_label "$seconds")" "$RISH_FW_YELLOW"
-  rish_fw_field "Действует до" "$(rish_fw_date "$expiry")" "$RISH_FW_YELLOW"
+  }
+)
+
+rish_fw_temporary_add() (
+  local net seconds="$2" work fragment zone expiry rule rc deadline old_net old_zone old_expiry old_rule key
+  local -A existing_expiry=() chosen=()
+  net=$(rish_fw_network "$1") || return 1
+  [[ "$seconds" =~ ^[0-9]+$ ]] && ((seconds >= 1 && seconds <= 31536000)) || { rish_fw_error "Срок: от 1 секунды до 365 дней."; return 1; }
+  rish_fw_active && rish_fw_lock || return 1
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  printf '%s\n' "$net" >"$work/input" || return 1
+  rish_fw_whitelist_filter "$work/input" "$work/filtered" || return 1
+  [[ -s "$work/filtered" ]] || { printf 'Адрес входит в белый список; блокировка не создана.\n'; return 0; }
+  rish_fw_ssh_guard_file "$work/filtered" || return 1
+  while IFS= read -r fragment; do
+    rish_fw_temporary_coverage "$fragment" || return 1
+  done <"$work/filtered"
+  rish_fw_temporary_snapshot "$work/before" || return 1
+  while IFS=$'\t' read -r old_net old_zone old_expiry old_rule; do
+    [[ -n "$old_net" ]] || continue
+    key="$old_zone"$'\t'"$old_net"
+    existing_expiry["$key"]="$old_expiry"
+  done <"$work/before.active"
+  deadline=$(($(rish_fw_now) + seconds))
+  : >"$work/chosen" || return 1
+  while IFS= read -r fragment; do
+    key="$RISH_FW_ZONE"$'\t'"$fragment"
+    chosen["$key"]=1
+    expiry="${existing_expiry[$key]:-$deadline}"
+    rule=$(rish_fw_temp_rule "$fragment")
+    printf '%s\t%s\t%s\t%s\n' "$fragment" "$RISH_FW_ZONE" "$expiry" "$rule" >>"$work/chosen" || return 1
+  done <"$work/filtered"
+  : >"$work/desired"; : >"$work/desired.active"
+  for zone in before before.active; do
+    while IFS=$'\t' read -r old_net old_zone old_expiry old_rule; do
+      [[ -n "$old_net" ]] || continue
+      key="$old_zone"$'\t'"$old_net"
+      [[ -z "${chosen[$key]:-}" ]] || continue
+      if [[ "$zone" == before ]]; then
+        printf '%s\t%s\t%s\t%s\n' "$old_net" "$old_zone" "$old_expiry" "$old_rule" >>"$work/desired" || return 1
+      else
+        printf '%s\t%s\t%s\t%s\n' "$old_net" "$old_zone" "$old_expiry" "$old_rule" >>"$work/desired.active" || return 1
+      fi
+    done <"$work/$zone"
+  done
+  cat "$work/chosen" >>"$work/desired" || return 1
+  cat "$work/chosen" >>"$work/desired.active" || return 1
+  rish_fw_temporary_reconcile "$work/desired" || return 1
+  printf 'Временная блокировка %s%s%s применена с учётом белого списка.\n' "$RISH_FW_GREEN" "$net" "$RISH_FW_RESET"
+  printf 'Уже действующие точные правила сохраняют прежний срок.\n'
+  rish_fw_field "Срок новых правил" "$(rish_fw_duration_label "$seconds")" "$RISH_FW_YELLOW"
   printf 'Применение сохранённых правил или перезагрузка сервера %sснимает временную блокировку%s.\n' "$RISH_FW_YELLOW" "$RISH_FW_RESET"
 )
 
 rish_fw_temporary_extend() (
   local net seconds="$2" records old_net old_zone old_expiry old_rule rule="" expiry now remaining work result
   net=$(rish_fw_network "$1") || return 1
+  rish_fw_temporary_whitelist_guard "$net" || return 1
   [[ "$seconds" =~ ^[0-9]+$ ]] && ((seconds >= 1 && seconds <= 31536000)) || return 1
   rish_fw_active && rish_fw_ssh_guard "$net" && rish_fw_lock && rish_fw_temporary_coverage "$net" || return 1
   records=$(rish_fw_read_ledger) || return 1
@@ -2564,7 +3360,7 @@ rish_fw_list_toggle() (
     for family in "${needed[@]}"; do
       rule=$(rish_fw_set_rule "$family") || return 1
       if grep -Fq -- $'\t1\t'"$rule" "$work/before"; then
-        rish_fw_ssh_guard_file "$work/guard$family" || return 1
+        rish_fw_ssh_guard_file "$work/guard$family" && rish_fw_whitelist_guard_file "$work/guard$family" || return 1
       fi
     done
   fi
@@ -2647,7 +3443,8 @@ rish_fw_list_apply_internal() (
   rish_fw_active && rish_fw_lock || return 1
   work=$(mktemp -d) || return 1
   trap 'rm -rf -- "$work"' EXIT
-  rish_fw_normalize "$source_file" "$work/input" "$normalize_mode" || return 1
+  rish_fw_normalize "$source_file" "$work/unfiltered" "$normalize_mode" &&
+    rish_fw_whitelist_filter "$work/unfiltered" "$work/input" || return 1
   rish_fw_zone_snapshot "$work/zones-before" || return 1
   : >"$work/gates-before"; : >"$work/enabled-zones"
   for family in 4 6; do
@@ -2671,7 +3468,8 @@ rish_fw_list_apply_internal() (
     if [[ -e "$path" ]]; then [[ -f "$path" && ! -L "$path" ]] && cp -- "$path" "$work/file$family" || return 1; fi
     if [[ "$family" == 4 ]]; then grep -v ':' "$work/input" >"$work/all$family" || true; else grep ':' "$work/input" >"$work/all$family" || true; fi
     [[ "$operation" != add ]] || cat "$work/permanent$family" >>"$work/all$family"
-    rish_fw_normalize "$work/all$family" "$work/new$family" "$normalize_mode" || return 1
+    rish_fw_normalize "$work/all$family" "$work/unfiltered$family" "$normalize_mode" &&
+      rish_fw_whitelist_filter "$work/unfiltered$family" "$work/new$family" || return 1
     LC_ALL=C sort "$work/permanent$family" >"$work/old-sort" || return 1
     LC_ALL=C sort "$work/new$family" >"$work/new-sort" || return 1
     LC_ALL=C comm -13 "$work/old-sort" "$work/new-sort" >"$work/add$family" || return 1
@@ -2955,9 +3753,11 @@ rish_fw_list_delete() (
 
 
 # Collect UI records separately from their labels: kind, list ID, title, CIDR,
-# zones, expiry, state, writable. Queries fail closed; no per-address native calls.
+# zones, expiry, state, writable. Optional coverage keeps active and saved ranges
+# separate in the selected zone; combined zones cannot establish persistence.
+# Queries fail closed; no per-address native calls.
 rish_fw_collect_blocks() (
-  local target="$1" summary="${2:-}" work id rest family mode names set_name now
+  local target="$1" summary="${2:-}" coverage="${3:-}" work id rest family mode names set_name now
   local RISH_FW_LIST_ID
   local -a ids=() set_names=()
   local -A known_sets=()
@@ -2988,9 +3788,10 @@ rish_fw_collect_blocks() (
   done
   rish_fw_read_ledger >"$work/ledger" || return 1
   now=$(rish_fw_now)
-  python3 - "$work" "$now" "$summary" >"$target" <<'PY'
-import ipaddress, os, re, sys
-directory, now, summary = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+  python3 - "$work" "$now" "$summary" "$coverage" "$RISH_FW_ZONE" >"$target" <<'PY'
+import ipaddress, json, os, re, sys
+directory, now, summary, coverage, selected_zone = sys.argv[1:]
+now = int(now)
 def read(name):
     with open(os.path.join(directory,name),encoding='utf-8') as handle:
         return handle.read()
@@ -3038,6 +3839,9 @@ def sort_key(value):
     return (net.version,int(net.network_address),net.prefixlen)
 try:
     configurations = {mode: zones(mode) for mode in ('runtime','permanent')}
+    if coverage and selected_zone not in configurations['runtime']:
+        raise ValueError('выбранная зона отсутствует')
+    coverage_networks = {'runtime': set(), 'permanent': set(), 'temporary': set()}
     records, summaries = [], []
     for metadata in read('metadata').split('\n'):
         if not metadata:
@@ -3048,6 +3852,10 @@ try:
             runtime,permanent = (entries(ident,family,mode) for mode in ('runtime','permanent'))
             gate = 'rule priority="-100" family="ipv%s" source ipset="rish_%s_ipv%s" drop' % (family,ident,family)
             zr,zp = ({zone for zone,rules in configurations[mode].items() if gate in rules} for mode in ('runtime','permanent'))
+            if coverage and selected_zone in zr:
+                coverage_networks['runtime'].update(runtime)
+            if coverage and selected_zone in zp:
+                coverage_networks['permanent'].update(permanent)
             all_runtime_zones.update(zr)
             all_permanent_zones.update(zp)
             present = [os.path.exists(os.path.join(directory,'info-%s-%s-%s' % (ident,family,mode))) for mode in ('runtime','permanent')]
@@ -3072,13 +3880,25 @@ try:
         net,zone,expiry,rule = line.split('\t')
         if zone not in configurations['runtime']:
             raise ValueError('зона временного правила отсутствует')
-        active = rule in configurations['runtime'][zone]
-        state = 'expired' if not active else 'temporary' if int(expiry) > now else 'uncertain'
-        records.append(('T','temporary','Временные',net,zone,expiry,state,'yes' if active else 'no'))
+        present = rule in configurations['runtime'][zone]
+        state = 'expired' if not present else 'temporary' if int(expiry) > now else 'uncertain'
+        records.append(('T','temporary','Временные',net,zone,expiry,state,'yes' if present else 'no'))
+        if coverage and present and zone == selected_zone:
+            coverage_networks['temporary'].add(net)
     if summary:
         with open(summary,'w',encoding='utf-8') as handle:
             for row in summaries:
                 handle.write('\t'.join(row)+'\n')
+    if coverage:
+        # Merge once per snapshot; rendering up to 200 IPs then uses binary search.
+        ranges = {'zone': selected_zone}
+        for kind, networks in coverage_networks.items():
+            parsed = [ipaddress.ip_network(net) for net in networks]
+            ranges[kind] = {str(family): [[int(net.network_address), int(net.broadcast_address)]
+                for net in ipaddress.collapse_addresses(net for net in parsed if net.version == family)]
+                for family in (4, 6)}
+        with open(coverage, 'w', encoding='utf-8') as handle:
+            json.dump(ranges, handle)
     for record in records:
         print('\t'.join(record))
 except (ValueError,OSError,UnicodeError) as error:
@@ -3394,12 +4214,20 @@ rish_fw_add_to_selected() (
 )
 
 rish_fw_block_menu() (
-  local input="${1:-}" net zones
+  local input="${1:-}" net zones work
   if (($# == 0)); then
     read -r -p "IP-адрес или подсеть для блокировки: " input || return 1
   fi
   net=$(rish_fw_network "$input") || return 1
-  rish_fw_ssh_guard "$net" || return 1
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  printf '%s\n' "$net" >"$work/input" || return 1
+  rish_fw_whitelist_filter "$work/input" "$work/filtered" || return 1
+  if [[ ! -s "$work/filtered" ]]; then
+    printf 'Адрес %s%s%s входит в белый список. Блокировка не применяется.\n' "$RISH_FW_GREEN" "$net" "$RISH_FW_RESET"
+    return 1
+  fi
+  rish_fw_ssh_guard_file "$work/filtered" || return 1
   rish_fw_duration || return 2
   if [[ "$RISH_FW_DURATION" == permanent ]]; then
     rish_fw_choose_list || return 2
@@ -3410,6 +4238,7 @@ rish_fw_block_menu() (
   else zones="$RISH_FW_ZONE"; fi
   printf '\n'
   rish_fw_field "Адрес / подсеть" "$net"
+  printf 'Адреса белого списка исключаются из блокировки.\n'
   rish_fw_field "Зоны применения" "$zones"
   rish_fw_field "Срок" "$(rish_fw_duration_label "$RISH_FW_DURATION")" "$RISH_FW_YELLOW"
   [[ "$RISH_FW_DURATION" != permanent ]] || rish_fw_field "Список" "$RISH_FW_SELECTED_NAME"
@@ -3498,14 +4327,16 @@ rish_fw_list_preview() (
   local RISH_FW_LIST_ID="$1" file="$2" operation="$3" work family
   work=$(mktemp -d) || return 1
   trap 'rm -rf -- "$work"' EXIT
-  rish_fw_normalize "$file" "$work/input" || return 1
+  rish_fw_normalize "$file" "$work/unfiltered" &&
+    rish_fw_whitelist_filter "$work/unfiltered" "$work/input" || return 1
   for family in 4 6; do
     rish_fw_current_entries "$family" permanent >"$work/raw" &&
       rish_fw_normalize "$work/raw" "$work/old" preserve || return 1
     if [[ "$family" == 4 ]]; then grep -v ':' "$work/input" >"$work/all" || true;
     else grep ':' "$work/input" >"$work/all" || true; fi
     [[ "$operation" != add ]] || cat "$work/old" >>"$work/all"
-    rish_fw_normalize "$work/all" "$work/new" || return 1
+    rish_fw_normalize "$work/all" "$work/unfiltered" &&
+      rish_fw_whitelist_filter "$work/unfiltered" "$work/new" || return 1
     printf '\nIPv%s: изменения (- удалить, + добавить):\n' "$family"
     diff -u --label 'Сейчас' --label 'После применения' -- "$work/old" "$work/new" || true
   done
@@ -3950,10 +4781,27 @@ PY
 }
 
 # Read a fixed tail snapshot, not the whole log. Bound bytes as well as line count.
-rish_fw_access_stats() {
-  python3 - "$@" <<'PY'
-import collections, datetime, ipaddress, json, os, re, stat, sys, unicodedata
-path, site, lines, top, output = sys.argv[1:]
+rish_fw_access_stats() (
+  local work
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  rish_fw_whitelist_read "$work/whitelist" || return 1
+  python3 - "$@" "$work/whitelist" <<'PY'
+import bisect, collections, datetime, ipaddress, json, os, re, stat, sys, unicodedata
+path, site, lines, top, output, whitelist_path = sys.argv[1:]
+with open(whitelist_path, encoding='utf-8') as handle:
+    whitelist = [str(ipaddress.ip_network(line.strip())) for line in handle if line.strip()]
+protected = {}
+for family in (4, 6):
+    networks = ipaddress.collapse_addresses(ipaddress.ip_network(value) for value in whitelist
+                                          if ipaddress.ip_network(value).version == family)
+    pairs = [(int(net.network_address), int(net.broadcast_address)) for net in networks]
+    protected[family] = ([pair[0] for pair in pairs], [pair[1] for pair in pairs])
+def excluded_address(value):
+    ip = ipaddress.ip_address(value)
+    starts, ends = protected[ip.version]
+    index = bisect.bisect_right(starts, int(ip)) - 1
+    return index >= 0 and int(ip) <= ends[index]
 def clean(value, limit=512):
     return ' '.join(''.join(' ' if unicodedata.category(c).startswith('C') else c for c in value).split())[:limit]
 quoted = rb'"((?:[^"\\]|\\.)*)"'
@@ -3987,7 +4835,10 @@ def parse(line):
         raw_ip = raw_ip.decode('ascii')
         if '%' in raw_ip:
             return None
-        address = str(ipaddress.ip_address(raw_ip))
+        address = ipaddress.ip_address(raw_ip)
+        if address.version == 6 and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        address = str(address)
         label = date.decode('ascii')
         moment = timestamp(label)
     except (ValueError, KeyError, UnicodeError):
@@ -4025,12 +4876,17 @@ try:
         selected = selected[1:]  # The first fragment can start in the middle of a line.
     selected = selected[:-1][-lines:]  # Ignore the final, possibly incomplete request.
     counts, errors4, errors5 = collections.Counter(), collections.Counter(), collections.Counter()
-    parsed, start, end, start_label, end_label = 0, None, None, '', ''
+    parsed, excluded, invalid = 0, 0, 0
+    start, end, start_label, end_label = None, None, '', ''
     for line in selected:
         record = parse(line)
         if record is None:
+            invalid += 1
             continue
         address, label, moment, status, request, agent = record
+        if excluded_address(address):
+            excluded += 1
+            continue
         parsed += 1
         counts[address] += 1
         errors4[address] += int(400 <= status < 500)
@@ -4055,7 +4911,8 @@ try:
              'errors4': errors4[ip], 'errors5': errors5[ip],
              'urls': urls[ip].most_common(5), 'agents': agents[ip].most_common(5)} for ip in addresses]
     result = {'site': site, 'log': path, 'requested_lines': lines, 'top': top,
-              'lines': len(selected), 'parsed': parsed, 'skipped': len(selected) - parsed,
+              'lines': len(selected), 'parsed': parsed, 'skipped': invalid, 'excluded': excluded,
+              'whitelist': whitelist,
               'unique': len(counts), 'period_start': start_label, 'period_end': end_label,
               'byte_limited': position > 0 and received >= byte_limit and newline_count < lines + 2, 'rows': rows}
     with open(output, 'w', encoding='utf-8') as handle:
@@ -4064,12 +4921,16 @@ except (OSError, ValueError, UnicodeError) as error:
     print('Не удалось прочитать access-log: %s.' % error, file=sys.stderr)
     sys.exit(1)
 PY
-}
+)
 
-rish_fw_access_export() {
-  python3 - "$1" "$2" "${3:-/root}" "${RISH_FIREWALL_TEST_MODE:-0}" <<'PY'
+rish_fw_access_export() (
+  local work
+  work=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$work"' EXIT
+  rish_fw_whitelist_read "$work/whitelist" || return 1
+  python3 - "$1" "$2" "${3:-/root}" "${RISH_FIREWALL_TEST_MODE:-0}" "$work/whitelist" <<'PY'
 import datetime, ipaddress, json, os, re, stat, sys, tempfile, unicodedata
-source, ownership, directory, testing = sys.argv[1:]
+source, ownership, directory, testing, whitelist_path = sys.argv[1:]
 def clean(value):
     if not isinstance(value, str):
         return ''
@@ -4085,12 +4946,17 @@ try:
         stats = json.load(handle)
     with open(ownership, encoding='utf-8') as handle:
         owners = json.load(handle)
+    with open(whitelist_path, encoding='utf-8') as handle:
+        whitelist = [str(ipaddress.ip_network(line.strip())) for line in handle if line.strip()]
+    if stats.get('whitelist', []) != whitelist:
+        raise ValueError('белый список изменился; обновите анализ перед экспортом')
     site = stats['site']
     if len(site) > 253 or not re.fullmatch(r'([a-z0-9-]+\.)+[a-z0-9-]+', site):
         raise ValueError('неверное имя сайта')
     content = ['# Самые активные IP %s' % site, '# Лог: %s' % clean(stats['log']),
                '# Период: %s — %s' % (clean(stats['period_start']), clean(stats['period_end'])),
-               '# Прочитано строк: %s; распознано: %s; пропущено: %s' % (stats['lines'], stats['parsed'], stats['skipped']),
+               '# Прочитано строк: %s; учтено: %s; не распознано: %s; исключено белым списком: %s' %
+               (stats['lines'], stats['parsed'], stats['skipped'], stats.get('excluded', 0)),
                '# Перед импортом удалите ненужные адреса или закомментируйте их знаком #.',
                '# Блокировка при импорте применяется в зонах выбранного списка.', '']
     count = 0
@@ -4119,30 +4985,63 @@ except (OSError, ValueError, TypeError, KeyError) as error:
     print('Не удалось экспортировать IP: %s.' % error, file=sys.stderr)
     sys.exit(1)
 PY
-}
+)
+
 
 rish_fw_access_table() {
   local result line stage=0
   RISH_FW_ACCESS_LABELS=(); RISH_FW_ACCESS_IPS=()
-  result=$(python3 - "$1" "$2" "$3" "$RISH_FW_GREEN" "$RISH_FW_YELLOW" "$RISH_FW_RESET" <<'PY'
-import datetime, json, sys
-source, ownership, columns, green, yellow, reset = sys.argv[1:]
+  result=$(python3 - "$1" "$2" "$3" "$RISH_FW_GREEN" "$RISH_FW_YELLOW" "$RISH_FW_RESET" "${4:-}" "$RISH_FW_ZONE" <<'PY'
+import bisect, datetime, ipaddress, json, sys
+source, ownership, columns, green, yellow, reset, coverage, zone = sys.argv[1:]
 with open(source, encoding='utf-8') as handle:
     stats = json.load(handle)
 with open(ownership, encoding='utf-8') as handle:
     owners = json.load(handle)
+try:
+    with open(coverage, encoding='utf-8') as handle:
+        bans = json.load(handle)
+    if bans['zone'] != zone:
+        raise ValueError('снимок другой зоны')
+    ranges = {}
+    for kind in ('runtime', 'permanent', 'temporary'):
+        for family in ('4', '6'):
+            starts, ends = [], []
+            for pair in bans[kind][family]:
+                if (len(pair) != 2 or any(type(value) is not int for value in pair) or
+                        not 0 <= pair[0] <= pair[1] < 2 ** (32 if family == '4' else 128) or
+                        ends and pair[0] <= ends[-1]):
+                    raise ValueError('неверный диапазон блокировки')
+                starts.append(pair[0]); ends.append(pair[1])
+            ranges[(kind, family)] = (starts, ends)
+except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+    ranges = None
+def ban_status(address):
+    if ranges is None:
+        return '?'
+    ip = ipaddress.ip_address(address)
+    def covered(kind):
+        starts, ends = ranges[(kind, str(ip.version))]
+        index = bisect.bisect_right(starts, int(ip)) - 1
+        return index >= 0 and int(ip) <= ends[index]
+    if covered('runtime'):
+        return 'пост.' if covered('permanent') else 'не сохр.'
+    if covered('temporary'):
+        return 'врем.'
+    return '—'
 columns = max(30, int(columns) - 9)
 def clip(value, width):
     return value if len(value) <= width else value[:max(0, width - 1)] + '…'
 ip_width = min(max([len('IP')] + [len(row['ip']) for row in stats['rows']]), max(15, columns // 3))
 count_width = max([len('Запросов')] + [len(str(row['requests'])) for row in stats['rows']])
-errors = columns >= 68
-def render(ip, requests, share, error, owner):
+errors = columns >= 79
+def render(ip, ban, requests, share, error, owner):
     left = '%-*s │ %*s │ %6s' % (ip_width, clip(ip, ip_width), count_width, requests, share)
+    left = '%-8s │ ' % ban + left
     if errors:
         left += ' │ %9s' % error
     width = max(1, columns - len(left) - 3)
-    return left + ' │ ' + clip(owner, width)
+    return clip(left + ' │ ' + clip(owner, width), columns)
 def value(number):
     return green + str(number) + reset
 def period():
@@ -4159,17 +5058,17 @@ def period():
     if first.date() == last.date():
         return first.strftime('%d.%m.%Y %H:%M:%S') + '–' + last.strftime('%H:%M:%S')
     return first.strftime('%d.%m.%Y %H:%M:%S') + ' — ' + last.strftime('%d.%m.%Y %H:%M:%S')
-print('Строк: %s из %s · распознано: %s · пропущено: %s' % tuple(
-    value(stats[key]) for key in ('lines', 'requested_lines', 'parsed', 'skipped')))
+print('Строк: %s из %s · учтено: %s · не распознано: %s · белый список: %s' % tuple(
+    value(stats.get(key, 0)) for key in ('lines', 'requested_lines', 'parsed', 'skipped', 'excluded')))
 print('Уникальных IP: %s · показано: %s из %s%s' % (
     value(stats['unique']), value(len(stats['rows'])), value(stats.get('top', 20)),
     ' · достигнут предел ' + yellow + '32 МиБ' + reset if stats['byte_limited'] else ''))
 print(period())
-print(render('IP', 'Запросов', 'Доля', '4xx/5xx', 'Сеть / ASN / страна'))
+print(render('IP', 'Бан', 'Запросов', 'Доля', '4xx/5xx', 'Сеть / ASN / страна'))
 for row in stats['rows']:
     item = owners.get(row['ip'], {})
     owner = ' / '.join(value for value in (item.get('organization') or item.get('name') or 'нет данных', item.get('asn'), item.get('country')) if value)
-    print(render(row['ip'], row['requests'], '%.1f%%' % row['share'], '%s/%s' % (row['errors4'], row['errors5']), owner) + '\t' + row['ip'])
+    print(render(row['ip'], ban_status(row['ip']), row['requests'], '%.1f%%' % row['share'], '%s/%s' % (row['errors4'], row['errors5']), owner) + '\t' + row['ip'])
 PY
   ) || return 1
   while IFS= read -r line; do
@@ -4242,7 +5141,7 @@ PY
 }
 
 rish_fw_access_menu() (
-  local work lines=20000 top=20 refresh=1 columns height choice count new_lines new_top exported export_dir=/root
+  local work lines=20000 top=20 refresh=1 bans_refresh=1 columns height choice count new_lines new_top exported export_dir=/root
   local address prefix detail_choice result
   local -a detail_labels=() detail_targets=()
   [[ -n "$RISH_FW_SITE_NAME" && -n "$RISH_FW_SITE_LOG" ]] || return 1
@@ -4250,19 +5149,32 @@ rish_fw_access_menu() (
   trap 'rm -rf -- "$work"' EXIT
   if [[ "${RISH_FIREWALL_TEST_MODE:-0}" == 1 ]]; then export_dir="${RISH_FIREWALL_IMPORT_DIR:-/root}"; fi
   while true; do
+    rish_fw_whitelist_read "${work}/whitelist-current" || { rish_fw_pause; return 1; }
+    if [[ ! -f "${work}/whitelist-used" ]] || ! cmp -s -- "${work}/whitelist-current" "${work}/whitelist-used"; then
+      refresh=1
+    fi
     if [[ "$refresh" == 1 ]]; then
       clear
       rish_fw_field "Самые активные IP" "$RISH_FW_SITE_NAME"
       printf 'Читаю последние %s%s%s строк; определяю сети для %s%s%s IP…\n' \
         "$RISH_FW_GREEN" "$lines" "$RISH_FW_RESET" "$RISH_FW_GREEN" "$top" "$RISH_FW_RESET"
-      rish_fw_access_stats "$RISH_FW_SITE_LOG" "$RISH_FW_SITE_NAME" "$lines" "$top" "${work}/stats.json" || { rish_fw_pause; return 1; }
+      RISH_FW_WHITELIST_SOURCE="${work}/whitelist-current" rish_fw_access_stats "$RISH_FW_SITE_LOG" "$RISH_FW_SITE_NAME" "$lines" "$top" "${work}/stats.json" || { rish_fw_pause; return 1; }
+      cp -- "${work}/whitelist-current" "${work}/whitelist-used" || return 1
       rish_fw_ip_lookups "${work}/stats.json" "${work}/owners.json" "${work}/cache.json" || printf '{}\n' >"${work}/owners.json"
-      refresh=0
+      refresh=0; bans_refresh=1
+    fi
+    if [[ "$bans_refresh" == 1 ]]; then
+      # Never keep a previous positive/negative result after a failed refresh.
+      rm -f -- "${work}/bans.json"
+      if ! rish_fw_collect_blocks "${work}/blocks" "" "${work}/bans.json"; then
+        rm -f -- "${work}/bans.json"
+      fi
+      bans_refresh=0
     fi
     columns=$(tput cols 2>/dev/null) || columns=80
     height=$(tput lines 2>/dev/null) || height=24
-    height=$((height-13)); ((height > 3)) || height=3
-    rish_fw_access_table "${work}/stats.json" "${work}/owners.json" "$columns" || return 1
+    height=$((height-15)); ((height > 3)) || height=3
+    rish_fw_access_table "${work}/stats.json" "${work}/owners.json" "$columns" "${work}/bans.json" || return 1
     count=${#RISH_FW_ACCESS_IPS[@]}
     clear
     rish_fw_field "Самые активные IP" "$RISH_FW_SITE_NAME"
@@ -4271,9 +5183,17 @@ rish_fw_access_menu() (
     if ((count > 0)); then rish_fw_field "Период" "$RISH_FW_ACCESS_PERIOD";
     else rish_fw_field "Период" "$RISH_FW_ACCESS_PERIOD" "$RISH_FW_YELLOW"; fi
     printf 'Enter — полные сведения, URL и User-Agent.\n'
+    printf 'Бан RISH в зоне %s%s%s: пост. / врем. / не сохр.\n' "$RISH_FW_GREEN" "$RISH_FW_ZONE" "$RISH_FW_RESET"
+    printf 'не сохр. — действует, но не сохранён; — нет; ? неизвестно.\n'
     printf 'Частота запросов сама по себе не доказывает атаку.\n\n    %s\n' "$RISH_FW_ACCESS_HEADER"
     choice=0
     vertical_menu current_noclear 2 "$height" 30 "default=$((count > 0 ? 0 : 3))" "${RISH_FW_ACCESS_LABELS[@]}" "Экспортировать показанные IP" "Изменить число строк / IP" "Обновить" "Назад" || choice=$?
+    # A menu can remain open while another session changes the whitelist.
+    rish_fw_whitelist_read "${work}/whitelist-current" || { rish_fw_pause; return 1; }
+    if ! cmp -s -- "${work}/whitelist-current" "${work}/whitelist-used"; then
+      refresh=1
+      continue
+    fi
     if ((choice < count)); then
       address="${RISH_FW_ACCESS_IPS[$choice]}"
       clear
@@ -4289,6 +5209,7 @@ rish_fw_access_menu() (
       if ((detail_choice > 0 && detail_choice < ${#detail_targets[@]})); then
         result=0
         rish_fw_block_menu "${detail_targets[$detail_choice]}" || result=$?
+        bans_refresh=1
         if [[ "$result" != 2 ]]; then vertical_menu current 2 0 25 nomouse "Нажмите Enter"; fi
       fi
     else
@@ -4328,10 +5249,10 @@ rish_fw_menu() {
     [[ "$columns" =~ ^[0-9]{1,5}$ ]] || columns=80
     width=$((columns-9)); ((width >= 1)) || width=1
     menu_width=46; ((menu_width <= width)) || menu_width="$width"
-    labels=("Заблокировать адрес / подсеть" "Списки блокировок" "Импорт списка" "Порты и службы" "Проверить IP")
-    actions=(block lists import ports lookup)
+    labels=("Заблокировать адрес / подсеть" "Списки блокировок" "Импорт списка" "Редактирование белого списка" "Добавить свой IP в белый список" "Порты и службы" "Проверить IP")
+    actions=(block lists import whitelist whitelist-peer ports lookup)
     case "$RISH_FW_SERVER_LOCK_STATE" in
-      off) labels+=("Блокировка сервера для всех кроме моего IP") ;;
+      off) labels+=("Блокировка сервера кроме моего IP и белого списка") ;;
       active) labels+=("Снять блокировку сервера") ;;
       *) labels+=("Проверить состояние блокировки сервера") ;;
     esac
@@ -4351,6 +5272,8 @@ rish_fw_menu() {
       block) rish_fw_block_menu ;;
       lists) rish_fw_lists_menu && continue ;;
       import) rish_fw_import_menu ;;
+      whitelist) rish_fw_whitelist_edit ;;
+      whitelist-peer) rish_fw_whitelist_add_peer ;;
       ports) rish_fw_ports_menu; continue ;;
       server-lock)
         rish_fw_server_lock_menu "$server_lock_state"
