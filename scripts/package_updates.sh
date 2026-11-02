@@ -54,6 +54,8 @@ CheckApacheConfig() {
 
 ReportServicesNeedingRestart() {
   local services_output
+  local diagnostics_output
+  local diagnostics_file
   local status
 
   if ! command -v needs-restarting >/dev/null 2>&1; then
@@ -62,8 +64,25 @@ ReportServicesNeedingRestart() {
     return 0
   fi
 
-  services_output="$(needs-restarting -s 2>&1)"
+  if ! diagnostics_file="$(mktemp /tmp/rish-needs-restarting.XXXXXX)"; then
+    echo
+    echo -e "Не удалось проверить другие службы: ${YELLOW}не удалось создать временный файл${WHITE}."
+    return 0
+  fi
+
+  services_output="$(needs-restarting -s 2>"$diagnostics_file")"
   status=$?
+  diagnostics_output="$(cat "$diagnostics_file")"
+  rm -f "$diagnostics_file"
+
+  if [[ -n "$diagnostics_output" ]]; then
+    echo
+    echo -e "Диагностические сообщения ${YELLOW}needs-restarting${WHITE}:"
+    printf '%s\n' "$diagnostics_output"
+    if ((status == 0)); then
+      echo "Результат проверки может быть неполным."
+    fi
+  fi
 
   if ((status != 0)); then
     echo
@@ -76,7 +95,11 @@ ReportServicesNeedingRestart() {
 
   if [[ -z "$services_output" ]]; then
     echo
-    echo "Других служб, требующих перезапуска, не обнаружено."
+    if [[ -n "$diagnostics_output" ]]; then
+      echo "needs-restarting не сообщил о службах, требующих перезапуска."
+    else
+      echo "Других служб, требующих перезапуска, не обнаружено."
+    fi
     return 0
   fi
 

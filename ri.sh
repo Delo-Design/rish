@@ -1208,7 +1208,7 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
 
       echo -e "Выбрана версия ${GREEN}${Maria_Version}${WHITE}"
 
-      if ! bash /root/rish/scripts/mariadb_repo_setup.sh --mariadb-server-version="${Maria_Version}" --skip-maxscale
+      if ! timeout --kill-after=5s 90s bash /root/rish/scripts/mariadb_repo_setup.sh --mariadb-server-version="${Maria_Version}" --skip-maxscale
       then
         if ((Maria_Version_Custom)); then
           echo -e "${RED}Указанная версия MariaDB недоступна.${WHITE} Выберите другую версию."
