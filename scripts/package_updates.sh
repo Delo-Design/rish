@@ -108,7 +108,67 @@ ReportServicesNeedingRestart() {
   while IFS= read -r service_name; do
     [[ -n "$service_name" ]] && printf '  %s\n' "$service_name"
   done <<< "$services_output"
-  echo "Перезапустите их в подходящее время. Для системных служб безопаснее выполнить плановую перезагрузку сервера."
+  echo "Перезапустите их в подходящее время."
+}
+
+ReportRebootRequired() {
+  local reboot_output
+  local diagnostics_output
+  local diagnostics_file
+  local status
+  local reboot_result="unknown"
+
+  echo
+  if ! command -v needs-restarting >/dev/null 2>&1; then
+    echo "needs-restarting не найден."
+    echo -e "Перезагрузка сервера: ${YELLOW}не удалось определить${WHITE}."
+    return 0
+  fi
+
+  if ! diagnostics_file="$(mktemp /tmp/rish-reboot-check.XXXXXX)"; then
+    echo "Не удалось создать временный файл для проверки необходимости перезагрузки."
+    echo -e "Перезагрузка сервера: ${YELLOW}не удалось определить${WHITE}."
+    return 0
+  fi
+
+  reboot_output="$(LC_ALL=C LANGUAGE=C needs-restarting -r 2>"$diagnostics_file")"
+  status=$?
+  if ! diagnostics_output="$(cat "$diagnostics_file")"; then
+    rm -f "$diagnostics_file"
+    echo "Не удалось прочитать диагностику проверки необходимости перезагрузки."
+    echo -e "Перезагрузка сервера: ${YELLOW}не удалось определить${WHITE}."
+    return 0
+  fi
+  rm -f "$diagnostics_file"
+
+  # Код 1 также возвращается при ошибках DNF, поэтому проверяем текст результата.
+  if [[ -z "$diagnostics_output" ]]; then
+    if ((status == 0)) \
+      && grep -Fxq 'Reboot should not be necessary.' <<< "$reboot_output" \
+      && ! grep -Fxq 'Reboot is required to fully utilize these updates.' <<< "$reboot_output"; then
+      reboot_result="not_required"
+    elif ((status == 1)) \
+      && grep -Fxq 'Reboot is required to fully utilize these updates.' <<< "$reboot_output" \
+      && ! grep -Fxq 'Reboot should not be necessary.' <<< "$reboot_output"; then
+      reboot_result="required"
+    fi
+  fi
+
+  case "$reboot_result" in
+    not_required)
+      echo -e "Перезагрузка сервера: ${GREEN}не требуется${WHITE}."
+      ;;
+    required)
+      echo -e "Перезагрузка сервера: ${YELLOW}требуется${WHITE} для применения обновлений."
+      ;;
+    *)
+      echo -e "Диагностические сообщения ${YELLOW}needs-restarting -r${WHITE} (код завершения: ${status}):"
+      [[ -z "$reboot_output" ]] || printf '%s\n' "$reboot_output"
+      [[ -z "$diagnostics_output" ]] || printf '%s\n' "$diagnostics_output"
+      echo -e "Перезагрузка сервера: ${YELLOW}не удалось определить${WHITE}."
+      ;;
+  esac
+  return 0
 }
 
 FindPackageUpdates() {
@@ -251,6 +311,7 @@ CheckApacheUpdates() {
       restart_status=1
     fi
     ReportServicesNeedingRestart
+    ReportRebootRequired
     return "$restart_status"
   fi
 }

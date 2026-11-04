@@ -23,6 +23,7 @@ source /root/rish/scripts/user_credentials.sh
 source /root/rish/scripts/dns_management.sh
 source /root/rish/scripts/install_rclone.sh
 source /root/rish/scripts/epel.sh
+source /root/rish/scripts/server_common.sh
 LocalServer="${LocalServer:-false}"
 # Функция для сравнения версий (%%s нужен для макроподстановки mc.menu)
 
@@ -301,6 +302,16 @@ rollback_php_fpm_hardening_update() {
     echo -e "  ${YELLOW}${php_version}-php-fpm${WHITE}: предыдущая конфигурация восстановлена"
   fi
 }
+
+STEP=925
+if ! check_step "$STEP"; then
+  if ! rish_ensure_system_logrotate; then
+    echo -e "Проверка ротации ${RED}системных журналов${WHITE} завершилась ошибкой."
+    echo "После устранения причины повторите обновление RISH."
+    exit 1
+  fi
+  mark_step_completed "$STEP" || exit 1
+fi
 
 STEP=975
 if ! check_step "$STEP"; then

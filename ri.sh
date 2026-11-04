@@ -677,76 +677,21 @@ if ! grep -q "MYSQLPASS" ~/.bashrc; then
     Install tar
     Install glibc-gconv-extra
     Install logrotate
-
-    if ! LOGROTATE_CHECK_OUTPUT=$(logrotate --debug /etc/logrotate.conf 2>&1); then
-      Up
-      echo -e "Проверка конфигурации ${RED}logrotate${WHITE} завершилась ошибкой:"
-      echo "$LOGROTATE_CHECK_OUTPUT"
-      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
-      Down
-      RemoveRim
-      exit 1
-    fi
-    unset LOGROTATE_CHECK_OUTPUT
-
-    if systemctl cat logrotate.timer >/dev/null 2>&1; then
-      if ! systemctl enable --now logrotate.timer; then
-        Up
-        echo -e "Не удалось включить или запустить ${RED}logrotate.timer${WHITE}."
-        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
-        Down
-        RemoveRim
-        exit 1
-      fi
-      if ! systemctl is-enabled --quiet logrotate.timer || ! systemctl is-active --quiet logrotate.timer; then
-        Up
-        echo -e "${RED}logrotate.timer${WHITE} не перешёл в состояния enabled и active."
-        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
-        Down
-        RemoveRim
-        exit 1
-      fi
-      Up
-      echo -e "Ротация логов проверена: используется ${GREEN}logrotate.timer${WHITE}."
-      Down
-    elif [ -x /etc/cron.daily/logrotate ]; then
-      if ! systemctl enable --now crond.service; then
-        Up
-        echo -e "Не удалось включить или запустить ${RED}crond.service${WHITE}."
-        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
-        Down
-        RemoveRim
-        exit 1
-      fi
-      if ! systemctl is-enabled --quiet crond.service || ! systemctl is-active --quiet crond.service; then
-        Up
-        echo -e "${RED}crond.service${WHITE} не перешёл в состояния enabled и active."
-        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
-        Down
-        RemoveRim
-        exit 1
-      fi
-      if ! command -v run-parts >/dev/null 2>&1 ||
-        ! run-parts --test /etc/cron.daily 2>/dev/null | grep -Fxq /etc/cron.daily/logrotate; then
-        Up
-        echo -e "${RED}/etc/cron.daily/logrotate${WHITE} не включён в ежедневный запуск."
-        echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
-        Down
-        RemoveRim
-        exit 1
-      fi
-      Up
-      echo -e "Ротация логов проверена: используется ${GREEN}/etc/cron.daily/logrotate${WHITE} через ${GREEN}crond.service${WHITE}."
-      Down
-    else
-      Up
-      echo -e "Не найден механизм запуска ${RED}logrotate${WHITE}: нет logrotate.timer и исполняемого /etc/cron.daily/logrotate."
-      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
-      Down
-      RemoveRim
-      exit 1
-    fi
     mark_step_completed "$STEP"
+  fi
+
+  STEP=925
+  if ! check_step "$STEP"; then
+    Down
+    if ! rish_ensure_system_logrotate; then
+      Up
+      echo -e "Проверка ротации ${RED}системных журналов${WHITE} завершилась ошибкой."
+      echo -e "После устранения причины повторно запустите ${GREEN}/root/rish/ri.sh${WHITE}."
+      Down
+      RemoveRim
+      exit 1
+    fi
+    mark_step_completed "$STEP" || exit 1
   fi
 
   STEP=950
