@@ -11,21 +11,11 @@ function check_certificate() {
     local DOMAIN=$1
     local PORT=443 # Установка стандартного порта 443
     local CERT_INFO
-    CERT_INFO=$(echo | openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -text 2>/dev/null)
+    CERT_INFO=$(echo | timeout -k 1s 5s openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -checkhost "${DOMAIN}" 2>/dev/null) || :
 
     if [ -n "$CERT_INFO" ]; then
-        local COMMON_NAMES
-        COMMON_NAMES=$(echo "$CERT_INFO" | grep -o "DNS:[^ ,]*" | sed 's/DNS://g')
-        local DOMAIN_FOUND=false
-
-        for CN in $COMMON_NAMES; do
-            if [ "$CN" = "$DOMAIN" ]; then
-                DOMAIN_FOUND=true
-                break
-            fi
-        done
-
-        if $DOMAIN_FOUND; then
+        # Код возврата -checkhost может быть 0 и при несовпадении имени.
+        if [ "$CERT_INFO" = "Hostname ${DOMAIN} does match certificate" ]; then
             echo -e -n "${GREEN}https://${WHITE}"
         else
             echo -e -n "${RED}https://${WHITE}"
@@ -38,7 +28,7 @@ function check_certificate_expiration() {
     local DOMAIN=$1
     local PORT=443
     local CERT
-    CERT=$(echo | openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null)
+    CERT=$(echo | timeout -k 1s 5s openssl s_client -servername "${DOMAIN}" -connect "${DOMAIN}:${PORT}" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null)
 
     if [ -n "$CERT" ]; then
         local END_DATE
@@ -75,6 +65,159 @@ unicode_printf() {
   echo -n "$unicode_string"
 }
 
+checkip_php_code() {
+    [[ -f "$1" && -r "$1" ]] || return 0
+    # Удаляем комментарии, сохраняя строковые литералы; PHP не выполняется.
+    awk '
+      BEGIN { single_quote = sprintf("%c", 39) }
+      {
+        code = ""
+        started_in_string = (quote != "")
+        for (pos = 1; pos <= length($0); pos++) {
+          char = substr($0, pos, 1)
+          next_char = substr($0, pos + 1, 1)
+          if (block_comment) {
+            if (char == "*" && next_char == "/") {
+              block_comment = 0
+              pos++
+            }
+            continue
+          }
+          if (quote != "") {
+            code = code char
+            if (escaped) escaped = 0
+            else if (char == "\\") escaped = 1
+            else if (char == quote) quote = ""
+            continue
+          }
+          if (char == "/" && next_char == "*") {
+            block_comment = 1
+            code = code " "
+            pos++
+            continue
+          }
+          if ((char == "/" && next_char == "/") || char == "#") break
+          code = code char
+          if (char == single_quote || char == "\"") quote = char
+        }
+        if (!started_in_string) {
+          sub(/^[[:space:]]*<\?php[[:space:]]*/, "", code)
+          print code
+        }
+      }
+    ' "$1" 2>/dev/null
+}
+
+checkip_php_string() {
+    local php_file=$1
+    local prefix=$2
+    local suffix=$3
+    local literal
+    literal=$(checkip_php_code "$php_file" |
+      sed -nE \
+        -e "s@^[[:space:]]*${prefix}[[:space:]]*'([^']*)'[[:space:]]*${suffix}[[:space:]]*;.*@found:\\1@p" \
+        -e "s@^[[:space:]]*${prefix}[[:space:]]*\"([^\"]*)\"[[:space:]]*${suffix}[[:space:]]*;.*@found:\\1@p" |
+      head -n 1)
+    [[ "$literal" == found:* ]] || return 1
+    printf '%s' "${literal#found:}"
+}
+
+checkip_document_root() {
+    local vhost_file=$1
+    local site_directory=$2
+    local document_root canonical_site
+    [[ -f "$vhost_file" && -r "$vhost_file" ]] || return 1
+    document_root=$(awk '
+      tolower($1) == "documentroot" {
+        sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, "")
+        if ($0 ~ /^"/) {
+          sub(/^"/, "")
+          sub(/".*$/, "")
+        } else {
+          sub(/[[:space:]].*$/, "")
+        }
+        print
+        exit
+      }
+    ' "$vhost_file") || return 1
+    [[ "$document_root" == /* ]] || return 1
+    canonical_site=$(cd -P -- "$site_directory" 2>/dev/null && pwd -P) || return 1
+    document_root=$(cd -P -- "$document_root" 2>/dev/null && pwd -P) || return 1
+    [[ -d "$document_root" ]] || return 1
+    [[ "$document_root" == "$canonical_site" || "$document_root" == "$canonical_site/"* ]] || return 1
+    printf '%s\n' "$document_root"
+}
+
+get_cms_info() {
+    local site_root=$1
+    local cms_name=""
+    local cms_version=""
+    if [[ -f "$site_root/administrator/manifests/files/joomla.xml" ]]; then
+        cms_name="Joomla"
+        cms_version=$(sed -nE 's@.*<version>[[:space:]]*([^<[:space:]]+)[[:space:]]*</version>.*@\1@p' \
+          "$site_root/administrator/manifests/files/joomla.xml" 2>/dev/null | head -n 1)
+    elif [[ -f "$site_root/wp-includes/version.php" ]]; then
+        cms_name="WordPress"
+        cms_version=$(checkip_php_string "$site_root/wp-includes/version.php" '\$wp_version[[:space:]]*=' '') || cms_version=""
+    elif [[ -f "$site_root/bitrix/modules/main/classes/general/version.php" ]]; then
+        cms_name="Bitrix"
+        local bitrix_version_file="$site_root/bitrix/modules/main/classes/general/version.php"
+        cms_version=$(checkip_php_string "$bitrix_version_file" "define[[:space:]]*\\([[:space:]]*['\"]SM_VERSION['\"][[:space:]]*," '\)') ||
+          cms_version=$(checkip_php_string "$bitrix_version_file" 'const[[:space:]]+SM_VERSION[[:space:]]*=' '') || cms_version=""
+    elif [[ -f "$site_root/core/docs/version.inc.php" || -f "$site_root/config.core.php" ]]; then
+        cms_name="MODX"
+        local core_path="$site_root/core/"
+        local core_config="$site_root/config.core.php"
+        local core_define="define[[:space:]]*\\([[:space:]]*['\"]MODX_CORE_PATH['\"][[:space:]]*,"
+        local core_const='const[[:space:]]+MODX_CORE_PATH[[:space:]]*='
+        if checkip_php_code "$core_config" | grep -Eq "^[[:space:]]*($core_define|$core_const)"; then
+            core_path=""
+            local core_style core_prefix core_suffix core_base relative_core
+            for core_style in define const; do
+                if [[ "$core_style" == define ]]; then
+                    core_prefix=$core_define
+                    core_suffix='\)'
+                else
+                    core_prefix=$core_const
+                    core_suffix=''
+                fi
+                core_path=$(checkip_php_string "$core_config" "$core_prefix" "$core_suffix") || core_path=""
+                [[ -n "$core_path" ]] && break
+                # Поддерживаем также штатные пути относительно config.core.php.
+                for core_base in 'dirname[[:space:]]*\([[:space:]]*__FILE__[[:space:]]*\)' '__DIR__'; do
+                    relative_core=$(checkip_php_string "$core_config" "${core_prefix}[[:space:]]*${core_base}[[:space:]]*\\." "$core_suffix") || relative_core=""
+                    if [[ "$relative_core" == /* ]]; then
+                        core_path="$site_root$relative_core"
+                        break
+                    fi
+                done
+                [[ -n "$core_path" ]] && break
+            done
+        fi
+        if [[ "$core_path" == /* && "$core_path" != *'$'* && "$core_path" != *'\'* ]]; then
+            local modx_file="$core_path/docs/version.inc.php"
+            local modx_major modx_minor modx_patch
+            cms_version=$(checkip_php_string "$modx_file" "\\\$v\\[['\"]version['\"]\\][[:space:]]*=" '') || cms_version=""
+            modx_major=$(checkip_php_string "$modx_file" "\\\$v\\[['\"]major_version['\"]\\][[:space:]]*=" '') || modx_major=""
+            modx_minor=$(checkip_php_string "$modx_file" "\\\$v\\[['\"]minor_version['\"]\\][[:space:]]*=" '') || modx_minor=""
+            if modx_patch=$(checkip_php_string "$modx_file" "\\\$v\\[['\"]patch_level['\"]\\][[:space:]]*=" '') &&
+              [[ "$cms_version" =~ ^[0-9]+$ && "$modx_major" =~ ^[0-9]+$ && "$modx_minor" =~ ^[0-9]+$ && "$modx_patch" =~ ^[A-Za-z0-9._-]*$ ]]; then
+                cms_version="$cms_version.$modx_major.$modx_minor"
+                [[ -z "$modx_patch" ]] || cms_version+="-$modx_patch"
+            else
+                cms_version=""
+            fi
+        fi
+    fi
+    if [[ -z "$cms_name" ]]; then
+        printf '%s' '-'
+    elif [[ "$cms_version" =~ ^[0-9]+(\.[0-9]+)+([A-Za-z0-9.+_-]*)$ ]]; then
+        printf '%s %s' "$cms_name" "$cms_version"
+    else
+        printf '%s ?' "$cms_name"
+    fi
+}
+
 get_php_version() {
     local DOMAIN=$1
     local CONF_FILE="/etc/httpd/conf.d/${DOMAIN}.conf"
@@ -100,7 +243,8 @@ CheckIP() {
   echo -e "Белый цвет – сайт доступен по другому IP адресу"
   echo
 
-  local myip="("$(ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' | awk '{print $NF;exit}')")"
+  local myip
+  myip="($(ip route get 1 | grep -Eo 'src [0-9\.]{1,20}' | awk '{print $NF;exit}'))"
   echo -e "Адрес этого сервера: ${GREEN}${myip}${WHITE}"
 
   echo "───────────────────────────────────────────"
@@ -121,17 +265,25 @@ CheckIP() {
           local CONF_FILE="/etc/httpd/conf.d/${SiteName}.conf"
 
           if [ -f "$CONF_FILE" ]; then
+            local site_available=false
+            local ip=""
+            local protocol=""
+            local certificate_expiration=""
+            if timeout -k 1s 10s curl --connect-timeout 3 --max-time 8 -I "http://${SiteName}" &>/dev/null; then
+              site_available=true
+              ip=$(timeout -k 1s 5s ping -n -c 1 -W 2 "$SiteName" 2>/dev/null | grep PING | awk '{ print $3 }')
+              protocol=$(check_certificate "$SiteName")
+              certificate_expiration=$(check_certificate_expiration "$SiteName")
+            fi
             printf " %3d │ " "$site_number"
             ((site_number++))
-            if curl -I http://"$SiteName" &>/dev/null; then
-              local ip
-              ip=$(ping -c 1 $SiteName | grep PING | awk '{ print $3 }')
+            if "$site_available"; then
               if [[ "$myip" == "$ip" ]]; then
                 printf "${GREEN}%-19s${WHITE}" "$ip"
               else
                 printf "%-19s" "$ip"
               fi
-              check_certificate "$SiteName"
+              printf "%s" "$protocol"
               if [[ "$SiteName" =~ (xn\-\-) ]]
               then
                 unicode_domain=$(idn2 -d "$SiteName")
@@ -141,7 +293,7 @@ CheckIP() {
               echo -e -n " ${LGREEN}"
               unicode_printf 32 "$unicode_domain"
               echo -e -n " ${WHITE}│ "
-              check_certificate_expiration "$SiteName"
+              printf "%s" "$certificate_expiration"
             else
               # Держим ту же сетку колонок, что и у "живой" строки: IP(19) + proto(8)
               printf "%-19s%-8s" " " " "
@@ -156,12 +308,12 @@ CheckIP() {
               echo -e -n " ${WHITE}│ "
               printf "%13s" "-"
             fi
-            if [ -f "${PathToSiteName}"/administrator/manifests/files/joomla.xml ]; then
-              JoomlaVersion=$(cat "${PathToSiteName}"/administrator/manifests/files/joomla.xml | grep "<version>.*</version>" | sed -rn 's/.*>([0-9.]+)<.*/\1/p')
-              printf " │ Joomla %8s" "${JoomlaVersion}"
-            else
-              printf " │ %15s" "-"
+            local cms_info="-"
+            local cms_root
+            if cms_root=$(checkip_document_root "$CONF_FILE" "$PathToSiteName"); then
+              cms_info=$(get_cms_info "$cms_root")
             fi
+            printf " │ %21s" "$cms_info"
             PHP_VERSION=$(get_php_version "$SiteName")
             printf " │ %6s" "${PHP_VERSION}"
             FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
@@ -187,7 +339,7 @@ CheckIP() {
             fi
 
             echo -e -n "${input_variable}${padding}"
-            printf " │ %13s │ %15s │ %6s │" "-" "-" "-"
+            printf " │ %13s │ %21s │ %6s │" "-" "-" "-"
             FOLDER_SIZE_MB=$(du -sm "${PathToSiteName}" | awk '{print $1}' | sed ':a;s/\([^0-9.][0-9]\+\|^[0-9]\+\)\([0-9]\{3\}\)/\1\ \2/g;ta')
             printf " ${LWHITE}%9s ${WHITE}Mb" "${FOLDER_SIZE_MB} "
             echo
@@ -203,7 +355,7 @@ CheckIP() {
   }
 
   # --- 1. Данные диска ---
-  read TOTAL USED AVAIL <<< $(df --output=size,used,avail -m /var/www | tail -1)
+  read TOTAL USED AVAIL <<< "$(df --output=size,used,avail -m /var/www | tail -1)"
 
   # --- 2. Размер сайтов ---
   SITES_MB=$(du -sm /var/www | awk '{print $1}')
