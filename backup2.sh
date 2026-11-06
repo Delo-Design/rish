@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_MENU_ARGS=("$@")
 BACKUP_MC_NAME=""
 BACKUP_MC_DIRECTORY=""
+BACKUP_LIST_HEADER='# format: user;name;type(site|folder|db|cron);db;remote;archive(no|yes|crypto:<age_or_ssh_public_key>[,<age_or_ssh_public_key>]);exclude_list'
 if [[ "${1:-}" == "--mc" && "$#" -eq 3 ]]; then
     BACKUP_MC_NAME="$2"
     BACKUP_MC_DIRECTORY="$3"
@@ -82,6 +83,8 @@ vars=(
     ["keeplast"]="#сколько последних архиваций хранить\nkeeplast=5"
     ["keepmonthly"]="#сколько предыдущих месяцев хранить по одной резервной копии\nkeepmonthly=6"
     ["splitarchive"]="#разбивать архив на части по сколько мегабайт\nsplitarchive=500m"
+    ["backup_queue_mib"]="#максимальный объём очереди выгрузки, в МиБ\nbackup_queue_mib=5000"
+    ["backup_min_free_mib"]="#сколько свободного места оставлять на диске с DIR_BACKUP, в МиБ\nbackup_min_free_mib=2048"
     ["recordsize"]="#размер записей tar\nrecordsize=1m"
     ["checkpoint"]="#через сколько записей вызывать checkpoint\ncheckpoint=10"
     ["server"]="#Директория бекапа сервера в месте архивирования (куда складывать копии).\n#Если на одном диске будут бекапы разных серверов - надо изменить название для каждого\nserver=\"backup_server\""
@@ -130,7 +133,8 @@ done
 source "$config_file"
 # Переменные загружаются из rish_config.sh. Объявления нужны статическому анализатору
 # и не изменяют уже загруженные значения.
-declare backupall2 directory DIR_BACKUP keeplast keepmonthly splitarchive recordsize checkpoint server rclone_remote
+declare backupall2 directory DIR_BACKUP keeplast keepmonthly splitarchive backup_queue_mib backup_min_free_mib
+declare recordsize checkpoint server rclone_remote
 if [[ -f /root/rish/scripts/backup_crypto.sh ]]; then
     # shellcheck source=./scripts/backup_crypto.sh
     # shellcheck disable=SC1091
@@ -205,6 +209,195 @@ backup_selected_object() (
 
     # Исходный список сохраняется; общий механизм получает ровно одну запись.
     backupall selected "$temp_list"
+)
+
+addable_current_backup_site() {
+    local current_directory="${BACKUP_MC_DIRECTORY%/}"
+    local site_user site_name site_path row_user row_target _row_rest
+
+    [[ "$current_directory" =~ ^/var/www/([^/]+)/www(/([^/]+)(/.*)?)?$ ]] || return 1
+    site_user="${BASH_REMATCH[1]}"
+    site_name="${BASH_REMATCH[3]:-$BACKUP_MC_NAME}"
+    [[ "$site_user" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*[$]?$ ]] || return 1
+    [[ "$site_name" =~ ^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || return 1
+
+    site_path="/var/www/${site_user}/www/${site_name}"
+    [[ -d "$site_path" && -f "/etc/httpd/conf.d/${site_name}.conf" ]] || return 1
+    awk -v site_path="$site_path" '
+        tolower($1) == "documentroot" {
+            root = $2
+            gsub(/^"|"$/, "", root)
+            if (root == site_path || index(root, site_path "/") == 1) {
+                found = 1
+                exit
+            }
+        }
+        END { exit !found }
+    ' "/etc/httpd/conf.d/${site_name}.conf" || return 1
+
+    if [[ -e "$backupall2" || -L "$backupall2" ]]; then
+        [[ -f "$backupall2" && -r "$backupall2" && ! -L "$backupall2" ]] || return 1
+        while IFS=';' read -r row_user row_target _row_rest || [[ -n "$row_user" ]]; do
+            if [[ "$row_user" == "$site_user" && "$row_target" == "$site_name" ]]; then
+                return 1
+            fi
+        done < "$backupall2"
+    fi
+    printf '%s;%s\n' "$site_user" "$site_name"
+}
+
+add_current_backup_site() (
+    local site_record site_user site_name site_path mapped_db="" db_name db tmp_list list_lock_fd
+    local list_lock_file="/run/lock/rish-backup-list.lock"
+    local mapping_file="/root/rish/site_databases"
+    umask 077
+    if [[ -L "$list_lock_file" || ( -e "$list_lock_file" && ! -f "$list_lock_file" ) ]] ||
+       ! exec {list_lock_fd}>>"$list_lock_file" || ! flock -n "$list_lock_fd"; then
+        echo -e "${LRED}Не удалось заблокировать список бэкапов для добавления сайта.${WHITE}"
+        return 1
+    fi
+    if ! site_record="$(addable_current_backup_site)"; then
+        echo -e "${LRED}Не удалось добавить сайт:${WHITE} проверьте папку сайта и существующие записи списка."
+        return 1
+    fi
+    IFS=';' read -r site_user site_name <<< "$site_record"
+    site_path="/var/www/${site_user}/www/${site_name}"
+    if [[ -e "$mapping_file" || -L "$mapping_file" ]]; then
+        if [[ ! -f "$mapping_file" || ! -r "$mapping_file" ]] ||
+           ! mapped_db="$(awk -F';' -v site_path="$site_path" '
+               $1 == site_path {
+                   if (NF != 2 || $2 == "" || (found && (db "") != ($2 ""))) {
+                       invalid = 1
+                   }
+                   db = $2
+                   found = 1
+               }
+               END {
+                   if (invalid) exit 1
+                   if (found) print db
+               }
+           ' "$mapping_file")" ||
+           [[ -n "$mapped_db" && ! "$mapped_db" =~ ^[A-Za-z0-9_][A-Za-z0-9_\$.-]{0,63}$ ]]; then
+            printf 'Не удалось прочитать однозначную привязку базы для %b%s%b из %b%s%b.\n' \
+                "$YELLOW" "$site_name" "$WHITE" "$YELLOW" "$mapping_file" "$WHITE"
+            return 1
+        fi
+    fi
+    db_name="${mapped_db:-$site_name}"
+    if ! db="$(mariadb --batch --skip-column-names --execute="SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE BINARY SCHEMA_NAME='${db_name}'" 2>/dev/null)"; then
+        printf 'Не удалось проверить базу %b%s%b в MariaDB.\n' "$YELLOW" "$db_name" "$WHITE"
+        return 1
+    fi
+    if [[ -n "$mapped_db" && -z "$db" ]]; then
+        printf 'Привязанная к сайту база %b%s%b не найдена в MariaDB.\n' "$YELLOW" "$mapped_db" "$WHITE"
+        return 1
+    fi
+    if ! tmp_list="$(mktemp -- "${backupall2}.site.XXXXXX")"; then
+        echo -e "${LRED}Не удалось создать временный файл списка бэкапов.${WHITE}"
+        return 1
+    fi
+    trap 'rm -f -- "$tmp_list"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    if [[ -f "$backupall2" ]]; then
+        cp -p -- "$backupall2" "$tmp_list" || return 1
+        if [[ -s "$tmp_list" && -n "$(tail -c 1 -- "$tmp_list")" ]]; then
+            printf '\n' >> "$tmp_list" || return 1
+        fi
+    else
+        printf '%s\n' "$BACKUP_LIST_HEADER" > "$tmp_list" || return 1
+    fi
+    if ! printf '%s;%s;site;%s;%s;yes;\n' "$site_user" "$site_name" "$db" "$rclone_remote" >> "$tmp_list" ||
+       ! mv -fT -- "$tmp_list" "$backupall2"; then
+        echo -e "${LRED}Не удалось сохранить список бэкапов.${WHITE}"
+        return 1
+    fi
+    if [[ -n "$db" ]]; then
+        printf 'Сайт %b%s%b добавлен в список бэкапов (%s), база %b%s%b.\n' \
+            "$GREEN" "$site_name" "$WHITE" "$site_user" "$GREEN" "$db" "$WHITE"
+    else
+        printf 'Сайт %b%s%b добавлен в список бэкапов (%s), только файлы.\n' "$GREEN" "$site_name" "$WHITE" "$site_user"
+    fi
+)
+
+show_enabled_backup_objects() (
+    local object_user object_name object_type _db _remote archive_flag excludes missing_path encryption object_color i
+    local object_title="Объект" user_title="Пользователь" type_title="Тип"
+    local object_width=${#object_title} user_width=${#user_title} type_width=${#type_title}
+    local missing_label="каталог не найден" exclusion_prefix="  Исключения: "
+    local terminal_columns row_width remaining exclusion_text
+    local -a objects=() users=() types=() encryption_labels=() path_statuses=() exclusion_lists=()
+    [[ -f "$backupall2" && -r "$backupall2" ]] || return 0
+
+    terminal_columns="$(tput cols 2>/dev/null)" || terminal_columns=80
+    [[ "$terminal_columns" =~ ^[1-9][0-9]*$ ]] || terminal_columns=80
+
+    while IFS=';' read -r object_user object_name object_type _db _remote archive_flag excludes || [[ -n "$object_user" ]]; do
+        [[ -n "$object_user" && -n "$object_name" && "$object_user" != \#* ]] || continue
+        if [[ -z "$object_type" ]]; then
+            object_type="$(object_type_for_target "$object_name")"
+        fi
+        backup_parse_archive_policy "$archive_flag" && [[ "$BACKUP_ARCHIVE_MODE" != disabled ]] || continue
+
+        encryption="без шифрования"
+        if [[ "$BACKUP_ARCHIVE_MODE" == crypto ]]; then
+            encryption="age"
+        fi
+        missing_path=""
+        if [[ "$object_type" != cron && ! -d "/var/www/${object_user}/www/${object_name}" ]]; then
+            missing_path=" — ${YELLOW}${missing_label}${WHITE}"
+        fi
+        objects+=("$object_name")
+        users+=("$object_user")
+        types+=("$object_type")
+        encryption_labels+=("$encryption")
+        path_statuses+=("$missing_path")
+        excludes="${excludes//$'\r'/}"
+        exclusion_lists+=("${excludes//$'\t'/ }")
+        if ((${#object_name} > object_width)); then
+            object_width=${#object_name}
+        fi
+        if ((${#object_user} > user_width)); then
+            user_width=${#object_user}
+        fi
+        if ((${#object_type} > type_width)); then
+            type_width=${#object_type}
+        fi
+    done < "$backupall2"
+
+    printf '\nОбъекты с включённой архивацией:\n'
+    if ((${#objects[@]} == 0)); then
+        echo "  Нет объектов с включённой архивацией."
+        return 0
+    fi
+    printf '  %s%*s  %s%*s  %s%*s  Шифрование\n' \
+        "$object_title" "$((object_width - ${#object_title}))" "" \
+        "$user_title" "$((user_width - ${#user_title}))" "" \
+        "$type_title" "$((type_width - ${#type_title}))" ""
+    for i in "${!objects[@]}"; do
+        object_color="$GREEN"
+        row_width=$((2 + object_width + 2 + user_width + 2 + type_width + 2 + ${#encryption_labels[i]}))
+        if [[ -n "${path_statuses[i]}" ]]; then
+            object_color="$YELLOW"
+            row_width=$((row_width + 3 + ${#missing_label}))
+        fi
+        exclusion_text=""
+        remaining=$((terminal_columns - row_width - 1))
+        if [[ -n "${exclusion_lists[i]}" ]] && ((remaining > 0)); then
+            exclusion_text="${exclusion_prefix}${exclusion_lists[i]}"
+            if ((remaining <= ${#exclusion_prefix})); then
+                exclusion_text="…"
+            elif ((${#exclusion_text} > remaining)); then
+                exclusion_text="${exclusion_text:0:remaining-1}…"
+            fi
+        fi
+        printf '  %b%s%b%*s  %s%*s  %s%*s  %s%b%s\n' \
+            "$object_color" "${objects[i]}" "$WHITE" "$((object_width - ${#objects[i]}))" "" \
+            "${users[i]}" "$((user_width - ${#users[i]}))" "" \
+            "${types[i]}" "$((type_width - ${#types[i]}))" "" \
+            "${encryption_labels[i]}" "${path_statuses[i]}" "$exclusion_text"
+    done
 )
 
 add_cron_backup_objects() {
@@ -291,16 +484,28 @@ backupall() (
     local backup_lock_file="/run/lock/rish-backup.lock"
     local backup_lock_fd backup_lock_status=0 backup_lock_umask
     local DATE_DIR DATE_TS
-    local archive_base age_suffix completion_part completion_prefix completion_remote_path backup_dir
+    local age_suffix backup_dir archive_name archive_status
+    local part_size part_unit size_mode queue_slots reserve_bytes stale_spool
     local USER TARGET TYPE DB REMOTE ARCHIVE_FLAG EXCLUDE_LIST
-    local ARCHIVE_NAME dir key OLD_DIR date_year date_month date_rest date_month_index remote_dirs_output
+    local dir key OLD_DIR date_year date_month date_rest date_month_index remote_dirs_output
     local remote_files_output remote_file remote_date remote_list_error failed_removals_text first_remove_error
     local retention_file retention_object retention_group retained_dates
-    local BACKUP_REMOVE_ERROR cron_error cron_status
+    local BACKUP_REMOVE_ERROR
     local current_year current_month current_month_index oldest_month_index
     local keep_last_count keep_monthly_count retention_limit=10000 failed_count failed_limit failed_more
     local -a EXCLUDE_OPTS EXCLUDE_DIRS REMOTE_DIRS DATE_DIRS FAILED_REMOVALS
-    local -A KEEP_DIRS MONTHLY_MONTHS DATE_DIR_HAS_FILES RETENTION_GROUPS GROUP_DATES FAILED_BACKUP_USERS
+    local -A KEEP_DIRS MONTHLY_MONTHS DATE_DIR_HAS_FILES RETENTION_GROUPS GROUP_DATES
+
+    backup_log() {
+        if command -v logger >/dev/null 2>&1; then
+            logger -t rish-backup -- "$1"
+        fi
+    }
+
+    backup_error_detail() {
+        printf '%s\n' "$1" >&2
+        backup_log "$1"
+    }
 
     if ! command -v flock >/dev/null 2>&1; then
         echo -e "Не удалось запустить архивацию: команда ${LRED}flock${WHITE} не найдена."
@@ -324,9 +529,7 @@ backupall() (
     flock -n -E 75 "$backup_lock_fd" || backup_lock_status=$?
     if [[ "$backup_lock_status" -eq 75 ]]; then
         echo -e "Архивация уже ${YELLOW}выполняется${WHITE}. Повторите позже."
-        if command -v logger >/dev/null 2>&1; then
-            logger -t rish-backup -- "Архивация пропущена: другой процесс уже выполняет резервное копирование."
-        fi
+        backup_log "Архивация пропущена: другой процесс уже выполняет резервное копирование."
         return 75
     fi
     if [[ "$backup_lock_status" -ne 0 ]]; then
@@ -349,8 +552,47 @@ backupall() (
     fi
     DIR_BACKUP="$backup_dir"
 
-    mkdir -p "$DIR_BACKUP"
-    rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
+    if ! mkdir -p -- "$DIR_BACKUP"; then
+        echo "Не удалось создать временный каталог бэкапов: ${DIR_BACKUP}." >&2
+        return 1
+    fi
+
+    if [[ ! "$backup_queue_mib" =~ ^[0-9]{1,9}$ || ! "$backup_min_free_mib" =~ ^[0-9]{1,9}$ ]]; then
+        backup_error_detail "Настройки backup_queue_mib и backup_min_free_mib должны быть целыми числами в МиБ."
+        return 1
+    fi
+    if [[ "$splitarchive" =~ ^([0-9]{1,15})b$ ]]; then
+        part_size=$((10#${BASH_REMATCH[1]} * 512))
+    elif [[ "$splitarchive" =~ ^([0-9]+)([kKmMgGtTpPeEzZyY]?)(iB|B)?$ ]]; then
+        part_size="${BASH_REMATCH[1]}"
+        part_unit="${BASH_REMATCH[2]^^}"
+        size_mode=iec
+        if [[ "${BASH_REMATCH[3]}" == B ]]; then
+            size_mode=si
+        fi
+        part_size="$(LC_ALL=C numfmt --from="$size_mode" -- "${part_size}${part_unit}")" || part_size=""
+    else
+        part_size=""
+    fi
+    if [[ ! "$part_size" =~ ^[0-9]{1,18}$ ]] || ((part_size == 0)); then
+        backup_error_detail "Некорректный размер части splitarchive: ${splitarchive}."
+        return 1
+    fi
+    queue_slots=$((10#$backup_queue_mib * 1024 * 1024 / part_size))
+    reserve_bytes=$((10#$backup_min_free_mib * 1024 * 1024))
+    if ((queue_slots < 1)); then
+        backup_error_detail "Лимит backup_queue_mib (${backup_queue_mib} МиБ) меньше размера одной части архива (${splitarchive})."
+        return 1
+    fi
+    for stale_spool in "$DIR_BACKUP"/.rish-stream-*; do
+        if [[ "${stale_spool##*/}" =~ ^\.rish-stream-[[:alnum:]]{10}$ &&
+              -d "$stale_spool" && ! -L "$stale_spool" && -O "$stale_spool" ]]; then
+            if ! rm -rf -- "$stale_spool"; then
+                echo "Не удалось удалить временный каталог предыдущего запуска: ${stale_spool}." >&2
+                return 1
+            fi
+        fi
+    done
 
     declare -A CLEANUP_TARGETS CLEANUP_REMOTES
     mapfile -t VALID_REMOTES < <(rclone listremotes 2>/dev/null | sed 's/:$//')
@@ -366,24 +608,32 @@ backupall() (
         return 1
     }
 
+    backup_show_stage() {
+        if [[ -t 2 ]]; then
+            printf '\r\033[K%b' "$1" >&2
+        else
+            printf '%b\n' "$1"
+        fi
+    }
+
+    backup_clear_stage() {
+        if [[ -t 2 ]]; then
+            printf '\r\033[K' >&2
+        fi
+    }
+
     backup_object_error() {
         local message="$1"
         overall_status=1
-        if [[ -n "$USER" ]]; then
-            FAILED_BACKUP_USERS["$USER"]=1
-        fi
+        backup_clear_stage
         echo -e "${LRED}Ошибка:${WHITE} ${message}"
-        if command -v logger >/dev/null 2>&1; then
-            logger -t rish-backup -- "$message"
-        fi
+        backup_log "$message"
     }
 
     backup_cleanup_warning() {
         local message="$1"
         echo -e "${YELLOW}Предупреждение:${WHITE} ${message}"
-        if command -v logger >/dev/null 2>&1; then
-            logger -t rish-backup -- "$message"
-        fi
+        backup_log "$message"
     }
 
     backup_cleanup_error_summary() {
@@ -440,29 +690,233 @@ backupall() (
         return 0
     }
 
-    cleanup_current_archive() {
-        rm -f -- "${archive_base}".*-part-*
+    backup_free_bytes() {
+        local available
+        available="$(LC_ALL=C df -B1 --output=avail -- "$1")" || return 1
+        available="${available##*$'\n'}"
+        available="${available//[[:space:]]/}"
+        [[ "$available" =~ ^[0-9]{1,18}$ ]] || return 1
+        printf '%s\n' "$available"
     }
 
-    prepare_completion_part() {
-        local part_prefix="$1"
-        local last_part
-        local -a part_files=()
+    # GNU split ждёт завершения фильтра. Пока очередь занята, запись
+    # следующей части и чтение источника приостанавливаются.
+    # shellcheck disable=SC2329
+    backup_stage_part() {
+        local spool="$RISH_BACKUP_SPOOL"
+        local available
+        local -a ready pending
+        shopt -s nullglob dotglob
+        [[ -n "$FILE" && "$FILE" != */* && "$FILE" == *-part-[0-9]* ]] || return 1
+        # Если split начал следующую часть, предыдущая уже не последняя.
+        pending=("$spool"/pending/*)
+        if ((${#pending[@]} > 0)); then
+            mv -- "${pending[0]}" "$spool/parts/" || return 1
+        fi
+        while [[ ! -e "$spool/failed" ]] && kill -0 "$RISH_BACKUP_UPLOADER" 2>/dev/null; do
+            ready=("$spool"/parts/*)
+            if ((${#ready[@]} < RISH_BACKUP_QUEUE_SLOTS)); then
+                if ! available="$(backup_free_bytes "$spool")"; then
+                    backup_error_detail "Не удалось проверить свободное место в ${spool%/*} для части ${FILE}."
+                    return 1
+                fi
+                if ((available >= RISH_BACKUP_RESERVE + RISH_BACKUP_PART_SIZE)); then
+                    cat > "$spool/writing" &&
+                        [[ -s "$spool/writing" ]] &&
+                        [[ ! -e "$spool/failed" ]] &&
+                        kill -0 "$RISH_BACKUP_UPLOADER" 2>/dev/null &&
+                        mv -- "$spool/writing" "$spool/pending/$FILE"
+                    return $?
+                fi
+                if ((${#ready[@]} == 0)); then
+                    backup_error_detail "Мало места в ${spool%/*} для части ${FILE}. Свободно $((available / 1048576)) МиБ, с резервом нужно $(((RISH_BACKUP_RESERVE + RISH_BACKUP_PART_SIZE + 1048575) / 1048576)) МиБ."
+                    return 1
+                fi
+            fi
+            sleep 0.2
+        done
+        return 1
+    }
 
-        shopt -s nullglob
-        part_files=("${part_prefix}"*)
-        shopt -u nullglob
-        ((${#part_files[@]} > 0)) || return 1
-        mapfile -t part_files < <(printf '%s\n' "${part_files[@]}" | LC_ALL=C sort)
-        last_part="${part_files[$((${#part_files[@]} - 1))]}"
-        completion_part="${last_part}.end"
-        if ! mv -- "$last_part" "$completion_part"; then
-            completion_part=""
+    stage_backup_parts() {
+        SHELL=/bin/bash split -b "$part_size" --numeric-suffixes --filter='backup_stage_part' -- - "$1"
+    }
+
+    upload_stream_parts() {
+        local spool="$RISH_BACKUP_SPOOL"
+        local remote_path="$1" owner_pid="$2" part finished transfer_pid=""
+        local source_dir status cancelled=0
+        local clear_progress="" progress_fd=""
+        local -a ready progress_opts=()
+        if [[ -t 2 ]]; then
+            clear_progress=$'\r\033[K'
+            progress_opts=(--progress --stats-one-line --stats=1s)
+            exec {progress_fd}>>"$spool/progress.lock" || exit 1
+        fi
+        shopt -s nullglob dotglob
+        # При отмене прерываем текущий rclone и ждём его до очистки.
+        trap '
+            status=$?
+            if [[ -n "$transfer_pid" ]]; then
+                kill "$transfer_pid" 2>/dev/null || true
+                wait "$transfer_pid" 2>/dev/null || true
+            fi
+            if ((status != 0)); then
+                : > "$spool/failed"
+            fi
+        ' EXIT
+        trap 'cancelled=1' TERM
+        while ((cancelled == 0)) && kill -0 "$owner_pid" 2>/dev/null; do
+            finished=0
+            [[ -e "$spool/done" ]] && finished=1
+            source_dir="$spool/parts"
+            ready=("$source_dir"/*)
+            if ((${#ready[@]} == 0)); then
+                if ((finished == 0)); then
+                    sleep 0.2
+                    continue
+                fi
+                # Последнюю часть с .end отправляем после обычных частей.
+                source_dir="$spool/pending"
+                ready=("$source_dir"/*.end)
+                ((${#ready[@]} == 1)) || exit 1
+            fi
+
+            ((cancelled == 0)) && kill -0 "$owner_pid" 2>/dev/null || exit 1
+            part="${ready[0]##*/}"
+            printf '%s\n' "$part" > "$spool/upload-list" || exit 1
+            if [[ -n "$progress_fd" ]]; then
+                flock "$progress_fd" || exit 1
+            fi
+            if [[ "$source_dir" == "$spool/pending" ]]; then
+                : > "$spool/end-started" || exit 1
+            else
+                printf '%s\n' "$part" >> "$spool/attempted-parts" || exit 1
+            fi
+            printf '%sВыгрузка части %b%s%b.\n' "$clear_progress" "$GREEN" "$part" "$WHITE" >&2
+            rclone copy --files-from-raw "$spool/upload-list" --no-traverse \
+                "${progress_opts[@]}" \
+                --contimeout 30s --timeout 2m --retries 3 --low-level-retries 3 \
+                "$source_dir/" "$remote_path/" </dev/null >&2 &
+            transfer_pid=$!
+            while kill -0 "$transfer_pid" 2>/dev/null; do
+                ((cancelled == 0)) && kill -0 "$owner_pid" 2>/dev/null || exit 1
+                sleep 0.2
+            done
+            if ! wait "$transfer_pid"; then
+                transfer_pid=""
+                exit 1
+            fi
+            transfer_pid=""
+            if [[ -n "$progress_fd" ]]; then
+                flock -u "$progress_fd" || exit 1
+            fi
+            rm -- "$source_dir/$part" || exit 1
+            [[ "$source_dir" == "$spool/pending" ]] && exit 0
+        done
+        exit 1
+    }
+
+    backup_stream_object() (
+        local name="$1" available spool snapshot_remote owner_pid
+        local uploader_pid="" uploader_status=0 upload_complete=0 cron_message cron_status=0
+        local archive_extension=tar.gz archive_file_status=0
+        local -a pending
+        shopt -s nullglob dotglob
+        umask 077
+        if ! available="$(backup_free_bytes "$DIR_BACKUP")"; then
+            backup_clear_stage
+            backup_error_detail "Не удалось проверить свободное место в ${DIR_BACKUP} для ${TARGET}."
             return 1
         fi
-        completion_remote_path="${completion_part#"${DIR_BACKUP%/}/"}"
-        [[ -n "$completion_remote_path" && "$completion_remote_path" != "$completion_part" ]]
-    }
+        if ((available < reserve_bytes + part_size)); then
+            backup_clear_stage
+            backup_error_detail "Мало места в ${DIR_BACKUP} для ${TARGET}. Свободно $((available / 1048576)) МиБ, для части с резервом нужно $(((reserve_bytes + part_size + 1048575) / 1048576)) МиБ."
+            return 1
+        fi
+        spool="$(mktemp -d -- "$DIR_BACKUP/.rish-stream-XXXXXXXXXX")" || return 1
+        snapshot_remote="${REMOTE}:${server}/${USER}/${DATE_DIR}"
+        # shellcheck disable=SC2329
+        cleanup_stream_object() {
+            local delete_status=0 delete_error
+            if [[ -n "$uploader_pid" ]]; then
+                kill "$uploader_pid" 2>/dev/null || true
+                wait "$uploader_pid" 2>/dev/null || true
+            fi
+            if ((archive_file_status == 1)); then
+                # После остановки загрузчика предупреждение не смешается с прогрессом.
+                backup_clear_stage
+                backup_cleanup_warning "Файлы ${TARGET} изменились во время архивации. Копии этих файлов могут быть неточными."
+            fi
+            if ((upload_complete == 0)) && [[ -s "$spool/attempted-parts" ]]; then
+                backup_clear_stage
+                if [[ -e "$spool/end-started" ]]; then
+                    # Хранилище могло принять .end даже при обрыве ответа.
+                    backup_cleanup_warning "Части ${TARGET} сохранены: результат передачи последней части .end не подтверждён."
+                else
+                    delete_error="$(rclone delete --max-depth 1 --files-from-raw "$spool/attempted-parts" \
+                        --contimeout 30s --timeout 2m --retries 3 --low-level-retries 3 \
+                        "$snapshot_remote/" </dev/null 2>&1)" || delete_status=$?
+                    if ((delete_status != 0 && delete_status != 3)); then
+                        backup_cleanup_warning "Не удалось убрать части неудачного бэкапа ${TARGET} на ${REMOTE}: $(backup_cleanup_error_summary "$delete_error")."
+                    fi
+                fi
+            fi
+            rm -rf -- "$spool"
+        }
+        trap cleanup_stream_object EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        mkdir -- "$spool/parts" "$spool/pending" || return 1
+        export RISH_BACKUP_SPOOL="$spool" RISH_BACKUP_PART_SIZE="$part_size"
+        export RISH_BACKUP_QUEUE_SLOTS="$queue_slots" RISH_BACKUP_RESERVE="$reserve_bytes"
+        export -f backup_log backup_error_detail backup_free_bytes backup_stage_part
+        owner_pid="$BASHPID"
+        upload_stream_parts "$snapshot_remote" "$owner_pid" </dev/null &
+        uploader_pid=$!
+        export RISH_BACKUP_UPLOADER="$uploader_pid"
+
+        if [[ "$TYPE" == cron ]]; then
+            cron_message="$(create_cron_parts "${name}.tar.gz${age_suffix}-part-")" || cron_status=$?
+            if ((cron_status == 2)); then
+                return 2
+            elif ((cron_status != 0)); then
+                backup_clear_stage
+                backup_error_detail "Архивация CRON ${USER} пропущена: ${cron_message}."
+                return 1
+            fi
+        else
+            if [[ "$TYPE" == db ]] || { [[ -n "$DB" ]] && db_exists "$DB"; }; then
+                backup_show_stage "Создаём дамп базы ${GREEN}${DB}${WHITE}..."
+                create_database_parts "$DB" "${name}.sql.gz${age_suffix}-part-" || return 1
+            elif [[ -n "$DB" ]]; then
+                backup_clear_stage
+                echo -e "${YELLOW}База ${DB} не найдена: архивируем только файлы сайта.${WHITE}"
+            fi
+            if [[ "$TYPE" == db ]]; then
+                archive_extension=sql.gz
+            else
+                create_file_parts "${name}.tar.gz${age_suffix}-part-" "$spool/progress.lock" || archive_file_status=$?
+                ((archive_file_status < 2)) || return 1
+            fi
+        fi
+
+        pending=("$spool"/pending/*)
+        if ((${#pending[@]} != 1)) ||
+           [[ "${pending[0]##*/}" != "${name}.${archive_extension}${age_suffix}-part-"* ]]; then
+            backup_clear_stage
+            echo "Не удалось определить последнюю часть архива." >&2
+            return 1
+        fi
+        mv -- "${pending[0]}" "${pending[0]}.end" || return 1
+        : > "$spool/done" || return 1
+        wait "$uploader_pid" || uploader_status=$?
+        uploader_pid=""
+        if ((uploader_status == 0)); then
+            upload_complete=1
+        fi
+        return "$uploader_status"
+    )
 
     create_database_parts() {
         local db_name="$1"
@@ -484,7 +938,7 @@ backupall() (
                 | sed '/NOTE_VERBOSITY/d' \
                 | gzip \
                 | age "${BACKUP_AGE_ARGS[@]}" \
-                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix")
+                | stage_backup_parts "$output_prefix")
         else
             (set -o pipefail; mariadb-dump \
                 --extended-insert \
@@ -500,52 +954,52 @@ backupall() (
                 | sed '1{/999999.*sandbox/d}' \
                 | sed '/NOTE_VERBOSITY/d' \
                 | gzip \
-                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix")
+                | stage_backup_parts "$output_prefix")
         fi
     }
 
     create_file_parts() {
-        local output_prefix="$1"
-        local -a pipeline_status=()
+        local output_prefix="$1" progress_lock="$2"
+        local -a pipeline_status=() progress_opts=()
         local tar_status
         local age_status=0
         local split_status
 
-        echo "Идет создание архива файлов..."
-        echo "Обработано: 0MB"
-        if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
-            # TAR_CHECKPOINT раскрывается командой, которую запускает tar.
+        if [[ -t 2 ]]; then
+            # Пропускаем кадр, пока строку терминала обновляет rclone.
             # shellcheck disable=SC2016
+            progress_opts=(--checkpoint="$checkpoint"
+                --checkpoint-action=exec='flock -n "$RISH_BACKUP_SPOOL/progress.lock" printf "\rОбработано: %sMB\033[K" "$TAR_CHECKPOINT" >&2 || :')
+            flock -n "$progress_lock" printf '\r\033[K%s' "Идёт создание архива файлов..." >&2 || true
+        else
+            echo "Идет создание архива файлов..."
+        fi
+
+        if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
             tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
-                --record-size="$recordsize" --checkpoint="$checkpoint" \
-                --checkpoint-action=exec='printf "\033[1A\rОбработано: %sMB\033[K\033[1B\r" "$((TAR_CHECKPOINT))" >&2' \
+                --record-size="$recordsize" "${progress_opts[@]}" \
                 | age "${BACKUP_AGE_ARGS[@]}" \
-                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix"
+                | stage_backup_parts "$output_prefix"
             pipeline_status=("${PIPESTATUS[@]}")
             tar_status="${pipeline_status[0]}"
             age_status="${pipeline_status[1]}"
             split_status="${pipeline_status[2]}"
         else
-            # TAR_CHECKPOINT раскрывается командой, которую запускает tar.
-            # shellcheck disable=SC2016
             tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
-                --record-size="$recordsize" --checkpoint="$checkpoint" \
-                --checkpoint-action=exec='printf "\033[1A\rОбработано: %sMB\033[K\033[1B\r" "$((TAR_CHECKPOINT))" >&2' \
-                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix"
+                --record-size="$recordsize" "${progress_opts[@]}" \
+                | stage_backup_parts "$output_prefix"
             pipeline_status=("${PIPESTATUS[@]}")
             tar_status="${pipeline_status[0]}"
             split_status="${pipeline_status[1]}"
         fi
-        printf '\033[1A\r\033[K\033[1A\r\033[K'
-
+        if ((${#progress_opts[@]} > 0)); then
+            flock -n "$progress_lock" printf '\r\033[K' >&2 || true
+        fi
         if (( (tar_status != 0 && tar_status != 1) || age_status != 0 || split_status != 0 )); then
-            return 1
+            return 2
         fi
-        if (( tar_status == 1 )); then
-            echo "Некоторые файлы изменились во время создания архива."
-            echo -e "Копии этих файлов могут быть ${YELLOW}неточными${WHITE}, но бэкап будет продолжен."
-        fi
-        return 0
+        # Как у tar: 0 означает успех, 1 означает изменившиеся файлы.
+        return "$tar_status"
     }
 
     create_cron_parts() (
@@ -581,13 +1035,13 @@ backupall() (
         if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
             if ! tar -czf - -C "$cron_dir" "$cron_file" \
                 | age "${BACKUP_AGE_ARGS[@]}" \
-                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix"; then
+                | stage_backup_parts "$output_prefix"; then
                 echo "не удалось создать зашифрованный архив crontab"
                 return 1
             fi
         else
             if ! tar -czf - -C "$cron_dir" "$cron_file" \
-                | split -b "$splitarchive" --numeric-suffixes - "$output_prefix"; then
+                | stage_backup_parts "$output_prefix"; then
                 echo "не удалось создать архив crontab"
                 return 1
             fi
@@ -603,6 +1057,11 @@ backupall() (
                 continue
                 ;;
         esac
+        if [[ "$USER" == */* || "$USER" == "." || "$USER" == ".." ||
+              "$TARGET" == */* || "$TARGET" == "." || "$TARGET" == ".." ]]; then
+            backup_object_error "Архивация пропущена: недопустимое имя пользователя или объекта."
+            continue
+        fi
 
         if ! backup_parse_archive_policy "$ARCHIVE_FLAG"; then
             backup_object_error "Архивация ${TARGET} пропущена: ${BACKUP_ARCHIVE_POLICY_ERROR}."
@@ -644,10 +1103,6 @@ backupall() (
                 backup_object_error "Архивация CRON пропущена: пользователь ${USER} не найден."
                 continue
             fi
-            if [[ "$TARGET" == */* || "$TARGET" == "." || "$TARGET" == ".." ]]; then
-                backup_object_error "Архивация CRON ${USER} пропущена: недопустимое имя объекта '${TARGET}'."
-                continue
-            fi
             if ! awk -F';' -v user="${USER//\\/\\\\}" -v target="${TARGET//\\/\\\\}" '
                 ($1 "") == (user "") && (($2 "") == (target "") || $3 == "cron") { count++ }
                 END { exit count != 1 }
@@ -661,9 +1116,9 @@ backupall() (
         fi
 
         if [[ "$TYPE" == "cron" ]]; then
-            ARCHIVE_NAME="cron_${USER}_${DATE_TS}"
+            archive_name="cron_${USER}_${DATE_TS}"
         else
-            ARCHIVE_NAME="${TARGET}_${DATE_TS}"
+            archive_name="${TARGET}_${DATE_TS}"
         fi
         EXCLUDE_OPTS=()
         if [ -n "$EXCLUDE_LIST" ]; then
@@ -680,105 +1135,40 @@ backupall() (
             done
         fi
 
-        if ! mkdir -p "$DIR_BACKUP/$server/$USER/$DATE_DIR/"; then
-            backup_object_error "Не удалось создать каталог бэкапа для ${TARGET} (${USER})."
-            continue
-        fi
-        archive_base="$DIR_BACKUP/${server}/${USER}/${DATE_DIR}/${ARCHIVE_NAME}"
-        cleanup_current_archive
-
-        if [ "$TYPE" = "cron" ]; then
-            echo -e "Архивация CRON пользователя ${GREEN}${USER}${WHITE}."
-        elif [ "$TYPE" = "site" ]; then
-            echo -e "Архивация сайта ${GREEN}${TARGET}${WHITE}."
-        elif [ "$TYPE" = "db" ]; then
-            echo -e "Архивация базы сайта ${GREEN}${TARGET}${WHITE}."
-        else
-            echo -e "Архивация папки ${GREEN}${TARGET}${WHITE}."
-        fi
-        if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
-            echo -e "Шифрование: ${GREEN}age${WHITE}, публичных ключей: ${YELLOW}${#BACKUP_AGE_RECIPIENTS[@]}${WHITE}."
-        fi
-
         if [[ "$TYPE" != "cron" ]] && ! cd "/var/www/${USER}/www"; then
             backup_object_error "Не удалось перейти в /var/www/${USER}/www. Архивация ${TARGET} пропущена."
             continue
         fi
 
-        if [ "$TYPE" = "cron" ]; then
-            cron_status=0
-            cron_error="$(create_cron_parts "${archive_base}.tar.gz${age_suffix}-part-")" || cron_status=$?
-            if ((cron_status == 2)); then
-                echo -e "Пропускаем CRON пользователя ${YELLOW}${USER}${WHITE}: crontab отсутствует или пуст."
-                continue
-            elif ((cron_status != 0)); then
-                cleanup_current_archive
-                backup_object_error "Архивация CRON ${USER} пропущена: ${cron_error}."
-                continue
-            fi
-        elif [ "$TYPE" = "db" ]; then
-            if [ -z "$DB" ]; then
-                backup_object_error "Для ${TARGET} не указана база данных. Архивация пропущена."
-                continue
-            fi
-            echo -e "Создаем дамп базы ${GREEN}${DB}${WHITE}..."
-            if ! create_database_parts "$DB" "${archive_base}.sql.gz${age_suffix}-part-"; then
-                cleanup_current_archive
-                backup_object_error "Не удалось создать архив базы ${DB}. Архивация ${TARGET} пропущена."
-                continue
-            fi
-            printf '\033[1A\r\033[K'
-        else
-            if [ -n "$DB" ] && db_exists "$DB"; then
-                echo -e "Создаем дамп базы ${GREEN}${DB}${WHITE}..."
-                if ! create_database_parts "$DB" "${archive_base}.sql.gz${age_suffix}-part-"; then
-                    cleanup_current_archive
-                    backup_object_error "Не удалось создать архив базы ${DB}. Архивация ${TARGET} пропущена."
-                    continue
-                fi
-                printf '\033[1A\r\033[K'
-            elif [ -n "$DB" ]; then
-                echo -e "${YELLOW}База ${DB} не найдена: архивируем только файлы сайта.${WHITE}"
-            fi
-
-            if ! create_file_parts "${archive_base}.tar.gz${age_suffix}-part-"; then
-                cleanup_current_archive
-                backup_object_error "Не удалось создать архив файлов ${TARGET}. Архивация пропущена."
-                continue
-            fi
-        fi
-
-        if [ "$TYPE" = "db" ]; then
-            completion_prefix="${archive_base}.sql.gz${age_suffix}-part-"
-        else
-            completion_prefix="${archive_base}.tar.gz${age_suffix}-part-"
-        fi
-        completion_part=""
-        completion_remote_path=""
-        if ! prepare_completion_part "$completion_prefix"; then
-            cleanup_current_archive
-            backup_object_error "Не удалось отметить последнюю часть архива ${TARGET}. Архивация пропущена."
+        if [[ "$TYPE" == db && -z "$DB" ]]; then
+            backup_object_error "Для ${TARGET} не указана база данных. Архивация пропущена."
             continue
         fi
-
-        if rclone copy --progress --stats-one-line --stats=1s --exclude "*.end" "$DIR_BACKUP/" "${REMOTE}:"; then
-            printf '\033[1A\r\033[K'
-            if rclone copy --progress --stats-one-line --stats=1s \
-                --include "/${completion_remote_path}" \
-                "$DIR_BACKUP/" "${REMOTE}:"; then
-                printf '\033[1A\r\033[K'
-                rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
-                CLEANUP_TARGETS["$REMOTE|$USER"]=1
-                CLEANUP_REMOTES["$REMOTE"]=1
-            else
-                printf '\033[1A\r\033[K'
-                rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
-                backup_object_error "Ошибка передачи последней части архива ${TARGET} в подключение '${REMOTE}'. Переданные части сохранены без признака завершения."
-            fi
+        if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
+            echo -e "Шифрование: ${GREEN}age${WHITE}, публичных ключей: ${YELLOW}${#BACKUP_AGE_RECIPIENTS[@]}${WHITE}."
+        fi
+        if [ "$TYPE" = "cron" ]; then
+            backup_show_stage "Архивация CRON пользователя ${GREEN}${USER}${WHITE}."
+        elif [ "$TYPE" = "site" ]; then
+            backup_show_stage "Архивация сайта ${GREEN}${TARGET}${WHITE}."
+        elif [ "$TYPE" = "db" ]; then
+            backup_show_stage "Архивация базы сайта ${GREEN}${TARGET}${WHITE}."
         else
-            printf '\033[1A\r\033[K'
-            rm -rf -- "${DIR_BACKUP:?DIR_BACKUP is empty}/"*
-            backup_object_error "Ошибка передачи архива ${TARGET} в подключение '${REMOTE}'. Временные файлы очищены."
+            backup_show_stage "Архивация папки ${GREEN}${TARGET}${WHITE}."
+        fi
+        archive_status=0
+        backup_stream_object "$archive_name" || archive_status=$?
+        backup_clear_stage
+        if ((archive_status == 0)); then
+            echo -e "Бэкап ${GREEN}${TARGET}${WHITE} выгружен в ${GREEN}${REMOTE}${WHITE}."
+            CLEANUP_TARGETS["$REMOTE|$USER"]=1
+            CLEANUP_REMOTES["$REMOTE"]=1
+        elif [[ "$TYPE" == cron && "$archive_status" -eq 2 ]]; then
+            echo -e "Пропускаем CRON пользователя ${YELLOW}${USER}${WHITE}: crontab отсутствует или пуст."
+        elif ((archive_status == 130 || archive_status == 143)); then
+            return "$archive_status"
+        else
+            backup_object_error "Не удалось создать или подтвердить выгрузку бэкапа ${TARGET} в подключение '${REMOTE}'."
         fi
     done < "$backup_list_file"
 
@@ -824,11 +1214,6 @@ backupall() (
         if [[ -z "$keep_last_count" || -z "$keep_monthly_count" ]]; then
             continue
         fi
-        if [[ -n "${FAILED_BACKUP_USERS[$USER]+x}" ]]; then
-            backup_cleanup_warning "Очистка для ${USER} на ${REMOTE} пропущена: не все объекты пользователя удалось архивировать."
-            continue
-        fi
-
         REMOTE_DIRS=()
         DATE_DIRS=()
         KEEP_DIRS=()
@@ -841,7 +1226,7 @@ backupall() (
             backup_cleanup_warning "Не удалось получить список архивов для ${USER} на ${REMOTE}: ${remote_list_error}. Ротация пропущена."
             continue
         fi
-        if ! remote_files_output="$(rclone lsf -R --max-depth 2 --files-only "${REMOTE}:${server}/${USER}/" 2>&1)"; then
+        if ! remote_files_output="$(rclone lsf -R --max-depth 3 --files-only "${REMOTE}:${server}/${USER}/" 2>&1)"; then
             remote_list_error="$(backup_cleanup_error_summary "$remote_files_output")"
             backup_cleanup_warning "Не удалось проверить содержимое архивов для ${USER} на ${REMOTE}: ${remote_list_error}. Ротация пропущена."
             continue
@@ -882,8 +1267,7 @@ backupall() (
 
         # CRON и другие объекты не должны вытеснять копии друг друга.
         # Каталог с датой удаляется только тогда, когда он не нужен ни одному объекту.
-        # Отдельно защищаем завершённые копии (.end) от незавершённых выгрузок,
-        # сохраняя совместимость со старыми архивами без признака завершения.
+        # Незавершённые выгрузки не вытесняют завершённые копии (.end).
         oldest_month_index=$((current_month_index - keep_monthly_count))
         for retention_group in "${!RETENTION_GROUPS[@]}"; do
             retained_dates=0
@@ -979,7 +1363,7 @@ createlist() {
 	fi
 
 	echo -n "" > "$backupall2"
-    echo "# format: user;name;type(site|folder|db|cron);db;remote;archive(no|yes|crypto:<age_or_ssh_public_key>[,<age_or_ssh_public_key>]);exclude_list" >> "$backupall2"
+    printf '%s\n' "$BACKUP_LIST_HEADER" >> "$backupall2"
     ii=0
     maxlen=0
     shopt -s nullglob
@@ -1188,7 +1572,7 @@ updatelist() {
     added=$((added + BACKUP_CRON_ADDED))
 
     {
-        echo "# format: user;name;type(site|folder|db|cron);db;remote;archive(no|yes|crypto:<age_or_ssh_public_key>[,<age_or_ssh_public_key>]);exclude_list"
+        printf '%s\n' "$BACKUP_LIST_HEADER"
         cat "$tmp_list"
     } > "$backupall2"
     rm -f "$tmp_list"
@@ -2800,7 +3184,8 @@ ensure_remote_index() {
     local status_row="${2:-}"
     local status_col="${3:-1}"
     local rel_path user_name rest_path date_dir file_name archive_base site_name site_cache_key site_prefix
-    local ts_part date_part time_part label pair_key archive_kind encrypted has_sql snapshot_key complete is_completion_part completion_is_first
+    local ts_part date_part time_part label pair_key archive_kind encrypted has_sql snapshot_key
+    local is_completion_part part_number
     local processed_files=0 progress_step=50
     local -a sorted_sites labels_for_site
     local -A seen_users seen_user_dates seen_sites seen_site_labels snapshot_meta
@@ -2827,7 +3212,7 @@ ensure_remote_index() {
         [ -z "$date_dir" ] && continue
         file_name="${rest_path#*/}"
         [ "$file_name" = "$rest_path" ] && continue
-        [ -z "$file_name" ] && continue
+        [[ -n "$file_name" && "$file_name" != */* ]] || continue
 
         seen_users["$user_name"]=1
         seen_user_dates["$user_name|$date_dir"]=1
@@ -2838,78 +3223,32 @@ ensure_remote_index() {
         archive_kind="full"
         encrypted=0
         is_completion_part=0
-        completion_is_first=0
-        case "$file_name" in
-            *.sql.gz.age-part-*.end)
-                [[ "$file_name" == *-part-00.end ]] && completion_is_first=1
-                archive_base="${file_name%.end}"
-                archive_base="${archive_base%.sql.gz.age-part-*}"
-                archive_kind="sql"
-                encrypted=1
-                is_completion_part=1
-                ;;
-            *.tar.gz.age-part-*.end)
-                [[ "$file_name" == *-part-00.end ]] && completion_is_first=1
-                archive_base="${file_name%.end}"
-                archive_base="${archive_base%.tar.gz.age-part-*}"
-                encrypted=1
-                is_completion_part=1
-                ;;
-            *.sql.gz-part-*.end)
-                [[ "$file_name" == *-part-00.end ]] && completion_is_first=1
-                archive_base="${file_name%.end}"
-                archive_base="${archive_base%.sql.gz-part-*}"
-                archive_kind="sql"
-                is_completion_part=1
-                ;;
-            *.tar.gz-part-*.end)
-                [[ "$file_name" == *-part-00.end ]] && completion_is_first=1
-                archive_base="${file_name%.end}"
-                archive_base="${archive_base%.tar.gz-part-*}"
-                is_completion_part=1
-                ;;
-            *.sql.gz.age-part-00)
-                archive_base="${file_name%.sql.gz.age-part-00}"
-                archive_kind="sql"
-                encrypted=1
-                ;;
-            *.tar.gz.age-part-00)
-                archive_base="${file_name%.tar.gz.age-part-00}"
-                encrypted=1
-                ;;
-            *.sql.gz-part-00)
-                archive_base="${file_name%.sql.gz-part-00}"
-                archive_kind="sql"
-                ;;
-            *.tar.gz-part-00)
-                archive_base="${file_name%.tar.gz-part-00}"
-                ;;
-            *)
-                continue
-                ;;
-        esac
+        [[ "$file_name" =~ ^(.+)\.(tar|sql)\.gz(\.age)?-part-([0-9]+)(\.end)?$ ]] || continue
+        archive_base="${BASH_REMATCH[1]}"
+        [[ "${BASH_REMATCH[2]}" == sql ]] && archive_kind=sql
+        [[ -n "${BASH_REMATCH[3]}" ]] && encrypted=1
+        part_number="${BASH_REMATCH[4]}"
+        if [[ -n "${BASH_REMATCH[5]}" ]]; then
+            is_completion_part=1
+        fi
 
         if [[ "$archive_base" =~ ^(.+)_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2})$ ]]; then
             site_name="${BASH_REMATCH[1]}"
             ts_part="${BASH_REMATCH[2]}"
-        elif [[ -n "$archive_base" ]]; then
+        else
             site_name="$archive_base"
             date_part="$date_dir"
             if [[ "$date_part" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]{2})$ ]]; then
                 date_part="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
             fi
             ts_part="${date_part}_00-00"
-        else
-            continue
         fi
 
-        snapshot_key="${user_name}|${site_name}|${ts_part}|${encrypted}"
+        snapshot_key="${user_name}|${date_dir}|${site_name}|${ts_part}|${encrypted}"
         if [[ "$is_completion_part" -eq 1 ]]; then
-            snapshot_complete["$snapshot_key"]=1
-            [[ "$completion_is_first" -eq 1 ]] || continue
+            snapshot_complete["$snapshot_key|$archive_kind"]=1
         fi
-
-        seen_sites["$user_name|$site_name"]=1
+        [[ "$part_number" == 00 ]] || continue
         snapshot_user["$snapshot_key"]="$user_name"
         snapshot_date["$snapshot_key"]="$date_dir"
         snapshot_site["$snapshot_key"]="$site_name"
@@ -2941,22 +3280,26 @@ ensure_remote_index() {
         ts_part="${snapshot_ts[$snapshot_key]}"
         encrypted="${snapshot_encrypted[$snapshot_key]}"
         has_sql="${snapshot_has_sql[$snapshot_key]:-0}"
-        complete="${snapshot_complete[$snapshot_key]:-0}"
+        if [[ "${snapshot_has_tar[$snapshot_key]:-0}" == 1 &&
+              "${snapshot_complete["$snapshot_key|full"]:-0}" == 1 ]]; then
+            archive_kind=full
+        elif [[ "$has_sql" == 1 && "${snapshot_complete["$snapshot_key|sql"]:-0}" == 1 ]]; then
+            archive_kind=sql
+            has_sql=0
+        else
+            continue
+        fi
+        seen_sites["${snapshot_user[$snapshot_key]}|$site_name"]=1
         date_part="${ts_part%%_*}"
         time_part="${ts_part##*_}"
         label="${date_part} ${time_part//-/:}"
-        if [[ "${snapshot_has_tar[$snapshot_key]:-0}" == "1" ]]; then
-            archive_kind="full"
-        else
-            archive_kind="sql"
+        if [[ "$archive_kind" == sql ]]; then
             label="${label} [SQL]"
         fi
         if [[ "$encrypted" == "1" ]]; then
             label="${label} [шифр]"
         fi
-        if [[ "$complete" == "1" ]]; then
-            label="${label} [ok]"
-        fi
+        label="${label} [ok]"
         pair_key="${snapshot_user[$snapshot_key]}|${site_name}|${label}"
         if [ -z "${seen_site_labels[$pair_key]:-}" ]; then
             seen_site_labels["$pair_key"]=1
@@ -3057,13 +3400,16 @@ download_site_snapshot_archive() {
     combine_downloaded_parts() {
         local source_prefix="$1"
         local output_file="$2"
-        local part_file normal_part
+        local require_completion="${3:-0}"
+        local part_prefix="${tmp_dir}/${source_prefix}-part-"
+        local part_file normal_part expected_part
         local end_count=0
+        local suffix_prefix="" suffix_number=0 suffix_width=2 suffix_limit=90
         local -a all_part_files=() part_files=()
         local -A completed_parts=()
 
         shopt -s nullglob
-        all_part_files=("${tmp_dir}/${source_prefix}-part-"*)
+        all_part_files=("$part_prefix"*)
         shopt -u nullglob
         ((${#all_part_files[@]} > 0)) || return 1
         mapfile -t all_part_files < <(printf '%s\n' "${all_part_files[@]}" | LC_ALL=C sort)
@@ -3074,12 +3420,22 @@ download_site_snapshot_archive() {
                 end_count=$((end_count + 1))
             fi
         done
-        ((end_count <= 1)) || return 1
+        ((end_count <= 1 && end_count >= require_completion)) || return 1
         for part_file in "${all_part_files[@]}"; do
             if [[ "$part_file" != *.end && -n "${completed_parts[$part_file]+x}" ]]; then
                 continue
             fi
+            printf -v expected_part '%s%s%0*d' "$part_prefix" "$suffix_prefix" "$suffix_width" "$suffix_number"
+            [[ "${part_file%.end}" == "$expected_part" ]] || return 1
             part_files+=("$part_file")
+            suffix_number=$((suffix_number + 1))
+            # GNU split расширяет суффикс, чтобы сохранить порядок: 89 → 9000 → … → 9899 → 990000.
+            if ((suffix_number == suffix_limit)); then
+                suffix_prefix+="9"
+                suffix_number=0
+                suffix_width=$((suffix_width + 1))
+                suffix_limit=$((suffix_limit * 10))
+            fi
         done
         ((${#part_files[@]} > 0)) || return 1
         if ((end_count == 1)) && [[ "${part_files[$((${#part_files[@]} - 1))]}" != *.end ]]; then
@@ -3124,7 +3480,7 @@ download_site_snapshot_archive() {
     printf '\033[K'
     echo -e "Загрузка архива в ${GREEN}${target_dir}/${download_filename}${WHITE}"
 
-    include_opts=(--include "${archive_filename}-part-*")
+    include_opts=(--max-depth 1 --include "${archive_filename}-part-*")
     if [ "$archive_kind" != "sql" ]; then
         legacy_filename="${site_name}.tar.gz${age_suffix}"
         include_opts+=(--include "${legacy_filename}-part-*")
@@ -3146,15 +3502,13 @@ download_site_snapshot_archive() {
     fi
     printf '\033[1A\r\033[K'
 
-    if combine_downloaded_parts "$archive_filename" "$assembled_archive"; then
+    if combine_downloaded_parts "$archive_filename" "$assembled_archive" 1; then
         archive_combined=1
-    else
-        if [ "$archive_kind" != "sql" ]; then
-            archive_filename="$legacy_filename"
-            assembled_archive="${tmp_dir}/${archive_filename}"
-            if combine_downloaded_parts "$archive_filename" "$assembled_archive"; then
-                archive_combined=1
-            fi
+    elif [[ -n "$legacy_filename" ]]; then
+        archive_filename="$legacy_filename"
+        assembled_archive="${tmp_dir}/${archive_filename}"
+        if combine_downloaded_parts "$archive_filename" "$assembled_archive" 1; then
+            archive_combined=1
         fi
     fi
     if [[ "$archive_combined" -ne 1 || ! -s "$assembled_archive" ]]; then
@@ -3484,6 +3838,7 @@ else
     echo "└───────────────────────────────────────────────────────────────────────────────────┘"
     echo
 fi
+show_enabled_backup_objects
 echo
 while true
 do
@@ -3500,6 +3855,10 @@ do
         local_remote_ready=1
     fi
 
+    if current_site_record="$(addable_current_backup_site)"; then
+        menu_items+=("Добавить ${current_site_record#*;} в список бэкапов")
+        menu_actions+=("add_current_site")
+    fi
     if [ "$local_has_list" -eq 0 ]; then
         menu_items+=("Создать файл-список всех архивируемых объектов")
         menu_actions+=("create_list")
@@ -3531,12 +3890,13 @@ do
     menu_actions+=("exit")
 
     menu_default=$((${#menu_items[@]} - 1))
-    vertical_menu "current" 2 0 5 "default=${menu_default}" "${menu_items[@]}"
+    vertical_menu "current" 2 0 5 nomouse "default=${menu_default}" "${menu_items[@]}"
     choice=$?
     if ((choice == 255 || choice >= ${#menu_actions[@]})); then
         break
     fi
     case "${menu_actions[$choice]}" in
+        add_current_site) add_current_backup_site ;;
         backup_selected) backup_selected_object ;;
         backup_all) backupall ;;
         restore) restore_backup_menu ;;
