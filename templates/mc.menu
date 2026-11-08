@@ -13,29 +13,29 @@ k  Восстановить CRON
 3  Базы данных
   bash /root/rish/scripts/database_manager.sh "%d" "%f"
 
-w  Firewall / блокировки IP
+4  Firewall / блокировки IP
   bash /root/rish/scripts/firewall_management.sh menu-from-mc "%d" "%f"
 
-s  Управление сервером
+5  Управление сервером
   bash /root/rish/scripts/server_management.sh
 
-u  Пользователи сервера
+6  Пользователи сервера
   r=$(pwd)
   bash /root/rish/scripts/user_management.sh "%d" "%f"
   if ! cd "$r" 2>/dev/null; then
     cd /var/www || cd /
   fi
 
-o  Oбнoвлeниe/прoверкa RISH {VER}
+7  Oбнoвлeниe/прoверкa RISH {VER}
   bash /root/rish/update.sh
 
-z  Статистика сайтов сервера
+8  Статистика сайтов сервера
     source /root/rish/scripts/checkip.sh
     source /root/rish/windows.sh
     CheckIP
 
-b  Бэкaпы (peзepвноe кoпиpoвaниe)
+9  Бэкaпы (peзepвноe кoпиpoвaниe)
     bash /root/rish/backup2.sh --mc %f %d
 
-c  Клонирование сайта
+0  Клонирование сайта
   bash /root/rish/scripts/clonesite.sh

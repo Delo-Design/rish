@@ -1911,8 +1911,8 @@ function extract() {
     options+=("restore_cron::Восстановить CRON")
   fi
   if [[ "$ext" == "tar.gz" ]]; then
-    options+=("restore_folder::Восстановить папку из архива $db_guess")
     options+=("restore_site::Восстановить сайт из архива $db_guess")
+    options+=("restore_folder::Восстановить папку из архива $db_guess")
   elif [[ "$ext" == "sql.gz" || "$ext" == "sql" ]]; then
     if [[ -n "$decrypt_identity" ]]; then
       if [[ "$encrypted_companion" == *.tar.gz.age && -f "$encrypted_companion" ]]; then

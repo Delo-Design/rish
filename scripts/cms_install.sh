@@ -345,6 +345,7 @@ install_joomla() {
 update_joomla() {
   local user
   local cr
+  local check_output
 
   if ! user=$(get_site_user "$directory"); then
     echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
@@ -363,11 +364,12 @@ update_joomla() {
   fi
 
   echo "Проверяем наличие обновлений Joomla..."
-  (
+  check_output=$(
     cd "$site_path" &&
-      timeout 30s runuser -u "$user" -- "$php_bin" cli/joomla.php core:check-updates
+      timeout 30s runuser -u "$user" -- "$php_bin" cli/joomla.php core:check-updates --no-ansi 2>&1
   )
   cr=$?
+  printf '%s\n' "$check_output"
   if (( cr == 124 )); then
     echo -e "Проверка обновлений Joomla ${RED}не завершилась за 30 секунд${WHITE}."
     echo "Проверьте доступ к серверу обновлений."
@@ -377,6 +379,12 @@ update_joomla() {
     echo -e "Не удалось ${RED}проверить наличие обновлений Joomla${WHITE}."
     wait_for_enter
     return
+  fi
+
+  if [[ "$check_output" == *"You already have the latest Joomla version "* ]]; then
+    echo "Обновления Joomla не требуются: установлена актуальная версия."
+    wait_for_enter
+    return 0
   fi
 
   echo "Обновляем Joomla..."

@@ -29,6 +29,8 @@ version_gt() {
 }
 
 Update() {
+  local action_status
+
   # Извлекаем файл версии из архива
   if tar -xzf "rish2.tar.gz" --strip-components=1 "rish/version"
   then
@@ -58,56 +60,72 @@ Update() {
     if [[ "$RISH_SETTINGS_NEED_FIX" -eq 1 ]]; then
       def="default=1"
     fi
-    vertical_menu "current" 2 0 50 ${def} "${update_label}" "Проверка и восстановление настроек RISH" "Проверка обновлений PHP" "Проверка обновлений Apache" "Проверка обновлений MariaDB" "Выйти"
-    choice=$?
-    case "$choice" in
-      0)
-        #обновляем версию RISH
-        if tar -tzf rish2.tar.gz > /dev/null 2>&1
-        then
-          echo "${folder_version}" > /root/rish/version_previous
-          echo "Распаковываем файлы RISH..."
-          if tar --no-same-owner -xf rish2.tar.gz; then
-            echo -e "Файлы RISH ${GREEN}обновлены${WHITE}."
+    while true; do
+      # Без терминала меню может принять конец ввода за Enter.
+      [[ -t 0 && -t 1 ]] || exit 1
+      vertical_menu "current" 2 0 50 "${def}" "${update_label}" "Проверка и восстановление настроек RISH" "Проверка обновлений PHP" "Проверка обновлений Apache" "Проверка обновлений MariaDB" "Выйти"
+      choice=$?
+      [[ -t 0 && -t 1 ]] || exit 1
+
+      case "$choice" in
+        0)
+          #обновляем версию RISH
+          if tar -tzf rish2.tar.gz > /dev/null 2>&1
+          then
+            echo "${folder_version}" > /root/rish/version_previous
+            echo "Распаковываем файлы RISH..."
+            if tar --no-same-owner -xf rish2.tar.gz; then
+              echo -e "Файлы RISH ${GREEN}обновлены${WHITE}."
+            else
+              echo -e "${RED}Не удалось${WHITE} распаковать архив RISH."
+              vertical_menu "current" 2 0 5 "Нажмите Enter"
+              exit 1
+            fi
+            cd /root/rish || exit 1
+            chmod u+x ri.sh
+            chmod u+x update.sh
+            chmod u+x backup2.sh
+            chmod u+x rish_check.sh
+            echo
+            if ! bash postupdate.sh; then
+              echo
+              echo -e "${RED}Обновление RISH завершилось с ошибкой.${WHITE}"
+              echo "Исправьте указанную выше причину и повторите обновление."
+              exit 1
+            fi
           else
-            echo -e "${RED}Не удалось${WHITE} распаковать архив RISH."
+            echo "Скачанный архив поврежден"
             vertical_menu "current" 2 0 5 "Нажмите Enter"
             exit 1
           fi
-          cd /root/rish || exit 1
-          chmod u+x ri.sh
-          chmod u+x update.sh
-          chmod u+x backup2.sh
-          chmod u+x rish_check.sh
-          echo
-          if ! bash postupdate.sh; then
-            echo
-            echo -e "${RED}Обновление RISH завершилось с ошибкой.${WHITE}"
-            echo "Исправьте указанную выше причину и повторите обновление."
-            exit 1
-          fi
-        else
-          echo "Скачанный архив поврежден"
-          vertical_menu "current" 2 0 5 "Нажмите Enter"
-          exit 1
-        fi
-        ;;
-      1)
-        bash "${RISH_HOME}/rish_check.sh" fix
-        ;;
-      2)
-        bash "${RISH_HOME}/scripts/package_updates.sh" php
-        ;;
-      3)
-        bash "${RISH_HOME}/scripts/package_updates.sh" apache
-        ;;
-      4)
-        bash "${RISH_HOME}/scripts/package_updates.sh" mariadb
-        ;;
-      *)
-        echo "RISH не был обновлен"
-        ;;
-    esac
+          break
+          ;;
+        1)
+          bash "${RISH_HOME}/rish_check.sh" fix
+          ;;
+        2)
+          bash "${RISH_HOME}/scripts/package_updates.sh" php
+          ;;
+        3)
+          bash "${RISH_HOME}/scripts/package_updates.sh" apache
+          ;;
+        4)
+          bash "${RISH_HOME}/scripts/package_updates.sh" mariadb
+          ;;
+        *)
+          echo "RISH не был обновлен"
+          break
+          ;;
+      esac
+      action_status=$?
+      case "$action_status" in
+        129|130|143)
+          exit "$action_status"
+          ;;
+      esac
+      def="default=$choice"
+      echo
+    done
   else
     echo "Внутри архива отсутствует файл версии. Что-то пошло не так."
     echo "Обновление невозможно."

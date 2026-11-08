@@ -69,6 +69,28 @@ dir_is_pma()
   [[ -n "$version" ]]
 }
 
+confirm_same_version_reinstall()
+{
+  local version="$1"
+
+  if [[ -z "$PMA_CURRENT_VERSION" || "$PMA_CURRENT_VERSION" != "$version" ]] || ! dir_is_pma "$PMA_PATH"; then
+    return 0
+  fi
+
+  if [[ "$PMA_REINSTALL_CONFIRMED_VERSION" == "$version" ]]; then
+    return 0
+  fi
+
+  echo -e "Уже установлена версия phpMyAdmin ${GREEN}${version}${WHITE}. Обновление не требуется."
+  echo "При необходимости можно переустановить эту же версию."
+  if ! vertical_menu "current" 2 0 30 default=1 "Переустановить phpMyAdmin ${version}" "Выйти"; then
+    echo "phpMyAdmin не изменён."
+    exit 0
+  fi
+
+  PMA_REINSTALL_CONFIRMED_VERSION="$version"
+}
+
 clear_dir_contents()
 {
   local target="$1"
@@ -298,6 +320,12 @@ if [[ -z "$SITE_OWNER" || "$SITE_OWNER" == "$SITE_PARENT_PATH" ]]; then
   fail "Не удалось определить пользователя сайта по пути: ${SITE_PARENT_PATH}"
 fi
 
+echo "Для уменьшения поверхности атаки рекомендуем DBeaver Community вместо phpMyAdmin."
+echo "Он работает на вашем компьютере и подключается к базе через SSH-туннель."
+echo "Так на сервере не нужен дополнительный веб-интерфейс управления базами данных."
+echo "Скачать: https://dbeaver.io/"
+echo
+
 printf 'Куда установить phpMyAdmin на сайте %b%s%b?\n' "$GREEN" "$SITE_ENTRY" "$WHITE"
 echo
 echo "Рекомендуем выделить для phpMyAdmin отдельный сайт."
@@ -407,6 +435,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 PMA_VERSION=""
 PMA_ARCHIVE=""
+PMA_REINSTALL_CONFIRMED_VERSION=""
 PMA_ONLINE_ARCHIVE="${TMP_ROOT}/phpMyAdmin-online.tar.gz"
 ONLINE_VERSION_FILE="${TMP_ROOT}/version.txt"
 
@@ -424,6 +453,7 @@ else
 fi
 
 if [[ -n "$PMA_VERSION" ]]; then
+  confirm_same_version_reinstall "$PMA_VERSION"
   echo -n "Загружаем phpMyAdmin ${PMA_VERSION}... "
   if silent download_archive "$PMA_VERSION" "$PMA_ONLINE_ARCHIVE" && [[ -f "$PMA_ONLINE_ARCHIVE" ]]; then
     PMA_ARCHIVE="$PMA_ONLINE_ARCHIVE"
@@ -440,6 +470,7 @@ if [[ -z "$PMA_ARCHIVE" ]]; then
 fi
 
 echo -e "Версия, доступная к установке: ${GREEN}${PMA_VERSION}${WHITE}"
+confirm_same_version_reinstall "$PMA_VERSION"
 
 if dir_is_pma "$PMA_PATH"; then
   if [[ "$PMA_ROOT_INSTALL" -eq 1 ]]; then
@@ -447,18 +478,22 @@ if dir_is_pma "$PMA_PATH"; then
   else
     echo "В выбранной папке найдена установленная версия phpMyAdmin."
   fi
-  echo "Старая версия будет архивирована перед установкой новой."
+  echo "Текущая установка будет архивирована перед заменой файлов."
 fi
 
-echo -e "Ставим phpMyAdmin по адресу ${GREEN}${SITE_ENTRY}${PMA_NAME:+/${PMA_NAME}}${WHITE}?"
+if [[ -n "$PMA_REINSTALL_CONFIRMED_VERSION" && "$PMA_REINSTALL_CONFIRMED_VERSION" == "$PMA_VERSION" ]]; then
+  echo -e "Переустанавливаем phpMyAdmin по адресу ${GREEN}${SITE_ENTRY}${PMA_NAME:+/${PMA_NAME}}${WHITE}."
+else
+  echo -e "Ставим phpMyAdmin по адресу ${GREEN}${SITE_ENTRY}${PMA_NAME:+/${PMA_NAME}}${WHITE}?"
 
-if [[ "$PMA_ROOT_INSTALL" -eq 1 ]] && ! dir_is_empty "$PMA_PATH" && ! dir_is_pma "$PMA_PATH"; then
-  echo -e "${YELLOW}Внимание:${WHITE} установка в корень сайта может перезаписать одноименные файлы."
-fi
+  if [[ "$PMA_ROOT_INSTALL" -eq 1 ]] && ! dir_is_empty "$PMA_PATH" && ! dir_is_pma "$PMA_PATH"; then
+    echo -e "${YELLOW}Внимание:${WHITE} установка в корень сайта может перезаписать одноименные файлы."
+  fi
 
-if ! vertical_menu "current" 2 0 5 "Да" "Нет"; then
-  echo "Установка прервана"
-  pause_exit 1
+  if ! vertical_menu "current" 2 0 5 "Да" "Нет"; then
+    echo "Установка прервана"
+    pause_exit 1
+  fi
 fi
 
 BLOWFISH_SECRET="$(tr -dc 'A-Za-z0-9' < /dev/urandom | dd bs=1 count=32 2>/dev/null)"
