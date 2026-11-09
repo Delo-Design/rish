@@ -347,6 +347,10 @@ function archive() {
     fi
     options+=("$item")
   done
+  if [[ -d "$fullpath" ]]; then
+    options+=("download_remote::Скачать копию из бекапа на сервер")
+    options+=("restore_remote::Восстановить бэкап из облака потоком")
+  fi
   options+=("exit::Выйти")
 
   [[ "$crypto_available" -eq 1 ]] && menu_default=1
@@ -362,6 +366,14 @@ function archive() {
   fi
 
   action="${options[$choice]%%::*}"
+  if [[ "$action" == "download_remote" ]]; then
+    (cd -- "$path" && bash /root/rish/backup2.sh --download-backup)
+    return $?
+  fi
+  if [[ "$action" == "restore_remote" ]]; then
+    bash /root/rish/backup2.sh --restore-stream "$fullpath"
+    return $?
+  fi
   if [[ "$action" == *_crypto ]]; then
     ARCHIVE_USE_CRYPTO=1
     action="${action%_crypto}"
@@ -652,55 +664,139 @@ report_age_archive_open_error() {
   echo -e "Ключ ${RED}не подходит${WHITE} к архиву либо архив повреждён."
 }
 
-function validate_database_archive() {
-  local file="$1"
-  local decrypt_identity="${2:-}"
+# Источник можно открывать повторно: файл либо последовательность удалённых
+# частей. Контекст передаётся по имени associative array, без eval и FIFO.
+restore_source_bytes() (
+  local context="$1" role="$2" source_file identity manifest
+  local -n source_ref="$context"
+  set -o pipefail
+  if [[ "$role" == tar ]]; then
+    source_file="${source_ref['tar']}"
+    identity="${source_ref['identity']:-}"
+    manifest="${source_ref['tar_manifest']:-}"
+  else
+    source_file="${source_ref['sql']}"
+    identity="${source_ref['sql_identity']:-}"
+    manifest="${source_ref['sql_manifest']:-}"
+  fi
+  if [[ "${source_ref['kind']}" == remote ]]; then
+    if [[ -n "$identity" ]]; then
+      rish_restore_read_parts "$manifest" "${source_ref['remote']}" "${source_ref['workdir']}" | age -d -i "$identity"
+    else
+      rish_restore_read_parts "$manifest" "${source_ref['remote']}" "${source_ref['workdir']}"
+    fi
+  elif [[ -n "$identity" ]]; then
+    age -d -i "$identity" "$source_file"
+  else
+    cat -- "$source_file"
+  fi
+)
 
-  if [[ -n "$decrypt_identity" ]]; then
-    if ! (set -o pipefail; age -d -i "$decrypt_identity" "$file" 2>/dev/null | gzip -t); then
-      report_age_archive_open_error "$file"
+restore_source_tar() (
+  local context="$1" tar_mode="$2" tar_status
+  shift 2
+  set -o pipefail
+  restore_source_bytes "$context" tar | gzip -dc | (
+    LC_ALL=C.UTF-8 tar "$tar_mode" - --quoting-style=escape "$@"
+    tar_status=$?
+    # tar может завершиться до конца gzip. Дочитываем источник, чтобы
+    # проверить CRC, age и все части, а читатель успел сохранить SHA-256.
+    cat >/dev/null || exit 1
+    exit "$tar_status"
+  )
+)
+
+restore_source_sql() (
+  local context="$1" member
+  local -n source_ref="$context"
+  set -o pipefail
+  member="${source_ref['sql_member']:-}"
+  if [[ -n "$member" ]]; then
+    if [[ "$member" == *.gz ]]; then
+      restore_source_tar "$context" -xOf -- "$member" | gzip -dc
+    else
+      restore_source_tar "$context" -xOf -- "$member"
+    fi
+  elif [[ "${source_ref['sql']%.age}" == *.gz ]]; then
+    restore_source_bytes "$context" sql | gzip -dc
+  else
+    restore_source_bytes "$context" sql
+  fi
+)
+
+restore_source_protect() {
+  local context="$1" target="$2" item canonical target_real
+  local -n source_ref="$context"
+  target_real="$(realpath -m -- "$target")" || return 1
+  local -a protected=("${source_ref['identity']:-}" "${source_ref['sql_identity']:-}" "${source_ref['workdir']:-}")
+  if [[ "${source_ref['kind']}" == file ]]; then
+    protected+=("${source_ref['tar']:-}" "${source_ref['sql']:-}")
+  fi
+  for item in "${protected[@]}"; do
+    [[ -n "$item" ]] || continue
+    canonical="$(realpath -m -- "$item")" || return 1
+    if [[ "$canonical" == "$target_real" || "$canonical" == "$target_real/"* ]]; then
+      echo -e "Источник восстановления ${YELLOW}${canonical}${WHITE} находится внутри папки назначения."
+      echo "Переместите источник за пределы папки сайта."
       return 1
     fi
-  elif [[ "$file" == *.gz ]] && ! gzip -t "$file"; then
-    echo -e "Файл ${RED}$(basename "$file")${WHITE} поврежден или не является корректным gzip-архивом."
-    return 1
-  elif [[ ! -s "$file" ]]; then
-    echo -e "Файл ${RED}$(basename "$file")${WHITE} пуст или недоступен."
+  done
+}
+
+function validate_database_archive() {
+  local file="$1" decrypt_identity="${2:-}" context="${3:-validation_restore_source}"
+  # Контекст передаётся помощникам по имени переменной.
+  # shellcheck disable=SC2034
+  local -A validation_restore_source=(['kind']=file ['sql']="$file" ['sql_identity']="$decrypt_identity")
+  # Проверяем весь поток и не принимаем пустой SQL. Сам дамп не сохраняем.
+  if ! (set -o pipefail; restore_source_sql "$context" | (
+    local first_byte
+    # Первый символ нужен только для проверки непустого потока.
+    # shellcheck disable=SC2034
+    IFS= read -r -N 1 first_byte || exit 1
+    cat >/dev/null
+  )); then
+    echo -e "Не удалось проверить дамп ${YELLOW}$(basename "$file")${WHITE}: источник недоступен, пуст, повреждён или ключ не подходит."
     return 1
   fi
-  return 0
 }
 
 function inspect_tar_archive_layout() {
-  local archive_path="$1"
-  local decrypt_identity="${2:-}"
+  local archive_path="$1" decrypt_identity="${2:-}" context="${3:-inspect_restore_source}"
+  local tar_list_file entry
+  # shellcheck disable=SC2034
+  local -A inspect_restore_source=(['kind']=file ['tar']="$archive_path" ['identity']="$decrypt_identity")
+  local -n inspect_source_ref="$context"
+  tar_list_file="$(mktemp)" || return 1
+  if ! restore_source_tar "$context" -tf > "$tar_list_file"; then
+    echo -e "Архив ${YELLOW}$(basename "$archive_path")${WHITE} недоступен, повреждён или ключ не подходит."
+    rm -f -- "$tar_list_file"
+    return 1
+  fi
+  if [[ "${inspect_source_ref['kind']}" == remote ]]; then
+    while IFS= read -r entry; do
+      if [[ -z "$entry" || "$entry" == /* || "$entry" == -* || "$entry" == *\\* ||
+            "/$entry/" == */../* || "/$entry/" == */./* ]]; then
+        echo "Архив содержит неподдерживаемые пути. Восстановление прервано."
+        rm -f -- "$tar_list_file"
+        return 1
+      fi
+    done < "$tar_list_file"
+  fi
+  inspect_tar_archive_entries "$tar_list_file"
+  local layout_status=$?
+  rm -f -- "$tar_list_file"
+  return "$layout_status"
+}
+
+function inspect_tar_archive_entries() {
+  local tar_list_file="$1"
   local entry top item seen
-  local tar_list_file
-  local -a root_dirs=()
-  local -a root_files=()
-  local -a root_items=()
-  local -a sql_candidates=()
+  local -a root_dirs=() root_files=() root_items=() sql_candidates=()
 
   ARCHIVE_SINGLE_ROOT_DIR=""
   ARCHIVE_SQL_ENTRY=""
   ARCHIVE_LAYOUT="mixed"
-
-  tar_list_file="$(mktemp)" || {
-    echo -e "${RED}Не удалось${WHITE} подготовить временный файл для проверки архива."
-    return 1
-  }
-
-  if [[ -n "$decrypt_identity" ]]; then
-    if ! (set -o pipefail; age -d -i "$decrypt_identity" "$archive_path" 2>/dev/null | tar -tzf - > "$tar_list_file"); then
-      report_age_archive_open_error "$archive_path"
-      rm -f "$tar_list_file"
-      return 1
-    fi
-  elif ! tar -tzf "$archive_path" > "$tar_list_file"; then
-    echo -e "${RED}Ошибка${WHITE}: архив ${YELLOW}$(basename "$archive_path")${WHITE} поврежден или имеет неверный формат."
-    rm -f "$tar_list_file"
-    return 1
-  fi
 
   while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
@@ -719,8 +815,6 @@ function inspect_tar_archive_layout() {
       root_files+=("$entry")
     fi
   done < "$tar_list_file"
-
-  rm -f "$tar_list_file"
 
   root_items=("${root_dirs[@]}")
   for item in "${root_files[@]}"; do
@@ -959,377 +1053,380 @@ restore_cron() (
 )
 
 
-function restore_folder() {
-  local archive_path="$1"
-  local site_guess="$2"
-  local mode="${3:-manual}"
-  local decrypt_identity="${4:-}"
-  local archive_prevalidated="${5:-0}"
-
-  local folder_name="$site_guess"
-
-  if [[ "$mode" != "auto" ]]; then
-    echo -ne "${WHITE}Введите имя папки для восстановления: ${YELLOW}"
-    read -e -i "$site_guess" folder_name
-    echo -ne "${WHITE}"
+restore_site_check_target() {
+  local target="$1" parent user name canonical_parent
+  [[ "$target" =~ ^/var/www/([a-z_][a-z0-9_-]*)/www/([^/]+)$ ]] || {
+    echo -e "Укажите папку вида ${YELLOW}/var/www/<пользователь>/www/<имя-сайта>${WHITE}." >&2
+    return 1
+  }
+  user="${BASH_REMATCH[1]}"
+  name="${BASH_REMATCH[2]}"
+  validate_site_name "$name" && id -u "$user" >/dev/null 2>&1 || {
+    echo "Некорректное имя сайта или пользователь сервера не существует." >&2
+    return 1
+  }
+  parent="${target%/*}"
+  canonical_parent="$(realpath -e -- "$parent")" || return 1
+  if [[ "$canonical_parent" != "$parent" || -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
+    echo "Для восстановления нужна обычная папка сайта без симлинков в пути назначения." >&2
+    return 1
   fi
+}
 
-  if [[ "$archive_prevalidated" -ne 1 ]]; then
-    echo -e "Проверяем архив ${GREEN}$(basename "$archive_path")${WHITE} и подготавливаем распаковку в папку ${GREEN}${folder_name}${WHITE}..."
-    if ! inspect_tar_archive_layout "$archive_path" "$decrypt_identity"; then
-      echo -e "Восстановление ${YELLOW}прервано${WHITE}: не удалось прочитать архив."
+# Поля плана читаются другими функциями через nameref.
+# shellcheck disable=SC2034
+restore_folder_plan() {
+  local plan_name="$1" target="$2" ask_create="${3:-0}" first_entry
+  local -n plan_ref="$plan_name"
+  plan_ref['target']="$target"
+  plan_ref['action']=create
+  plan_ref['inode']=""
+  if [[ -d "$target" ]]; then
+    plan_ref['inode']="$(stat -Lc '%d:%i' -- "$target")" || return 1
+    first_entry="$(find -H "$target" -mindepth 1 -maxdepth 1 -printf x -quit)" || return 1
+    plan_ref['action']=empty
+    if [[ -n "$first_entry" ]]; then
+      echo -e "Папка ${YELLOW}${target}${WHITE} не пуста (учитываются скрытые файлы)."
+      vertical_menu current 2 0 60 default=2 \
+        "Очистить папку и восстановить" "Восстановить поверх существующих файлов" "Отмена"
+      case "$?" in
+        0) plan_ref['action']=clean ;;
+        1) plan_ref['action']=overlay ;;
+        *) return 1 ;;
+      esac
+    else
+      echo -e "Папка ${GREEN}${target}${WHITE} пуста."
+    fi
+  elif [[ -e "$target" || -L "$target" ]]; then
+    echo "Путь назначения занят файлом или недоступной ссылкой."
+    return 1
+  elif [[ "$ask_create" -eq 1 ]]; then
+    echo -e "Папка ${YELLOW}${target}${WHITE} отсутствует."
+    vertical_menu current 2 0 60 default=1 "Создать папку при восстановлении" "Отмена"
+    [[ "$?" -eq 0 ]] || return 1
+  fi
+}
+
+restore_folder_check_plan() {
+  local plan_name="$1" target first_entry
+  local -n check_plan_ref="$plan_name"
+  target="${check_plan_ref['target']}"
+  if [[ -n "${check_plan_ref['inode']}" ]]; then
+    [[ "$(stat -Lc '%d:%i' -- "$target")" == "${check_plan_ref['inode']}" ]] || {
+      echo "Папка назначения изменилась. Повторите восстановление."
       return 1
-    fi
+    }
+  elif [[ -e "$target" || -L "$target" ]]; then
+    echo "Папка назначения появилась после проверки. Повторите восстановление."
+    return 1
   fi
-
-  # Проверка существования папки
-  if [[ -d "$folder_name" ]]; then
-    if [[ -n "$(ls -A "$folder_name")" ]]; then
-      echo -e "Папка ${YELLOW}${folder_name}${WHITE} уже существует и не пуста. Что делать?"
-      vertical_menu "current" 2 0 60 "Очистить и извлечь" "Извлечь поверх существующих файлов" "Прервать извлечение"
-      local choice=$?
-
-      if [[ "$choice" -eq 255 || "$choice" -eq 2 ]]; then
-        echo -e "Извлечение ${YELLOW}отменено${WHITE} пользователем."
-        return 1
-      elif [[ "$choice" -eq 0 ]]; then
-        echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
-        echo -e "${WHITE}Очищаем папку ${folder_name}...${WHITE}"
-        clean_directory_contents "${folder_name:?}"
-      else
-        echo -e -n "${CURSORUP}${ERASEUNTILLENDOFLINE}"
-        echo -e "${WHITE}Извлечение будет выполнено без очистки папки.${WHITE}"
-      fi
-    fi
-  else
-    mkdir -p "$folder_name"
+  if [[ "${check_plan_ref['action']}" == empty ]]; then
+    first_entry="$(find -H "$target" -mindepth 1 -maxdepth 1 -printf x -quit)" || return 1
+    [[ -z "$first_entry" ]] || { echo "Папка больше не пуста. Повторите восстановление."; return 1; }
   fi
+}
 
-  echo -e "Начинаем распаковку архива в папку ${GREEN}${folder_name}${WHITE}..."
+function restore_folder() {
+  local archive_path="$1" site_guess="$2" mode="${3:-manual}" decrypt_identity="${4:-}"
+  local archive_prevalidated="${5:-0}" context="${6:-folder_restore_source}" plan_name="${7:-folder_restore_plan}"
+  local folder_name="$site_guess" abs_path user_dir
+  # shellcheck disable=SC2034
+  local -A folder_restore_source=(['kind']=file ['tar']="$archive_path" ['identity']="$decrypt_identity")
+  # shellcheck disable=SC2034
+  local -A folder_restore_plan=()
+  local -n folder_source_ref="$context" folder_plan_ref="$plan_name"
+  local -a extract_args=()
 
-  local checkpoint=50000
-  local recordsize=1024
-  local tar_rc
-  local extract_args=()
-
-  if [[ "$ARCHIVE_LAYOUT" == "site_plus_sql" && -n "$ARCHIVE_SINGLE_ROOT_DIR" ]]; then
-    extract_args=(--strip-components=1 -C "$folder_name" "$ARCHIVE_SINGLE_ROOT_DIR")
-  elif [[ "$ARCHIVE_LAYOUT" == "single_dir" ]]; then
+  if [[ "$mode" != auto ]]; then
+    echo -ne "${WHITE}Введите имя папки для восстановления: ${YELLOW}"
+    IFS= read -r -e -i "$site_guess" folder_name || return 1
+    echo -ne "${WHITE}"
+    [[ -n "$folder_name" ]] || return 1
+  fi
+  if [[ "$archive_prevalidated" -ne 1 ]]; then
+    inspect_tar_archive_layout "$archive_path" "$decrypt_identity" "$context" || return 1
+  fi
+  if [[ -z "${7:-}" ]]; then
+    restore_folder_plan "$plan_name" "$folder_name" || return 1
+  fi
+  restore_folder_check_plan "$plan_name" || return 1
+  if [[ "${folder_source_ref['kind']}" == remote ]]; then
+    restore_site_check_target "$folder_name" || return 1
+  fi
+  if [[ "${folder_plan_ref['action']}" == clean ]]; then
+    restore_source_protect "$context" "$folder_name" || return 1
+    clean_directory_contents "$folder_name" || return 1
+  fi
+  # Права содержимого берутся из TAR. Для нового корня задаём 755 явно,
+  # независимо от umask защищённого временного окружения age/remote.
+  if [[ ! -d "$folder_name" ]]; then
+    # Режим 755 нужен только конечному корню восстановления.
+    # shellcheck disable=SC2174
+    mkdir -p -m 755 -- "$folder_name" || return 1
+  fi
+  if [[ "${folder_source_ref['kind']}" == remote ]]; then
+    # backup2 сохраняет единственную папку сайта; имя назначения может отличаться.
+    extract_args=(--strip-components=1 -C "$folder_name" -- "${folder_source_ref['root']}")
+  elif [[ "$ARCHIVE_LAYOUT" == site_plus_sql && -n "$ARCHIVE_SINGLE_ROOT_DIR" ]]; then
+    extract_args=(--strip-components=1 -C "$folder_name" -- "$ARCHIVE_SINGLE_ROOT_DIR")
+  elif [[ "$ARCHIVE_LAYOUT" == single_dir ]]; then
     extract_args=(--strip-components=1 -C "$folder_name")
   else
     extract_args=(-C "$folder_name")
   fi
-
-  if [[ -n "$decrypt_identity" ]]; then
-    (set -o pipefail; age -d -i "$decrypt_identity" "$archive_path" 2>/dev/null \
-      | tar -xzf - \
-        --record-size=$recordsize --checkpoint=$checkpoint \
-        --checkpoint-action=exec="echo -e \"${CURSORUP}Обработано: \$((TAR_CHECKPOINT / 1000)) MB${ERASEUNTILLENDOFLINE}\r\" >&2" \
-        "${extract_args[@]}")
-    tar_rc=$?
-  else
-    tar -xzf "$archive_path" \
-      --record-size=$recordsize --checkpoint=$checkpoint \
-      --checkpoint-action=exec="echo -e \"${CURSORUP}Обработано: \$((TAR_CHECKPOINT / 1000)) MB${ERASEUNTILLENDOFLINE}\r\" >&2" \
-      "${extract_args[@]}"
-    tar_rc=$?
-  fi
-  echo -e "${CURSORUP}${ERASEUNTILLENDOFLINE}"
-
-  if [[ "$tar_rc" -ne 0 ]]; then
-    echo -e "Произошла ${RED}ошибка${WHITE} при извлечении архива ${RED}$(basename "$archive_path")${WHITE}."
+  echo -e "Распаковываем архив в ${GREEN}${folder_name}${WHITE}..."
+  if ! restore_source_tar "$context" -xf "${extract_args[@]}"; then
+    echo "Ошибка распаковки. Папка может содержать частично восстановленные файлы."
     return 1
   fi
-
-  local abs_path
-  abs_path="$(realpath "$folder_name")"
-
+  abs_path="$(realpath -e -- "$folder_name")" || return 1
   if [[ "$abs_path" =~ ^/var/www/([^/]+)/www(/|$) ]]; then
-    local user_dir="${BASH_REMATCH[1]}"
-    chown -R "${user_dir}:${user_dir}" "$folder_name"
-    echo -e "Все папки и файлы в восстановленной папке получили владельцем ${YELLOW}${user_dir}${WHITE}."
+    user_dir="${BASH_REMATCH[1]}"
+    chown -R "${user_dir}:${user_dir}" -- "$folder_name" || return 1
+    echo -e "Владелец восстановленных файлов: ${YELLOW}${user_dir}${WHITE}."
   fi
+  echo -e "Архив восстановлен в ${GREEN}${folder_name}${WHITE}."
+}
 
-  echo -e "Архив успешно восстановлен в папку ${GREEN}${folder_name}${WHITE}."
+restore_site_find_config() {
+  local name="$1" f
+  RESTORE_SITE_CONF=""
+  for f in /etc/httpd/conf.d/*.conf; do
+    [[ -f "$f" ]] || continue
+    if awk -v name="$name" '$1 == "ServerName" && $2 == name { found=1 } END { exit !found }' "$f"; then
+      RESTORE_SITE_CONF="$f"
+      return 0
+    fi
+  done
+  return 1
+}
+
+restore_site_check_config() {
+  local conf_file="$1" target="$2" document_root
+  document_root="$(awk '$1 == "DocumentRoot" { print $2; exit }' "$conf_file")"
+  [[ -n "$document_root" ]] || return 1
+  document_root="$(realpath -ms -- "$document_root")" || return 1
+  if [[ "$document_root" != "$target" && "$document_root" != "$target/"* ]]; then
+    echo -e "DocumentRoot сайта указывает на другую папку: ${YELLOW}${document_root}${WHITE}."
+    return 1
+  fi
 }
 
 function restore_site() {
-  local file="$1"
-  local site_guess="$2"
-  local site_path="${3:-}"
-  local decrypt_identity="${4:-}"
-  local encrypted_sql_file="${5:-}"
-  local skip_create=0
-  local f
-  local conf_file=""
-  local embedded_sql_entry=""
-  local base=""
-  local sql_file=""
-  local sql_identity=""
-  local sql_prevalidated=0
-  local temp_sql_dir=""
+  local file="$1" site_guess="$2" site_path="${3:-}" decrypt_identity="${4:-}" encrypted_sql_file="${5:-}"
+  local context="${6:-site_restore_source}" base target_path target_user target_hint document_root choice ret
+  local skip_create=0 has_database=0 conf_file="" sql_label
+  # shellcheck disable=SC2034
+  local -A site_restore_source=(['kind']=file ['tar']="$file" ['identity']="$decrypt_identity")
+  # shellcheck disable=SC2034
+  local -A site_restore_plan=()
+  local -n site_source_ref="$context"
   [[ -n "$site_path" ]] || site_path="$(dirname "$file")"
-  if [[ -n "$decrypt_identity" && "$file" != *.tar.gz.age ]]; then
-    echo -e "Файл ${RED}$(basename "$file")${WHITE} не является зашифрованным архивом tar.gz.age."
-    echo -e "Восстановление ${YELLOW}отменено${WHITE}."
-    return 1
-  elif [[ -z "$decrypt_identity" && "$file" != *.tar.gz ]]; then
-    echo -e "Файл ${RED}$(basename "$file")${WHITE} не является архивом tar.gz."
-    echo -e "Восстановление ${YELLOW}отменено${WHITE}."
-    return 1
-  fi
 
-  if [[ -n "$decrypt_identity" ]]; then
-    echo -e "Проверяем архив ${GREEN}$(basename "$file")${WHITE} и соответствие ключа..."
-  else
-    echo -e "Проверяем архив ${GREEN}$(basename "$file")${WHITE}..."
-  fi
-  if ! inspect_tar_archive_layout "$file" "$decrypt_identity"; then
-    echo -e "Восстановление ${YELLOW}прервано${WHITE}: архив не прошёл проверку."
-    return 1
-  fi
-  embedded_sql_entry="$ARCHIVE_SQL_ENTRY"
-
-  base="${file%.tar.gz}"
-  if [[ -n "$decrypt_identity" ]]; then
-    if [[ -n "$encrypted_sql_file" && -f "$encrypted_sql_file" ]]; then
-      sql_file="$encrypted_sql_file"
-      sql_identity="$decrypt_identity"
-    fi
-  else
-    [[ -f "${base}.sql.gz" ]] && sql_file="${base}.sql.gz"
-    [[ -f "${base}.sql" ]] && sql_file="${base}.sql"
-  fi
-  if [[ -n "$sql_file" ]]; then
-    echo -e "Проверяем архив базы данных ${GREEN}$(basename "$sql_file")${WHITE}..."
-    if ! validate_database_archive "$sql_file" "$sql_identity"; then
-      echo -e "Восстановление ${YELLOW}прервано${WHITE}: архив базы данных не прошёл проверку."
-      return 1
-    fi
-    sql_prevalidated=1
-  fi
-
-  for f in /etc/httpd/conf.d/*.conf; do
-    grep -q -E "^\s*ServerName\s+${site_guess}\s*$" "$f" && conf_file="$f" && break
-  done
-
-  if [[ -f "$conf_file" ]]; then
-    local current_path
-    current_path=$(awk '$1 == "DocumentRoot" { print $2; exit }' "$conf_file")
-
-    if [[ -z "$current_path" ]]; then
-      echo -e "Не удалось определить DocumentRoot в конфиге: ${RED}${conf_file}${WHITE}"
-      return 1
-    fi
-
-    local current_user=""
-    [[ "$current_path" =~ ^/var/www/([^/]+)/www/ ]] && current_user="${BASH_REMATCH[1]}"
-
-    local archive_user=""
-    [[ "$site_path" =~ ^/var/www/([^/]+)/www(/|$) ]] && archive_user="${BASH_REMATCH[1]}"
-
-    echo -e "Сайт ${YELLOW}${site_guess}${WHITE} уже существует и расположен в папке пользователя ${YELLOW}${archive_user}${WHITE}"
-
-    local options=()
-    if [[ "$current_user" == "$archive_user" ]]; then
-      options+=("same_path::Восстановить в текущую папку ${site_guess}(${archive_user})")
-    else
-      echo
-      echo -e "Если вы хотите восстановить из архива действующий сайт - переместите архив в папку пользователя ${GREEN}$current_user${WHITE}."
-      echo -e "Для этого прервите восстановление и самостоятельно переместите архив с помощью midnight commander (это программа в которой вы работаете)."
-      echo -e "Или просто выберите другое имя для сайта."
-    fi
-    options+=("rename::Задать другое имя для сайта")
-    options+=("exit::Отменить восстановление")
-
-    local menu_items=()
-    for item in "${options[@]}"; do
-      menu_items+=("${item#*::}")
-    done
-
-    vertical_menu "current" 2 0 60 "${menu_items[@]}"
-    local choice=$?
-    if [[ "$choice" -eq 255 ]]; then
-      echo -e "Восстановление ${YELLOW}отменено${WHITE} пользователем."
-      return
-    fi
-
-    local action="${options[$choice]%%::*}"
-    case "$action" in
-      same_path)
-        echo -e "Сайт будет восстановлен в текущую папку."
-        skip_create=1
-        ;;
-      rename)
-        ;;
-      exit)
-        echo -e "Восстановление ${YELLOW}отменено${WHITE} пользователем."
-        return 1
-        ;;
-    esac
-  fi
-
-  site_name=$site_guess
-  local ret
-  if [[ "$skip_create" -eq 0 ]]; then
-    source /root/rish/create_site.sh
-    create_site "$site_guess" "$site_path"
-    ret=$?
-    if (( ret == 1 )); then
-      echo -e "Сайт ${YELLOW}$site_name${WHITE} не был создан. Восстановление прервано."
-      return 1
-    fi
-  fi
-
-  if ! restore_folder "$file" "$site_name" "auto" "$decrypt_identity" 1; then
-    return 1
-  fi
-
-  if [[ -z "$sql_file" ]]; then
-    if [[ -n "$embedded_sql_entry" ]]; then
-      temp_sql_dir="$(mktemp -d "${site_path}/.restore_sql.XXXXXX")"
-      if [[ -z "$temp_sql_dir" ]]; then
-        echo -e "Не удалось подготовить временную папку для извлечения SQL."
-      elif [[ -n "$decrypt_identity" ]] && \
-        (set -o pipefail; age -d -i "$decrypt_identity" "$file" 2>/dev/null | tar -xzf - -C "$temp_sql_dir" "$embedded_sql_entry"); then
-        sql_file="${temp_sql_dir}/${embedded_sql_entry}"
-        echo -e "Найден SQL-файл внутри архива: ${GREEN}${embedded_sql_entry}${WHITE}"
-      elif [[ -z "$decrypt_identity" ]] && tar -xzf "$file" -C "$temp_sql_dir" "$embedded_sql_entry"; then
-        sql_file="${temp_sql_dir}/${embedded_sql_entry}"
-        echo -e "Найден SQL-файл внутри архива: ${GREEN}${embedded_sql_entry}${WHITE}"
+  if [[ "${site_source_ref['kind']}" == remote ]]; then
+    target_hint="${site_source_ref['target_hint']:-}"
+    if [[ -z "$target_hint" ]]; then
+      if [[ "$PWD" =~ ^/var/www/[^/]+/www$ ]]; then
+        target_hint="${PWD}/${site_guess}"
+      elif [[ "$PWD" =~ ^(/var/www/[^/]+/www/[^/]+)(/|$) ]]; then
+        target_hint="${BASH_REMATCH[1]}"
       else
-        echo -e "Не удалось извлечь SQL-файл ${RED}${embedded_sql_entry}${WHITE} из архива."
-        rm -rf "$temp_sql_dir"
-        temp_sql_dir=""
+        # Вне каталога сайтов сначала учитываем фактического владельца
+        # существующего vhost: он мог отличаться от владельца в бэкапе.
+        if restore_site_find_config "$site_guess"; then
+          document_root="$(awk '$1 == "DocumentRoot" { print $2; exit }' "$RESTORE_SITE_CONF")"
+          if [[ "$document_root" =~ ^(/var/www/[^/]+/www/[^/]+)(/|$) ]]; then
+            target_path="${BASH_REMATCH[1]}"
+            [[ "${target_path##*/}" != "$site_guess" ]] || target_hint="$target_path"
+          fi
+        fi
+        [[ -n "$target_hint" ]] || target_hint="/var/www/${site_source_ref['user']}/www/${site_guess}"
       fi
     fi
-  fi
-
-  if [[ -n "$sql_file" ]]; then
-    echo -e "Найден файл базы данных: ${GREEN}$(basename "$sql_file")${WHITE}. Восстанавливаем..."
-    if ! restore_db_auto "$sql_file" "$site_name" "$sql_identity" "$sql_prevalidated"; then
-      [[ -n "$temp_sql_dir" ]] && rm -rf "$temp_sql_dir"
-      echo -e "Восстановление базы данных прервано."
+    target_path="$(realpath -ms -- "$target_hint")" || return 1
+    if ! restore_site_check_target "$target_path"; then
+      echo "Откройте в Midnight Commander папку сайта или /var/www/<пользователь>/www и повторите восстановление."
       return 1
+    fi
+    site_path="${target_path%/*}"
+    site_guess="${target_path##*/}"
+    echo -e "Копия: ${GREEN}${file}${WHITE}."
+  else
+    if [[ "$file" != *.tar.gz && "$file" != *.tar.gz.age ]]; then
+      echo "Для восстановления сайта требуется архив tar.gz или tar.gz.age."
+      return 1
+    fi
+    site_path="$(realpath -e -- "$site_path")" || return 1
+    base="${file%.tar.gz}"
+    if [[ -n "$decrypt_identity" ]]; then
+      if [[ -n "$encrypted_sql_file" && -f "$encrypted_sql_file" ]]; then
+        site_source_ref['sql']="$encrypted_sql_file"
+        site_source_ref['sql_identity']="$decrypt_identity"
+      fi
+    else
+      [[ ! -f "${base}.sql.gz" ]] || site_source_ref['sql']="${base}.sql.gz"
+      [[ ! -f "${base}.sql" ]] || site_source_ref['sql']="${base}.sql"
+    fi
+  fi
+  if [[ "${site_source_ref['kind']}" == remote ]]; then
+    # Формат backup2 известен: папка сайта в TAR, дамп БД — отдельным потоком.
+    # Полное чтение до распаковки привело бы к повторному скачиванию всех частей.
+    ARCHIVE_LAYOUT=single_dir
+    ARCHIVE_SINGLE_ROOT_DIR="${site_source_ref['root']}"
+    ARCHIVE_SQL_ENTRY=""
+    site_source_ref['sql_member']=""
+  else
+    echo -e "Проверяем архив ${GREEN}$(basename "$file")${WHITE}..."
+    inspect_tar_archive_layout "$file" "$decrypt_identity" "$context" || return 1
+    if [[ -z "${site_source_ref['sql']:-}" && -n "$ARCHIVE_SQL_ENTRY" ]]; then
+      site_source_ref['sql_member']="$ARCHIVE_SQL_ENTRY"
+    fi
+  fi
+  sql_label="${site_source_ref['sql']:-${site_source_ref['sql_member']:-}}"
+  if [[ -n "$sql_label" ]]; then
+    if [[ "${site_source_ref['kind']}" != remote ]]; then
+      validate_database_archive "$sql_label" "${site_source_ref['sql_identity']:-}" "$context" || return 1
+    fi
+    mariadb -N -e 'SELECT 1' >/dev/null || return 1
+    has_database=1
+  fi
+  target_path="${site_path}/${site_guess}"
+  restore_source_protect "$context" "$target_path" || return 1
+  if restore_site_find_config "$site_guess"; then
+    conf_file="$RESTORE_SITE_CONF"
+    echo -e "Сайт ${YELLOW}${site_guess}${WHITE} уже существует."
+    if restore_site_check_config "$conf_file" "$target_path"; then
+      vertical_menu current 2 0 60 default=2 \
+        "Восстановить в папку ${site_guess}" "Задать другое имя сайта" "Отмена"
+      choice=$?
+      case "$choice" in
+        0) skip_create=1 ;;
+        1) ;;
+        *) return 1 ;;
+      esac
+    else
+      vertical_menu current 2 0 60 default=1 "Задать другое имя сайта" "Отмена"
+      [[ "$?" -eq 0 ]] || return 1
     fi
   fi
 
-  [[ -n "$temp_sql_dir" ]] && rm -rf "$temp_sql_dir"
-
-  fix_site_configuration "$site_path" "$site_name"
+  site_name="$site_guess"
+  # Один и тот же мастер создания сайта используется для обоих источников.
+  # Создание vhost завершается до очистки или распаковки файлов.
+  if [[ "$skip_create" -eq 0 ]]; then
+    source /root/rish/create_site.sh || return 1
+    create_site "$site_guess" "$site_path"
+    ret=$?
+    if [[ "$ret" -ne 0 && "$ret" -ne 2 ]]; then
+      return 1
+    fi
+    # Старый мастер может вернуть 0 при Esc в выборе PHP: без vhost
+    # восстановление всё равно не должно начинать запись файлов.
+    restore_site_find_config "$site_name" || { echo "Сайт не был создан. Восстановление прервано."; return 1; }
+    conf_file="$RESTORE_SITE_CONF"
+  fi
+  target_path="${site_path}/${site_name}"
+  restore_site_check_config "$conf_file" "$target_path" || return 1
+  if [[ "${site_source_ref['kind']}" == remote ]]; then
+    restore_site_check_target "$target_path" || return 1
+  fi
+  restore_source_protect "$context" "$target_path" || return 1
+  restore_folder_plan site_restore_plan "$target_path" || return 1
+  if [[ "$site_path" =~ ^/var/www/([^/]+)/www$ ]]; then
+    target_user="${BASH_REMATCH[1]}"
+  else
+    echo "Сайт должен находиться в /var/www/<пользователь>/www."
+    return 1
+  fi
+  if ((has_database)) && ((${#site_name} > 64)); then
+    echo "Имя сайта превышает допустимую длину имени базы (64)."
+    return 1
+  fi
+  echo -e "Назначение: ${GREEN}${target_path}${WHITE}; владелец: ${YELLOW}${target_user}${WHITE}."
+  if ((has_database)); then
+    echo -e "База данных: ${YELLOW}${site_name}${WHITE}. Таблицы из дампа будут импортированы в эту базу."
+  elif [[ "${site_source_ref['kind']}" == remote ]]; then
+    echo "Отдельный дамп базы в выбранной копии не найден: будут восстановлены файлы."
+  else
+    echo "Дамп базы отсутствует: будут восстановлены только файлы."
+  fi
+  echo "При обрыве или ошибке после начала записи восстановление может остаться частичным."
+  vertical_menu current 2 0 60 default=1 "Начать восстановление" "Отмена"
+  [[ "$?" -eq 0 ]] || return 1
+  restore_site_check_config "$conf_file" "$target_path" || return 1
+  if ! restore_folder "$file" "$target_path" auto "$decrypt_identity" 1 "$context" site_restore_plan; then
+    return 1
+  fi
+  if ((has_database)); then
+    restore_db_core "$sql_label" "$site_name" 0 "${site_source_ref['sql_identity']:-}" 1 "$context" "$target_user" || return 1
+  fi
+  fix_site_configuration "$site_path" "$site_name" || return 1
+  echo -e "Сайт ${GREEN}${site_name}${WHITE} восстановлен."
 }
 
 function restore_db_auto() {
-  local file="$1"
-  local dbname="$2"
-  local decrypt_identity="${3:-}"
-  local archive_prevalidated="${4:-0}"
-  restore_db_core "$file" "$dbname" 0 "$decrypt_identity" "$archive_prevalidated"
-  return $?
+  restore_db_core "$1" "$2" 0 "${3:-}" "${4:-0}"
 }
 
 function restore_db_custom() {
-  local file="$1"
-  local dbname="$2"
-  local decrypt_identity="${3:-}"
-  local archive_prevalidated="${4:-0}"
-  restore_db_core "$file" "$dbname" 1 "$decrypt_identity" "$archive_prevalidated"
-  return $?
+  restore_db_core "$1" "$2" 1 "${3:-}" "${4:-0}"
 }
 
 function restore_db_core() {
-  local file="$1"
-  local db_default="$2"
-  local allow_edit="$3"
-  local decrypt_identity="${4:-}"
-  local archive_prevalidated="${5:-0}"
-  local custom_db="$db_default"
-
-  # Проверка на размещение в /var/www/<user>/www
-  local user_dir=""
-  local filepath
-  filepath="$(realpath "$file")"
-  if [[ "$filepath" =~ ^/var/www/([^/]+)/www/ ]]; then
-    user_dir="${BASH_REMATCH[1]}"
-  else
-    echo -e "Файл должен находиться в каталоге вида ${YELLOW}/var/www/<пользователь>/www${WHITE}..."
-    echo -e "Переместите архив в соответствующую ${YELLOW}папку пользователя${WHITE}."
-    return
+  local file="$1" db_default="$2" allow_edit="$3" decrypt_identity="${4:-}" archive_prevalidated="${5:-0}"
+  local context="${6:-db_restore_source}" user_dir="${7:-}" custom_db="$2" filepath check
+  # shellcheck disable=SC2034
+  local -A db_restore_source=(['kind']=file ['sql']="$file" ['sql_identity']="$decrypt_identity")
+  local -a import_cmd=(mariadb)
+  if [[ -z "$user_dir" ]]; then
+    filepath="$(realpath -e -- "$file")" || return 1
+    if [[ "$filepath" =~ ^/var/www/([^/]+)/www/ ]]; then
+      user_dir="${BASH_REMATCH[1]}"
+    else
+      echo "Архив базы должен находиться в /var/www/<пользователь>/www."
+      return 1
+    fi
   fi
-
   if [[ "$allow_edit" -eq 1 ]]; then
-    echo -e "${WHITE}Введите имя базы данных (Пустая строка для выхода): ${YELLOW}"
-    read -e -i "$db_default" custom_db
-    echo -e "${WHITE}"
+    echo "Введите имя базы данных (пустая строка — отмена):"
+    IFS= read -r -e -i "$db_default" custom_db || return 1
   fi
-
-  if [[ -z "$custom_db" ]]; then
-    echo -e "Имя базы данных не указано. ${YELLOW}Восстановление прервано.${WHITE}"
+  [[ -n "$custom_db" ]] || return 1
+  if [[ "$custom_db" == *\`* || "$custom_db" == *\'* || "$custom_db" == *\\* ||
+        "$user_dir" == *\'* || "$user_dir" == *\\* ]]; then
+    echo "Недопустимые символы в имени базы или пользователя."
     return 1
   fi
-
   if [[ "$archive_prevalidated" -ne 1 ]]; then
-    if ! validate_database_archive "$file" "$decrypt_identity"; then
-      return 1
-    fi
+    validate_database_archive "$file" "$decrypt_identity" "$context" || return 1
   fi
-
-  echo -e "Восстанавливаем базу данных ${GREEN}${custom_db}${WHITE} для пользователя ${YELLOW}${user_dir}${WHITE}..."
-
-  # Проверка существования базы
-  local check
-  check=$(mariadb -N -e "SHOW DATABASES LIKE '${custom_db}'" 2>/dev/null)
-
+  check="$(mariadb -N -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='${custom_db}'")" || return 1
   if [[ "$check" != "$custom_db" ]]; then
-    echo -e "База данных ${YELLOW}${custom_db}${WHITE} не существует. Создать?"
-    if ! vertical_menu "current" 2 0 5 "Да" "Нет"; then
-      echo -e "База ${YELLOW}${custom_db}${WHITE} не была создана. Импорт прерван."
-      return 1
-    fi
-
-    if mariadb -e "CREATE DATABASE \`${custom_db}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
-      echo -e "База данных ${GREEN}${custom_db}${WHITE} создана."
-      mariadb -e "GRANT ALL PRIVILEGES ON \`${custom_db}\`.* TO '${user_dir}'@'localhost';"
-      mariadb -e "FLUSH PRIVILEGES;"
-      echo -e "Права на базу выданы пользователю ${GREEN}${user_dir}${WHITE}"
-    else
-      echo -e "Произошла ${RED}ошибка${WHITE} при создании базы ${RED}$custom_db${WHITE}."
-      return 1
-    fi
-  else
-    echo -e "База данных ${GREEN}${custom_db}${WHITE} уже существует."
+    echo -e "База ${YELLOW}${custom_db}${WHITE} отсутствует. Создать?"
+    vertical_menu current 2 0 5 "Да" "Нет"
+    [[ "$?" -eq 0 ]] || return 1
+    mariadb -e "CREATE DATABASE \`${custom_db}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || return 1
   fi
-
-  local SANDBOX_OPTION=""
-  local -a mariadb_import_cmd=(mariadb)
-  if mariadb --help | grep -q -- "--sandbox"; then
-    SANDBOX_OPTION="--sandbox"
+  # База могла сохраниться от прежнего владельца сайта.
+  mariadb -e "GRANT ALL PRIVILEGES ON \`${custom_db}\`.* TO '${user_dir}'@'localhost';" || return 1
+  mariadb -e 'FLUSH PRIVILEGES;' || return 1
+  if mariadb --help | grep -q -- '--sandbox'; then
+    import_cmd+=(--sandbox)
   fi
-  [[ -n "$SANDBOX_OPTION" ]] && mariadb_import_cmd+=("$SANDBOX_OPTION")
-  mariadb_import_cmd+=("$custom_db")
-
-  echo -e "Импортируем базу из файла ${GREEN}$(basename "$file")${WHITE}..."
-
-  if [[ -n "$decrypt_identity" ]]; then
-    if ! (set -o pipefail; age -d -i "$decrypt_identity" "$file" 2>/dev/null | gunzip -c | "${mariadb_import_cmd[@]}"); then
-      echo -e "Произошла ${RED}ошибка${WHITE} при расшифровании или импорте базы ${RED}$custom_db${WHITE}."
-      return 1
-    fi
-  elif [[ "$file" == *.gz ]]; then
-    if ! (set -o pipefail; gunzip -c "$file" | "${mariadb_import_cmd[@]}"); then
-      echo -e "Произошла ${RED}ошибка${WHITE} при импорте базы ${RED}$custom_db${WHITE}."
-      return 1
-    fi
-  else
-    if ! "${mariadb_import_cmd[@]}" < "$file"; then
-      echo -e "Произошла ${RED}ошибка${WHITE} при импорте базы ${RED}$custom_db${WHITE}."
-      return 1
-    fi
+  import_cmd+=("$custom_db")
+  echo -e "Импортируем базу ${GREEN}${custom_db}${WHITE}..."
+  if ! (set -o pipefail; restore_source_sql "$context" | (
+    # Проверяем непустоту SQL на том же проходе, которым импортируем дамп.
+    local first_byte
+    IFS= read -r -N 1 first_byte || exit 1
+    printf '%s' "$first_byte" || exit 1
+    cat
+  ) | "${import_cmd[@]}"); then
+    echo "Ошибка чтения, расшифрования или импорта SQL. База может быть восстановлена частично."
+    return 1
   fi
-
-  echo -e "База данных ${GREEN}${custom_db}${WHITE} успешно импортирована."
+  echo -e "База ${GREEN}${custom_db}${WHITE} импортирована."
 }
-
 
 function restore_zip_folder() {
   local file="$1"
@@ -2015,8 +2112,72 @@ function extract() {
   esac
 }
 
+# Удалённый вход подготавливает только источник. Проверка, создание сайта,
+# распаковка, владелец, импорт БД и настройка CMS выполняются в restore_site.
+restore_remote_site() (
+  local remote_name="$1" source_user="$2" date_dir="$3" source_site="$4" snapshot_ts="$5"
+  local archive_kind="$6" encrypted="$7" has_sql="$8" target_hint="${9:-}"
+  local work_root restore_workdir="" restore_keydir="" identity="" identity_type command_name
+  local -A remote_restore_source=()
+  umask 077
+  trap '[[ -z "$restore_workdir" ]] || rm -rf -- "$restore_workdir"; [[ -z "$restore_keydir" ]] || rm -rf -- "$restore_keydir"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 129' HUP
+  trap 'exit 143' TERM
+  [[ "$archive_kind" == full ]] || { echo "Выберите копию с файлами сайта, а не отдельный SQL."; return 1; }
+  for command_name in rclone tar gzip sha256sum stat df realpath; do
+    command -v "$command_name" >/dev/null 2>&1 || { echo "Не найдена команда: $command_name"; return 1; }
+  done
+  source "${SCRIPT_DIR}/scripts/backup_restore.sh" || return 1
+  if [[ -f /root/rish/rish_config.sh ]]; then
+    source /root/rish/rish_config.sh
+  fi
+  server="${server:-backup_server}"
+  if [[ "${backup_min_free_mib:-}" =~ ^[0-9]{1,7}$ ]]; then
+    RISH_RESTORE_RESERVE_BYTES=$((10#$backup_min_free_mib * 1048576))
+  fi
+  work_root="${DIR_BACKUP:-/tmp}"
+  work_root="$(realpath -e -- "$work_root" 2>/dev/null)" || work_root=/tmp
+  [[ -d "$work_root" ]] || work_root=/tmp
+  restore_workdir="$(mktemp -d -- "${work_root}/.rish-restore.XXXXXXXXXX")" || return 1
+  echo -e "Проверяем список частей ${GREEN}${source_site}_${snapshot_ts}${WHITE}..."
+  rish_restore_prepare_snapshot "$remote_name" "$source_user" "$date_dir" "$source_site" \
+    "$snapshot_ts" "$archive_kind" "$encrypted" "$has_sql" "$restore_workdir" || return 1
+  if [[ "$encrypted" == 1 ]]; then
+    backup_crypto_available || { echo "Для расшифрования требуется age."; return 1; }
+    restore_keydir="$(mktemp -d /run/rish-age-key.XXXXXX)" || return 1
+    select_age_identity "$restore_keydir" || return 1
+    identity_type="$AGE_SELECTED_IDENTITY_TYPE"
+    identity="${restore_keydir}/unlocked-private-key.txt"
+    case "$identity_type" in
+      age) unlock_age_identity "$AGE_SELECTED_IDENTITY" "$identity" || return 1 ;;
+      ssh) prepare_ssh_identity "$AGE_SELECTED_IDENTITY" "$identity" || return 1 ;;
+      *) return 1 ;;
+    esac
+  fi
+  remote_restore_source=(['kind']=remote ['tar']="$RISH_RESTORE_LOGICAL_NAME" ['identity']="$identity"
+    ['tar_manifest']="$RISH_RESTORE_TAR_MANIFEST" ['sql_manifest']="$RISH_RESTORE_SQL_MANIFEST"
+    ['remote']="$RISH_RESTORE_REMOTE_PATH" ['workdir']="$restore_workdir" ['user']="$source_user" ['root']="$source_site"
+    ['target_hint']="$target_hint")
+  if [[ -n "$RISH_RESTORE_SQL_MANIFEST" ]]; then
+    remote_restore_source['sql']="${source_site}_${snapshot_ts}.sql.gz"
+    # shellcheck disable=SC2034
+    remote_restore_source['sql_identity']="$identity"
+  fi
+  restore_site "$RISH_RESTORE_LOGICAL_NAME" "$source_site" "" "$identity" "" remote_restore_source
+)
+
 # Если скрипт вызван напрямую — запускаем функцию
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  if [[ "${1:-}" == --restore-remote ]]; then
+    shift
+    if [[ "$#" -ne 9 ]]; then
+      echo "Некорректные параметры потокового восстановления."
+      exit 1
+    fi
+    restore_remote_site "$@"
+    exit $?
+  fi
   requested_action=""
   if [[ "${1:-}" == "--restore-cron" ]]; then
     requested_action="restore_cron"

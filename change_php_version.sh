@@ -88,6 +88,124 @@ function update_site_php_conf() {
   fi
 }
 
+php_cron_matches_site_path() {
+  local command_text="$1" site_root="$2" before after left right
+  local left_boundary="[[:space:]\"'=;&|<>()]"
+  local right_boundary="[[:space:]\"'/;&|<>()]"
+
+  while [[ "$command_text" == *"$site_root"* ]]; do
+    before="${command_text%%"$site_root"*}"
+    after="${command_text#*"$site_root"}"
+    left="${before: -1}"
+    right="${after:0:1}"
+    if [[ ( -z "$before" || "$left" =~ $left_boundary ) &&
+          ( -z "$after" || "$right" =~ $right_boundary ) ]]; then
+      return 0
+    fi
+    # Сохраняем левую границу для следующего совпадения пути.
+    command_text="${site_root: -1}${after}"
+  done
+  return 1
+}
+
+php_cron_other_versions() {
+  local command_text="$1" selected_php="$2" match token version versions=""
+  local php_pattern="(^|[[:space:];|&()'\"=])((/(usr/)?bin/)?php[0-9]{2}|/opt/remi/php[0-9]{2}/root/usr/bin/php)([[:space:];|&()'\"<>]|$)"
+
+  while [[ "$command_text" =~ $php_pattern ]]; do
+    match="${BASH_REMATCH[0]}"
+    token="${BASH_REMATCH[2]}"
+    command_text="${command_text#*"$match"}"
+    [[ "$token" =~ php[0-9]{2} ]] || continue
+    version="${BASH_REMATCH[0]}"
+    if [[ "$version" != "$selected_php" && " $versions " != *" $version "* ]]; then
+      versions="${versions:+$versions }${version}"
+    fi
+  done
+  printf '%s' "$versions"
+}
+
+check_site_php_cron() {
+  local site_name="$1" site_parent="$2" username="$3" selected_php="$4"
+  local site_root owner cron_content cron_status line line_number command_text versions
+  local owner_has_matches cli_bin choice read_errors=0
+  local job_pattern='^[[:space:]]*[^[:space:]]+([[:space:]]+[^[:space:]]+){4}[[:space:]]+(.+)$'
+  local macro_pattern='^[[:space:]]*@[[:alpha:]]+[[:space:]]+(.+)$'
+  local -a owners=("$username") affected_owners=() menu_items=()
+
+  [[ "$selected_php" =~ ^php[0-9]{2}$ && -n "$username" ]] || return 1
+  [[ "$username" == root ]] || owners+=(root)
+  site_root="$(realpath -ms -- "${site_parent}/${site_name}")" || return 1
+  echo
+  echo -e "Проверяем CRON для ${GREEN}${site_root}${WHITE}. PHP в конфигурации сайта: ${YELLOW}${selected_php}${WHITE}."
+
+  for owner in "${owners[@]}"; do
+    cron_status=0
+    cron_content="$(LC_ALL=C crontab -l -u "$owner" 2>&1)" || cron_status=$?
+    if ((cron_status != 0)); then
+      if [[ "$cron_status" -eq 1 && "$cron_content" == "no crontab for ${owner}" ]]; then
+        continue
+      fi
+      read_errors=1
+      echo -e "Не удалось прочитать CRON пользователя ${YELLOW}${owner}${WHITE}:"
+      printf '  %s\n' "$cron_content"
+      continue
+    fi
+    owner_has_matches=0
+    line_number=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line_number=$((line_number + 1))
+      [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+      [[ "$line" =~ ^[[:space:]]*[[:alpha:]_][[:alnum:]_]*[[:space:]]*= ]] && continue
+      if [[ "$line" =~ $macro_pattern ]]; then
+        command_text="${BASH_REMATCH[1]}"
+      elif [[ "$line" =~ $job_pattern ]]; then
+        command_text="${BASH_REMATCH[2]}"
+      else
+        continue
+      fi
+      [[ "$command_text" =~ ^[[:space:]]*# ]] && continue
+      php_cron_matches_site_path "$command_text" "$site_root" || continue
+      versions="$(php_cron_other_versions "$command_text" "$selected_php")"
+      [[ -n "$versions" ]] || continue
+      if ((owner_has_matches == 0)); then
+        echo
+        echo -e "Возможно требуют обновления задания CRON пользователя ${YELLOW}${owner}${WHITE}:"
+        affected_owners+=("$owner")
+        owner_has_matches=1
+      fi
+      printf '  Строка %s, PHP %s:\n    %s\n' "$line_number" "$versions" "$line"
+    done <<< "$cron_content"
+  done
+
+  if ((${#affected_owners[@]} == 0)); then
+    if ((read_errors == 0)); then
+      echo "В crontab владельца сайта и root прямые вызовы PHP для этого пути с другой версией не найдены."
+    fi
+    return 0
+  fi
+  echo
+  if cli_bin="$(get_site_php_bin "$site_name")"; then
+    echo -e "Для выбранной версии PHP используйте: ${GREEN}${cli_bin}${WHITE}."
+  else
+    echo -e "CLI для ${YELLOW}${selected_php}${WHITE} не найден. Проверьте установку перед изменением заданий."
+  fi
+  echo "Проверьте найденные строки: команда может вызывать несколько сайтов или скрипт-обёртку."
+  for owner in "${affected_owners[@]}"; do
+    menu_items+=("Открыть CRON пользователя ${owner}")
+  done
+  menu_items+=("Продолжить")
+  while true; do
+    vertical_menu current 2 0 60 "default=${#affected_owners[@]}" "${menu_items[@]}"
+    choice=$?
+    ((choice < ${#affected_owners[@]})) || return 0
+    owner="${affected_owners[$choice]}"
+    if ! crontab -e -u "$owner"; then
+      echo -e "Не удалось открыть CRON пользователя ${YELLOW}${owner}${WHITE}."
+    fi
+  done
+}
+
 function change_php_version() {
   echo
   local path="$2"
@@ -169,20 +287,26 @@ function change_php_version() {
         # Проверяем, а не punycode ли?
     if [[ "$site_name" =~ (xn\-\-) ]]
     then
-        echo -e -n " (${GREEN}"$(idn2 -d "$site_name")"${WHITE})"
+        echo -e -n " (${GREEN}$(idn2 -d "$site_name")${WHITE})"
         echo
     else
         echo
     fi
     if vertical_menu "current" 2 0 5 "Да" "Нет"; then
       if apachectl configtest; then
-        systemctl reload httpd
-        echo "Сервер apache перезагружен"
+        if systemctl reload httpd; then
+          echo "Сервер apache перезагружен"
+        else
+          echo "Не удалось перезагрузить сервер apache. Проверьте журналы для диагностики."
+        fi
       else
         echo "Сервер не был перезагружен"
       fi
     else
       echo "Сервер apache перезапущен не был. Не забудьте потом перезапустить его самостоятельно."
+    fi
+    if [[ "$selected_php" != "$php_version" ]]; then
+      check_site_php_cron "$site_name" "$path" "$username" "$selected_php" || return 1
     fi
   else
     echo -e "Сайт(vhost) ${RED}${site_name}${WHITE} не существует."

@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_MENU_ARGS=("$@")
 BACKUP_MC_NAME=""
 BACKUP_MC_DIRECTORY=""
+BACKUP_REMOTE_MENU_MODE=""
+case "${1:-}" in
+    --restore-stream) BACKUP_REMOTE_MENU_MODE=stream ;;
+    --download-backup) BACKUP_REMOTE_MENU_MODE=download ;;
+esac
 BACKUP_LIST_HEADER='# format: user;name;type(site|folder|db|cron);db;remote;archive(no|yes|crypto:<age_or_ssh_public_key>[,<age_or_ssh_public_key>]);exclude_list'
 if [[ "${1:-}" == "--mc" && "$#" -eq 3 ]]; then
     BACKUP_MC_NAME="$2"
@@ -55,7 +60,7 @@ is_remote_configured() {
 config_file="/root/rish/rish_config.sh"
 
 # Проверяем существование файла
-if [ ! -f "$config_file" ]; then
+if [[ ! -f "$config_file" && -z "$BACKUP_REMOTE_MENU_MODE" ]]; then
     echo -e "${LRED}Не найден файл конфигурации:${WHITE} ${config_file}"
     echo
     IFS=$' \t\n'
@@ -123,14 +128,21 @@ set_config_var() {
     ' "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
 }
 
-# Проверяем каждую переменную
-for var in "${!vars[@]}"; do
-    add_var_if_not_exists "$var" "${vars[$var]}"
-done
+# Скачивание и восстановление не должны создавать или дополнять настройки архивации.
+if [[ -z "$BACKUP_REMOTE_MENU_MODE" ]]; then
+    for var in "${!vars[@]}"; do
+        add_var_if_not_exists "$var" "${vars[$var]}"
+    done
+fi
 
 # Конфигурационный файл создаётся на сервере и отсутствует в репозитории.
 # shellcheck disable=SC1090
-source "$config_file"
+if [[ -f "$config_file" ]]; then
+    source "$config_file"
+fi
+if [[ -n "$BACKUP_REMOTE_MENU_MODE" ]]; then
+    server="${server:-backup_server}"
+fi
 # Переменные загружаются из rish_config.sh. Объявления нужны статическому анализатору
 # и не изменяют уже загруженные значения.
 declare backupall2 directory DIR_BACKUP keeplast keepmonthly splitarchive backup_queue_mib backup_min_free_mib
@@ -704,10 +716,13 @@ backupall() (
     # shellcheck disable=SC2329
     backup_stage_part() {
         local spool="$RISH_BACKUP_SPOOL"
-        local available
+        local available part_number
         local -a ready pending
         shopt -s nullglob dotglob
         [[ -n "$FILE" && "$FILE" != */* && "$FILE" == *-part-[0-9]* ]] || return 1
+        IFS= read -r part_number < "$spool/part-number" || return 1
+        [[ "$part_number" =~ ^[0-9]+$ ]] || return 1
+        printf -v FILE '%s-part-%02d' "${FILE%-part-*}" "$part_number" || return 1
         # Если split начал следующую часть, предыдущая уже не последняя.
         pending=("$spool"/pending/*)
         if ((${#pending[@]} > 0)); then
@@ -725,7 +740,8 @@ backupall() (
                         [[ -s "$spool/writing" ]] &&
                         [[ ! -e "$spool/failed" ]] &&
                         kill -0 "$RISH_BACKUP_UPLOADER" 2>/dev/null &&
-                        mv -- "$spool/writing" "$spool/pending/$FILE"
+                        mv -- "$spool/writing" "$spool/pending/$FILE" &&
+                        printf '%s\n' "$((part_number + 1))" > "$spool/part-number"
                     return $?
                 fi
                 if ((${#ready[@]} == 0)); then
@@ -739,6 +755,8 @@ backupall() (
     }
 
     stage_backup_parts() {
+        # Каждый SQL/TAR-поток начинает собственную последовательность с 00.
+        printf '0\n' > "$RISH_BACKUP_SPOOL/part-number" || return 1
         SHELL=/bin/bash split -b "$part_size" --numeric-suffixes --filter='backup_stage_part' -- - "$1"
     }
 
@@ -783,6 +801,7 @@ backupall() (
             fi
 
             ((cancelled == 0)) && kill -0 "$owner_pid" 2>/dev/null || exit 1
+            mapfile -t ready < <(printf '%s\n' "${ready[@]}" | LC_ALL=C sort -V)
             part="${ready[0]##*/}"
             printf '%s\n' "$part" > "$spool/upload-list" || exit 1
             if [[ -n "$progress_fd" ]]; then
@@ -3185,11 +3204,12 @@ ensure_remote_index() {
     local status_col="${3:-1}"
     local rel_path user_name rest_path date_dir file_name archive_base site_name site_cache_key site_prefix
     local ts_part date_part time_part label pair_key archive_kind encrypted has_sql snapshot_key
-    local is_completion_part part_number
+    local is_completion_part part_number archive_key part_key part_count
     local processed_files=0 progress_step=50
     local -a sorted_sites labels_for_site
     local -A seen_users seen_user_dates seen_sites seen_site_labels snapshot_meta
     local -A snapshot_user snapshot_date snapshot_site snapshot_ts snapshot_encrypted snapshot_has_tar snapshot_has_sql snapshot_complete
+    local -A archive_part_counts seen_archive_parts
 
     if [ "${CACHE_READY[$remote_name]:-0}" = "1" ]; then
         return 0
@@ -3232,6 +3252,14 @@ ensure_remote_index() {
             is_completion_part=1
         fi
 
+        archive_key="${user_name}|${date_dir}|${archive_base}|${archive_kind}|${encrypted}"
+        part_key="${archive_key}|${part_number}"
+        # Обычная и завершающая .end с одним номером — одна логическая часть.
+        if [[ -z "${seen_archive_parts[$part_key]:-}" ]]; then
+            seen_archive_parts["$part_key"]=1
+            archive_part_counts["$archive_key"]=$(( ${archive_part_counts[$archive_key]:-0} + 1 ))
+        fi
+
         if [[ "$archive_base" =~ ^(.+)_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2})$ ]]; then
             site_name="${BASH_REMATCH[1]}"
             ts_part="${BASH_REMATCH[2]}"
@@ -3261,14 +3289,10 @@ ensure_remote_index() {
         fi
     done < <(
         rclone lsf -R --max-depth 3 --files-only \
-            --include "*.tar.gz-part-00" \
-            --include "*.sql.gz-part-00" \
-            --include "*.tar.gz.age-part-00" \
-            --include "*.sql.gz.age-part-00" \
-            --include "*.tar.gz-part-*.end" \
-            --include "*.sql.gz-part-*.end" \
-            --include "*.tar.gz.age-part-*.end" \
-            --include "*.sql.gz.age-part-*.end" \
+            --include "*.tar.gz-part-*" \
+            --include "*.sql.gz-part-*" \
+            --include "*.tar.gz.age-part-*" \
+            --include "*.sql.gz.age-part-*" \
             --fast-list "${remote_name}:${server}/" 2>/dev/null
     )
     if [ -n "$status_row" ]; then
@@ -3299,7 +3323,14 @@ ensure_remote_index() {
         if [[ "$encrypted" == "1" ]]; then
             label="${label} [шифр]"
         fi
-        label="${label} [ok]"
+        archive_key="${snapshot_user[$snapshot_key]}|${snapshot_date[$snapshot_key]}|${site_name}_${ts_part}|${archive_kind}|${encrypted}"
+        part_count="${archive_part_counts[$archive_key]:-0}"
+        if ((part_count == 0)); then
+            # Как при восстановлении: старое имя используем, если нового нет.
+            archive_key="${snapshot_user[$snapshot_key]}|${snapshot_date[$snapshot_key]}|${site_name}|${archive_kind}|${encrypted}"
+            part_count="${archive_part_counts[$archive_key]:-0}"
+        fi
+        label="${label} [ok] (${part_count})"
         pair_key="${snapshot_user[$snapshot_key]}|${site_name}|${label}"
         if [ -z "${seen_site_labels[$pair_key]:-}" ]; then
             seen_site_labels["$pair_key"]=1
@@ -3359,7 +3390,9 @@ collect_snapshots_for_site() {
     local remote_name="$1"
     local site_name="$2"
     local _user_name="$3"
-    local key prefix label
+    local archive_kind_filter="${4:-}"
+    local key prefix label metadata
+    local -a metadata_fields=()
     local -A seen_labels
 
     prefix="${remote_name}|${_user_name}|${site_name}|"
@@ -3376,7 +3409,12 @@ collect_snapshots_for_site() {
 
     while IFS= read -r label; do
         [ -z "$label" ] && continue
-        printf '%s|%s\n' "$label" "${CACHE_SNAPSHOT_META["$remote_name|$_user_name|$site_name|$label"]}"
+        metadata="${CACHE_SNAPSHOT_META["$remote_name|$_user_name|$site_name|$label"]}"
+        if [[ -n "$archive_kind_filter" ]]; then
+            IFS=';' read -r -a metadata_fields <<< "$metadata"
+            [[ "${metadata_fields[4]:-}" == "$archive_kind_filter" ]] || continue
+        fi
+        printf '%s|%s\n' "$label" "$metadata"
     done < <(printf '%s\n' "${!seen_labels[@]}" | sort -r)
 }
 
@@ -3404,7 +3442,7 @@ download_site_snapshot_archive() {
         local part_prefix="${tmp_dir}/${source_prefix}-part-"
         local part_file normal_part expected_part
         local end_count=0
-        local suffix_prefix="" suffix_number=0 suffix_width=2 suffix_limit=90
+        local suffix_number=0
         local -a all_part_files=() part_files=()
         local -A completed_parts=()
 
@@ -3412,7 +3450,7 @@ download_site_snapshot_archive() {
         all_part_files=("$part_prefix"*)
         shopt -u nullglob
         ((${#all_part_files[@]} > 0)) || return 1
-        mapfile -t all_part_files < <(printf '%s\n' "${all_part_files[@]}" | LC_ALL=C sort)
+        mapfile -t all_part_files < <(printf '%s\n' "${all_part_files[@]}" | LC_ALL=C sort -V)
         for part_file in "${all_part_files[@]}"; do
             if [[ "$part_file" == *.end ]]; then
                 normal_part="${part_file%.end}"
@@ -3425,17 +3463,10 @@ download_site_snapshot_archive() {
             if [[ "$part_file" != *.end && -n "${completed_parts[$part_file]+x}" ]]; then
                 continue
             fi
-            printf -v expected_part '%s%s%0*d' "$part_prefix" "$suffix_prefix" "$suffix_width" "$suffix_number"
+            printf -v expected_part '%s%02d' "$part_prefix" "$suffix_number"
             [[ "${part_file%.end}" == "$expected_part" ]] || return 1
             part_files+=("$part_file")
             suffix_number=$((suffix_number + 1))
-            # GNU split расширяет суффикс, чтобы сохранить порядок: 89 → 9000 → … → 9899 → 990000.
-            if ((suffix_number == suffix_limit)); then
-                suffix_prefix+="9"
-                suffix_number=0
-                suffix_width=$((suffix_width + 1))
-                suffix_limit=$((suffix_limit * 10))
-            fi
         done
         ((${#part_files[@]} > 0)) || return 1
         if ((end_count == 1)) && [[ "${part_files[$((${#part_files[@]} - 1))]}" != *.end ]]; then
@@ -3590,6 +3621,9 @@ download_site_snapshot_archive() {
 }
 
 restore_backup_menu() {
+    local restore_mode="${1:-download}"
+    local target_hint="${2:-}"
+    local snapshot_kind_filter=""
     local menu_start_row status_header_row remote_choice remote_exit_index
     local selected_remote selected_site selected_snapshot site_owner
     local site_line site_index
@@ -3603,7 +3637,17 @@ restore_backup_menu() {
     local -A snapshot_map
 
     echo
-    echo -e "Загрузка будет выполнена в текущую директорию: ${GREEN}$(pwd)${WHITE}"
+    if [[ "$restore_mode" == "stream" ]]; then
+        snapshot_kind_filter=full
+        echo "Потоковое восстановление из удалённого бэкапа."
+        if [[ -n "$target_hint" ]]; then
+            echo -e "Предлагаемая папка назначения: ${GREEN}${target_hint}${WHITE}"
+        else
+            echo "Папка назначения будет выбрана после выбора копии."
+        fi
+    else
+        echo -e "Загрузка будет выполнена в текущую директорию: ${GREEN}$(pwd)${WHITE}"
+    fi
     menu_start_row=$(get_cursor_row)
     status_header_row=$((menu_start_row - 2))
     if [ "$status_header_row" -lt 1 ]; then
@@ -3673,6 +3717,11 @@ restore_backup_menu() {
                 site_name_from_line="${site_line%%|*}"
                 site_user_from_line="${site_line#*|}"
                 [ -z "$site_name_from_line" ] && continue
+                if [[ "$restore_mode" == "stream" ]]; then
+                    mapfile -t snapshot_entries < <(collect_snapshots_for_site \
+                        "$selected_remote" "$site_name_from_line" "$site_user_from_line" "$snapshot_kind_filter")
+                    ((${#snapshot_entries[@]} > 0)) || continue
+                fi
                 sites+=("$site_name_from_line")
                 site_owners+=("$site_user_from_line")
             done
@@ -3682,7 +3731,11 @@ restore_backup_menu() {
 
             if [ "${#sites[@]}" -eq 0 ]; then
                 cursor_to "$status_row" 1
-                echo -e "${YELLOW}На ${selected_remote} нет архивов.${WHITE}"
+                if [[ "$restore_mode" == "stream" ]]; then
+                    echo -e "На ${YELLOW}${selected_remote}${WHITE} нет копий с файлами сайта для потокового восстановления."
+                else
+                    echo -e "${YELLOW}На ${selected_remote} нет архивов.${WHITE}"
+                fi
                 sleep 1
                 cursor_to "$status_row" 1
                 printf '\033[K'
@@ -3724,7 +3777,8 @@ restore_backup_menu() {
                 continue
             fi
 
-            mapfile -t snapshot_entries < <(collect_snapshots_for_site "$selected_remote" "$selected_site" "$site_owner")
+            mapfile -t snapshot_entries < <(collect_snapshots_for_site \
+                "$selected_remote" "$selected_site" "$site_owner" "$snapshot_kind_filter")
             snapshots=()
             snapshot_map=()
             for snapshot_line in "${snapshot_entries[@]}"; do
@@ -3782,12 +3836,24 @@ restore_backup_menu() {
                 site_menu_drawn=0
             fi
 
+            if [[ "$restore_mode" == "stream" ]]; then
+                clear
+                bash /root/rish/archive.sh --restore-remote \
+                    "$selected_remote" "$snapshot_user" "$snapshot_date" "$snapshot_site" "$snapshot_ts" \
+                    "$snapshot_kind" "$snapshot_encrypted" "$snapshot_has_sql" "$target_hint"
+                return $?
+            fi
             download_site_snapshot_archive "$selected_remote" "$snapshot_user" "$snapshot_date" "$snapshot_site" "$snapshot_ts" "$status_header_row" "$snapshot_kind" "$snapshot_encrypted" "$snapshot_has_sql"
         done
 
         cursor_to "$menu_start_row" 1
     done
 }
+
+if [[ -n "$BACKUP_REMOTE_MENU_MODE" ]]; then
+    restore_backup_menu "$BACKUP_REMOTE_MENU_MODE" "${2:-}"
+    exit $?
+fi
 
 if is_remote_configured
 then
@@ -3844,6 +3910,7 @@ while true
 do
     local_has_list=0
     local_remote_ready=0
+    local_has_remote=0
     menu_items=()
     menu_actions=()
     IFS=$' \t\n'
@@ -3853,6 +3920,9 @@ do
     fi
     if is_remote_configured; then
         local_remote_ready=1
+    fi
+    if [[ -n "$(rclone listremotes 2>/dev/null)" ]]; then
+        local_has_remote=1
     fi
 
     if current_site_record="$(addable_current_backup_site)"; then
@@ -3870,6 +3940,10 @@ do
         if [ "$local_remote_ready" -eq 1 ]; then
             menu_items+=("Архивация всех сайтов сервера" "Скачать копию из бекапа на сервер")
             menu_actions+=("backup_all" "restore")
+            if [ "$local_has_remote" -eq 1 ]; then
+                menu_items+=("Восстановить сайт из бэкапа потоком")
+                menu_actions+=("restore_stream")
+            fi
         fi
         if backup_crypto_available; then
             menu_items+=("Управление шифрованием бэкапов")
@@ -3877,6 +3951,10 @@ do
         fi
         menu_items+=("Обновить файл-список всех архивируемых объектов" "Создать файл-список всех архивируемых объектов")
         menu_actions+=("update_list" "create_list")
+    fi
+    if [[ "$local_has_remote" -eq 1 && ( "$local_has_list" -eq 0 || "$local_remote_ready" -eq 0 ) ]]; then
+        menu_items+=("Восстановить сайт из бэкапа потоком")
+        menu_actions+=("restore_stream")
     fi
     menu_items+=("Создать/Обновить подключение яндекс-диска" "Создать/Выбрать подключение по умолчанию")
     menu_actions+=("config_yandex" "select_remote")
@@ -3900,6 +3978,7 @@ do
         backup_selected) backup_selected_object ;;
         backup_all) backupall ;;
         restore) restore_backup_menu ;;
+        restore_stream) restore_backup_menu stream ;;
         crypto) backup_crypto_management_menu ;;
         update_list) updatelist ;;
         create_list) createlist ;;

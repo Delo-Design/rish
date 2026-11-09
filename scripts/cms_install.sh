@@ -1151,6 +1151,7 @@ run_manual_joomla_cli_command() {
   local user
   local command_line
   local full_command
+  local cron_command
   local -a command_args
 
   if ! user=$(get_site_user "$directory"); then
@@ -1176,11 +1177,17 @@ run_manual_joomla_cli_command() {
 
     read -r -a command_args <<< "$command_line"
     full_command="cd $(shell_quote_command "$site_path") && $(shell_quote_command runuser -u "$user" -- "$php_bin" cli/joomla.php "${command_args[@]}")"
+    cron_command="cd $(shell_quote_command "$site_path") && $(shell_quote_command "$php_bin" cli/joomla.php "${command_args[@]}")"
+    # CRON обрабатывает проценты до передачи команды оболочке.
+    cron_command="${cron_command//%/\\%}"
     echo
     run_joomla_user_command "$user" "${command_args[@]}"
     echo
-    echo "Команда:"
+    echo "Команда для запуска от root:"
     echo "$full_command"
+    echo
+    echo "Команда для CRON пользователя ${user}:"
+    echo "$cron_command"
   done
 }
 
