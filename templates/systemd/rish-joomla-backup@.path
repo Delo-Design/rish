@@ -1,0 +1,18 @@
+[Unit]
+Description=RISH backup requests from the site admin panel (%f)
+
+[Path]
+PathExists=%f/inbox/backup.request
+PathExists=%f/inbox/export.request
+PathExists=%f/inbox/cloud-list.request
+PathExistsGlob=%f/inbox/cloud-fetch.*.request
+PathExistsGlob=%f/inbox/delete.*.request
+PathExists=%f/.work/backup.request
+PathExists=%f/.work/export.request
+PathExists=%f/.work/cloud-list.request
+PathExistsGlob=%f/.work/cloud-fetch.*.request
+PathExistsGlob=%f/.work/delete.*.request
+Unit=rish-joomla-backup@%i.service
+
+[Install]
+WantedBy=paths.target

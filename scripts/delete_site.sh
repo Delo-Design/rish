@@ -200,6 +200,16 @@ else
   fail "Сервер не был перезагружен. ${RED}Ошибка${WHITE} в конфигурации апача. Удаление сайта ${RED}прервано${WHITE}."
 fi
 
+backup_job_dir="/var/www/${user_name}/backups/${site_name}"
+if [[ -e "$backup_job_dir" || -L "$backup_job_dir" ]]; then
+  if ! /bin/bash /root/rish/scripts/joomla_backup.sh disable "$user_name" "$site_name"; then
+    trap - EXIT
+    restore_vhosts
+    apachectl configtest && systemctl reload httpd
+    fail "Не удалось отключить бэкапы из админки. Удаление сайта ${RED}прервано${WHITE}."
+  fi
+fi
+
 if rm -R "$site_path"; then
   echo -e "Папка сайта ${GREEN}${site_label}${WHITE} удалена"
 else

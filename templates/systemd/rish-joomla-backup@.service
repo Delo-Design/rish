@@ -1,0 +1,12 @@
+[Unit]
+Description=RISH backup worker for the site admin panel (%f)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /root/rish/scripts/joomla_backup.sh run %f
+TimeoutStartSec=12h
+TimeoutStopSec=30s
+UMask=0077
+PrivateTmp=true

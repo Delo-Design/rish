@@ -43,10 +43,10 @@ rish_server_management_open_module() {
 
   RemoveRim
   clear
-  if [[ -r "$module_path" ]]; then
-    bash "$module_path"
-  else
+  if [[ ! -r "$module_path" ]]; then
     printf 'Модуль не найден или недоступен: %s\n' "$module_path" >&2
+    vertical_menu "current" 2 0 5 "Нажмите Enter"
+  elif ! bash "$module_path" && [[ "${2:-}" == "pause-on-error" ]]; then
     vertical_menu "current" 2 0 5 "Нажмите Enter"
   fi
   rish_server_management_refresh
@@ -55,6 +55,7 @@ rish_server_management_open_module() {
 ServerManagementMenu() {
   local choice=0
   local -a options=("Статус и перезапуск Apache"
+    "TCP-соединения и перегрузка портов"
     "Статус и перезапуск PHP-FPM"
     "Статус и перезапуск MariaDB"
     "Управление TLS"
@@ -77,18 +78,21 @@ ServerManagementMenu() {
       rish_server_management_open_module apache_restart.sh || return 1
       ;;
     1)
-      rish_server_management_open_module php_restart.sh || return 1
+      rish_server_management_open_module tcp_diagnostics.sh pause-on-error || return 1
       ;;
     2)
-      rish_server_management_open_module mariadb_restart.sh || return 1
+      rish_server_management_open_module php_restart.sh || return 1
       ;;
     3)
-      rish_server_management_open_module https_compatibility.sh || return 1
+      rish_server_management_open_module mariadb_restart.sh || return 1
       ;;
     4)
-      rish_server_management_open_module cron_users.sh || return 1
+      rish_server_management_open_module https_compatibility.sh || return 1
       ;;
     5)
+      rish_server_management_open_module cron_users.sh || return 1
+      ;;
+    6)
       echo -e "Выбор и установка нужных версий ${GREEN}PHP${WHITE}"
       clear
       # Рисуем разделительную линию
@@ -109,10 +113,10 @@ ServerManagementMenu() {
       repl "─" $((${columns}))
       cursor_to $((${rim} + 2)) 1
       ;;
-    6)
+    7)
       rish_server_management_open_module php_remove.sh || return 1
       ;;
-    7)
+    8)
       if [[ -f /root/rish/scripts/composer_manager.sh ]]; then
         bash /root/rish/scripts/composer_manager.sh server-menu
       else
@@ -120,7 +124,7 @@ ServerManagementMenu() {
         vertical_menu "current" 2 0 5 "Нажмите Enter"
       fi
       ;;
-    8)
+    9)
       effective_settings="$(get_effective_ssh_authentication)" || effective_settings=""
       read -r password_authentication kbd_interactive_authentication <<<"$effective_settings"
 
@@ -154,7 +158,7 @@ ServerManagementMenu() {
         echo
       fi
       ;;
-    9)
+    10)
       if [[ -d "$RISH_DNS_RUNTIME_DIR" && -d "$RISH_DNS_LEGACY_DISABLED_DIR" ]]; then
         dns_domains="$(rish_dns_domain_count "$RISH_DNS_RUNTIME_DIR")"
         dns_bak_domains="$(rish_dns_domain_count "$RISH_DNS_LEGACY_DISABLED_DIR")"
@@ -271,7 +275,7 @@ ServerManagementMenu() {
       fi
       vertical_menu "current" 2 0 5 "Нажмите Enter"
       ;;
-    10)
+    11)
       if [[ -f /root/rish/scripts/external_dns.sh ]]; then
         bash /root/rish/scripts/external_dns.sh menu
       else

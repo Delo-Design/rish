@@ -243,6 +243,41 @@ except ValueError:
 PY
 }
 
+rish_fw_monitor_address() {
+  python3 - "$1" <<'PY'
+import ipaddress, subprocess, sys
+
+def normalized(address):
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+try:
+    if '%' in sys.argv[1]:
+        raise ValueError()
+    address = normalized(ipaddress.ip_address(sys.argv[1]))
+    if address.is_loopback or address.is_unspecified or address.is_multicast or address.is_link_local:
+        raise ValueError()
+except ValueError:
+    sys.exit('Для блокировки нужен одиночный IPv4 или IPv6 без идентификатора интерфейса. '
+             'Loopback, неопределённые, multicast и link-local адреса исключены.')
+
+try:
+    output = subprocess.check_output(['ip', '-o', 'address', 'show'], universal_newlines=True)
+    addresses = {normalized(ipaddress.ip_interface(fields[3]).ip)
+                 for fields in (line.split() for line in output.splitlines())
+                 if len(fields) >= 4 and fields[2] in ('inet', 'inet6')}
+    if not addresses:
+        raise ValueError()
+except (OSError, subprocess.CalledProcessError, ValueError):
+    sys.exit('Не удалось проверить адреса интерфейсов сервера. Блокировка недоступна.')
+
+if address in addresses:
+    sys.exit('Блокировка собственного IP сервера запрещена.')
+print(address)
+PY
+}
+
 # Preserve the editable document separately from its validated network snapshot.
 # SOURCE is a dynamically scoped, internal transaction snapshot, never user input.
 rish_fw_whitelist_read() {
@@ -2674,17 +2709,56 @@ rish_fw_temporary_whitelist_guard() (
   }
 )
 
+rish_fw_monitor_show_expiry() {
+  local net="$1" expiry="$2" deadline
+  deadline=$(rish_fw_date "$expiry") || return 1
+  printf 'Блокировка %s%s%s уже действует.\n' "$RISH_FW_GREEN" "$net" "$RISH_FW_RESET"
+  rish_fw_field "Действует до" "$deadline" "$RISH_FW_YELLOW"
+  printf 'Для продления откройте «Firewall → Списки блокировок → Временные — %s» и выберите «Продлить».\n' "$RISH_FW_ZONE"
+}
+
+rish_fw_monitor_check_existing() {
+  local net="$1" records old_net old_zone expiry rule rc now
+  records=$(rish_fw_read_ledger) || return 1
+  while IFS=$'\t' read -r old_net old_zone expiry rule; do
+    [[ "$old_net" == "$net" && "$old_zone" == "$RISH_FW_ZONE" ]] || continue
+    rish_fw_cmd --zone="$old_zone" --query-rich-rule="$rule" >/dev/null 2>&1
+    rc=$?
+    case "$rc" in
+      0)
+        now=$(rish_fw_now) || return 1
+        if ((expiry > now)); then
+          rish_fw_monitor_show_expiry "$net" "$expiry"
+        else
+          rish_fw_error "Блокировка ${net} действует с неподтверждённым сроком. Снимите её в списке «Временные — ${old_zone}»."
+        fi
+        return 1
+        ;;
+      1) return 0 ;;
+      *) rish_fw_error "Не удалось проверить временную блокировку ${net} в зоне ${old_zone}."; return 1 ;;
+    esac
+  done <<<"$records"
+  return 0
+}
+
 rish_fw_temporary_add() (
-  local net seconds="$2" work fragment zone expiry rule rc deadline old_net old_zone old_expiry old_rule key
+  local net seconds="$2" mode="${3:-}" work fragment zone expiry rule rc deadline old_net old_zone old_expiry old_rule key
   local -A existing_expiry=() chosen=()
   net=$(rish_fw_network "$1") || return 1
   [[ "$seconds" =~ ^[0-9]+$ ]] && ((seconds >= 1 && seconds <= 31536000)) || { rish_fw_error "Срок: от 1 секунды до 365 дней."; return 1; }
   rish_fw_active && rish_fw_lock || return 1
+  if [[ "$mode" == monitor ]]; then
+    rish_fw_monitor_address "${net%/*}" >/dev/null || return 1
+  fi
   work=$(mktemp -d) || return 1
   trap 'rm -rf -- "$work"' EXIT
   printf '%s\n' "$net" >"$work/input" || return 1
   rish_fw_whitelist_filter "$work/input" "$work/filtered" || return 1
-  [[ -s "$work/filtered" ]] || { printf 'Адрес входит в белый список; блокировка не создана.\n'; return 0; }
+  if [[ ! -s "$work/filtered" ]]; then
+    printf 'Адрес входит в белый список; блокировка не создана.\n'
+    [[ "$mode" != monitor ]] || return 1
+    return 0
+  fi
   rish_fw_ssh_guard_file "$work/filtered" || return 1
   while IFS= read -r fragment; do
     rish_fw_temporary_coverage "$fragment" || return 1
@@ -2692,6 +2766,10 @@ rish_fw_temporary_add() (
   rish_fw_temporary_snapshot "$work/before" || return 1
   while IFS=$'\t' read -r old_net old_zone old_expiry old_rule; do
     [[ -n "$old_net" ]] || continue
+    if [[ "$mode" == monitor && "$old_net" == "$net" && "$old_zone" == "$RISH_FW_ZONE" ]]; then
+      rish_fw_monitor_show_expiry "$net" "$old_expiry"
+      return 1
+    fi
     key="$old_zone"$'\t'"$old_net"
     existing_expiry["$key"]="$old_expiry"
   done <"$work/before.active"
@@ -2720,6 +2798,13 @@ rish_fw_temporary_add() (
   cat "$work/chosen" >>"$work/desired" || return 1
   cat "$work/chosen" >>"$work/desired.active" || return 1
   rish_fw_temporary_reconcile "$work/desired" || return 1
+  if [[ "$mode" == monitor ]]; then
+    rule=$(rish_fw_temp_rule "$net") || return 1
+    rish_fw_cmd --zone="$RISH_FW_ZONE" --query-rich-rule="$rule" >/dev/null 2>&1 || {
+      rish_fw_error "Действие временной блокировки в зоне ${RISH_FW_ZONE} не подтверждено."
+      return 1
+    }
+  fi
   printf 'Временная блокировка %s%s%s применена с учётом белого списка.\n' "$RISH_FW_GREEN" "$net" "$RISH_FW_RESET"
   printf 'Уже действующие точные правила сохраняют прежний срок.\n'
   rish_fw_field "Срок новых правил" "$(rish_fw_duration_label "$seconds")" "$RISH_FW_YELLOW"
@@ -3036,20 +3121,42 @@ rish_fw_show_blocks() (
 )
 
 rish_fw_duration() {
-  local choice=0 value
-  vertical_menu current 2 0 38 default=5 "15 минут" "1 час" "24 часа" "Другой срок" "Постоянно" "Отмена" || choice=$?
+  local mode="${1:-}" choice=0 default=1 value seconds
+  local -a options=("15 минут" "1 час" "24 часа" "Другой срок")
+  if [[ "$mode" != monitor ]]; then
+    options+=("Постоянно")
+    default=${#options[@]}
+  fi
+  options+=("Отмена")
+  vertical_menu current 2 0 38 "default=$default" "${options[@]}" || choice=$?
   case "$choice" in
     0) RISH_FW_DURATION=900 ;;
     1) RISH_FW_DURATION=3600 ;;
     2) RISH_FW_DURATION=86400 ;;
     3)
-      read -r -p "Срок (30m — 30 мин., 2h — 2 ч., 3d — 3 дн.; максимум 365 дн.): " value
-      [[ "$value" =~ ^([0-9]{1,8})([smhd])?$ ]] || return 1
-      RISH_FW_DURATION=$((10#${BASH_REMATCH[1]}))
-      case "${BASH_REMATCH[2]:-s}" in m) RISH_FW_DURATION=$((RISH_FW_DURATION * 60));; h) RISH_FW_DURATION=$((RISH_FW_DURATION * 3600));; d) RISH_FW_DURATION=$((RISH_FW_DURATION * 86400));; esac
-      ((RISH_FW_DURATION > 0 && RISH_FW_DURATION <= 31536000)) || return 1
+      while true; do
+        read -r -p "Срок (30m — 30 мин., 2h — 2 ч., 3d — 3 дн.; максимум 365 дн.): " value || return 1
+        [[ -n "$value" && "$value" != $'\e' ]] || return 1
+        if [[ "$value" =~ ^([0-9]{1,8})([smhd])?$ ]]; then
+          seconds=$((10#${BASH_REMATCH[1]}))
+          case "${BASH_REMATCH[2]:-s}" in
+            m) seconds=$((seconds * 60)) ;;
+            h) seconds=$((seconds * 3600)) ;;
+            d) seconds=$((seconds * 86400)) ;;
+          esac
+          if ((seconds > 0 && seconds <= 31536000)); then
+            RISH_FW_DURATION="$seconds"
+            return 0
+          fi
+        fi
+        [[ "$mode" == monitor ]] || return 1
+        rish_fw_error "Введите срок от 1 секунды до 365 дней, например 2h. Пустой ввод отменяет действие."
+      done
       ;;
-    4) RISH_FW_DURATION=permanent ;;
+    4)
+      [[ "$mode" != monitor ]] || return 1
+      RISH_FW_DURATION=permanent
+      ;;
     *) return 1 ;;
   esac
 }
@@ -4214,9 +4321,13 @@ rish_fw_add_to_selected() (
 )
 
 rish_fw_block_menu() (
-  local input="${1:-}" net zones work
+  local input="${1:-}" mode="${2:-}" net zones work
   if (($# == 0)); then
     read -r -p "IP-адрес или подсеть для блокировки: " input || return 1
+  fi
+  if [[ "$mode" == monitor ]]; then
+    input=$(rish_fw_monitor_address "$input") || return 1
+    rish_fw_active || return 1
   fi
   net=$(rish_fw_network "$input") || return 1
   work=$(mktemp -d) || return 1
@@ -4228,7 +4339,11 @@ rish_fw_block_menu() (
     return 1
   fi
   rish_fw_ssh_guard_file "$work/filtered" || return 1
-  rish_fw_duration || return 2
+  if [[ "$mode" == monitor ]]; then
+    rish_fw_monitor_check_existing "$net" || return 1
+    printf '\nВыберите срок блокировки.\n'
+  fi
+  rish_fw_duration "$mode" || return 2
   if [[ "$RISH_FW_DURATION" == permanent ]]; then
     rish_fw_choose_list || return 2
     zones=""
@@ -4237,14 +4352,21 @@ rish_fw_block_menu() (
     zones=$(tr '\n' ' ' <<<"$zones")
   else zones="$RISH_FW_ZONE"; fi
   printf '\n'
-  rish_fw_field "Адрес / подсеть" "$net"
-  printf 'Адреса белого списка исключаются из блокировки.\n'
-  rish_fw_field "Зоны применения" "$zones"
+  if [[ "$mode" == monitor ]]; then
+    rish_fw_field "IP-адрес" "$input"
+    rish_fw_field "Зона firewalld по умолчанию" "$zones"
+    rish_fw_field "Область действия" "Все входящие порты зоны" "$RISH_FW_YELLOW"
+    printf 'Уже открытые соединения могут остаться.\n'
+  else
+    rish_fw_field "Адрес / подсеть" "$net"
+    printf 'Адреса белого списка исключаются из блокировки.\n'
+    rish_fw_field "Зоны применения" "$zones"
+  fi
   rish_fw_field "Срок" "$(rish_fw_duration_label "$RISH_FW_DURATION")" "$RISH_FW_YELLOW"
   [[ "$RISH_FW_DURATION" != permanent ]] || rish_fw_field "Список" "$RISH_FW_SELECTED_NAME"
   rish_fw_confirm "Применить блокировку?" || return 2
   rish_fw_ui_changed || return 1
-  if [[ "$RISH_FW_DURATION" != permanent ]]; then rish_fw_temporary_add "$net" "$RISH_FW_DURATION" || return 1;
+  if [[ "$RISH_FW_DURATION" != permanent ]]; then rish_fw_temporary_add "$net" "$RISH_FW_DURATION" "$mode" || return 1;
   else rish_fw_add_to_selected "$net" || return 1; fi
 )
 
@@ -5292,10 +5414,16 @@ rish_fw_main() {
   local action="${1:-menu}"
   RISH_FW_SITE_NAME=""; RISH_FW_SITE_LOG=""
   case "$action" in
-    -h|--help) printf 'Использование: bash %s [menu|status|check-config|menu-from-mc <каталог> <сайт>]\n' "$0"; return 0 ;;
+    -h|--help) printf 'Использование: bash %s [menu|status|check-config|menu-from-mc <каталог> <сайт>|block-from-monitor <IP>]\n' "$0"; return 0 ;;
     --status) action=status ;;
     --check-config) action=check-config ;;
     menu-from-mc) rish_fw_site_context "${2:-}" "${3:-}" || true; action=menu ;;
+    block-from-monitor)
+      if [[ $# != 2 || ! -t 0 || ! -t 1 ]]; then
+        rish_fw_error "Для block-from-monitor укажите один IP в интерактивном терминале."
+        return 1
+      fi
+      ;;
     menu|status|check-config) ;;
     *) rish_fw_error "Неизвестная команда ${action}."; return 2 ;;
   esac
@@ -5305,6 +5433,11 @@ rish_fw_main() {
     status) rish_fw_status ;;
     check-config) rish_fw_check_config ;;
     menu) rish_fw_menu ;;
+    block-from-monitor)
+      # Exit 0 means the rule was verified, 2 means the user canceled.
+      source "${RISH_FIREWALL_HOME}/windows.sh" || return 1
+      rish_fw_block_menu "$2" monitor
+      ;;
   esac
 }
 

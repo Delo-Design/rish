@@ -117,6 +117,9 @@ site_manager_resolve_context() {
     SM_WARNING="Не переданы корректные параметры Midnight Commander."
     return 1
   fi
+  if [[ "$SM_FILE_NAME" == ".." && "${current_directory%/*}" == "$current_www" ]]; then
+    SM_FILE_NAME="."
+  fi
   if ! SM_SELECTED_PATH="$(realpath -ms -- "${SM_DIRECTORY}/${SM_FILE_NAME}" 2>/dev/null)"; then
     SM_WARNING="Не удалось определить выбранный каталог."
     return 1

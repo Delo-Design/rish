@@ -31,7 +31,7 @@ rish_restore_build_manifest() {
   local listing_file="$1" archive_name="$2" output_file="$3" require_completion="$4"
   local line size filename suffix expected_name normal_name
   local part_prefix="${archive_name}-part-"
-  local end_count=0 suffix_number=0
+  local end_count=0 suffix_width=2 suffix_number=0
   local -a filenames=() sorted_filenames=() selected_filenames=()
   local -A sizes=() completed_parts=()
 
@@ -66,6 +66,11 @@ rish_restore_build_manifest() {
   fi
 
   mapfile -t sorted_filenames < <(printf '%s\n' "${filenames[@]}" | LC_ALL=C sort -V)
+  normal_name="${sorted_filenames[0]:-}"
+  if [[ "${normal_name%.end}" == "${part_prefix}001" ]]; then
+    suffix_width=3
+    suffix_number=1
+  fi
   for filename in "${sorted_filenames[@]}"; do
     if [[ "$filename" != *.end && -n "${completed_parts[$filename]+x}" ]]; then
       if [[ "${sizes[$filename]}" != "${sizes["${filename}.end"]}" ]]; then
@@ -74,7 +79,7 @@ rish_restore_build_manifest() {
       fi
       continue
     fi
-    printf -v expected_name '%s%02d' "$part_prefix" "$suffix_number"
+    printf -v expected_name '%s%0*d' "$part_prefix" "$suffix_width" "$suffix_number"
     if [[ "${filename%.end}" != "$expected_name" ]]; then
       rish_restore_error "нарушена последовательность частей ${archive_name}: ожидается ${expected_name}."
       return 1

@@ -1,8 +1,31 @@
 #!/bin/bash
-clear
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_MENU_ARGS=("$@")
+BACKUP_JOOMLA_MODE=0
+BACKUP_SNAPSHOT_TIME_PATTERN='[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}(-[0-9]{2}-[0-9]{9})?'
+if [[ "${1:-}" == --joomla-site ]]; then
+    if ((EUID != 0)); then
+        printf 'Серверный обработчик бэкапов из админки сайта запускается от root.\n' >&2
+        exit 2
+    fi
+    if [[ "$#" -ne 4 || ! "$2" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*[$]?$ ||
+          ! "$3" =~ ^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ||
+          ! "$4" =~ ^[A-Za-z0-9_][A-Za-z0-9_\$.-]{0,63}$ ]]; then
+        printf 'Использование: %s --joomla-site <пользователь> <сайт> <база-данных>\n' "${0##*/}" >&2
+        exit 2
+    fi
+    BACKUP_JOOMLA_MODE=1
+else
+    clear
+fi
+if [[ "${1:-}" == --no-dereference ]]; then
+    shift
+    if ! { [[ "${1:-}" == auto && "$#" -le 2 ]] ||
+           [[ "${1:-}" == --mc && "$#" -eq 3 && -n "$2" && -n "$3" ]]; }; then
+        printf 'После --no-dereference укажите auto [список] или --mc <имя-папки> <родительский-каталог>.\n' >&2
+        exit 2
+    fi
+fi
 BACKUP_MC_NAME=""
 BACKUP_MC_DIRECTORY=""
 BACKUP_REMOTE_MENU_MODE=""
@@ -34,8 +57,11 @@ require_cmd() {
 }
 
 db_exists() {
-    local db_name="$1"
-    [ -n "$(mariadb -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='${db_name}'" 2>/dev/null)" ]
+    local db_name="$1" schema_column=SCHEMA_NAME
+    if [[ "${2:-}" == exact ]]; then
+        schema_column='BINARY SCHEMA_NAME'
+    fi
+    [ -n "$(mariadb -qfsBe "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE ${schema_column}='${db_name}'" 2>/dev/null)" ]
 }
 
 is_site() {
@@ -60,6 +86,10 @@ is_remote_configured() {
 config_file="/root/rish/rish_config.sh"
 
 # Проверяем существование файла
+if [[ "$BACKUP_JOOMLA_MODE" == 1 && ! -f "$config_file" ]]; then
+    printf 'Не найден файл конфигурации RISH: %s\n' "$config_file" >&2
+    exit 1
+fi
 if [[ ! -f "$config_file" && -z "$BACKUP_REMOTE_MENU_MODE" ]]; then
     echo -e "${LRED}Не найден файл конфигурации:${WHITE} ${config_file}"
     echo
@@ -128,8 +158,8 @@ set_config_var() {
     ' "$config_file" > "$tmp_file" && mv "$tmp_file" "$config_file"
 }
 
-# Скачивание и восстановление не должны создавать или дополнять настройки архивации.
-if [[ -z "$BACKUP_REMOTE_MENU_MODE" ]]; then
+# Только штатные режимы настройки и архивации дополняют файл конфигурации.
+if [[ -z "$BACKUP_REMOTE_MENU_MODE" && "$BACKUP_JOOMLA_MODE" == 0 ]]; then
     for var in "${!vars[@]}"; do
         add_var_if_not_exists "$var" "${vars[$var]}"
     done
@@ -142,6 +172,15 @@ if [[ -f "$config_file" ]]; then
 fi
 if [[ -n "$BACKUP_REMOTE_MENU_MODE" ]]; then
     server="${server:-backup_server}"
+fi
+if [[ "$BACKUP_JOOMLA_MODE" == 1 ]]; then
+    DIR_BACKUP="${DIR_BACKUP:-/root/backup}"
+    splitarchive="${splitarchive:-500m}"
+    backup_queue_mib="${backup_queue_mib:-5000}"
+    backup_min_free_mib="${backup_min_free_mib:-2048}"
+    recordsize="${recordsize:-1m}"
+    server="${server:-backup_server}"
+    rclone_remote="${rclone_remote:-ydisk}"
 fi
 # Переменные загружаются из rish_config.sh. Объявления нужны статическому анализатору
 # и не изменяют уже загруженные значения.
@@ -157,6 +196,8 @@ else
     source "${SCRIPT_DIR}/scripts/backup_crypto.sh"
 fi
 
+# shellcheck source=scripts/backup_source.sh
+source "${SCRIPT_DIR}/scripts/backup_source.sh" || exit 1
 require_cmd rclone
 
 if [ -z "${backupall2:-}" ]; then
@@ -200,13 +241,9 @@ selected_backup_record() {
     printf '%s\n' "$matched_record"
 }
 
-backup_selected_object() (
-    local selected_record temp_list
+backup_single_record() (
+    local selected_record="$1" backup_scope="$2" temp_list
 
-    if ! selected_record="$(selected_backup_record)"; then
-        echo -e "Архивация ${YELLOW}${BACKUP_MC_NAME}${WHITE} недоступна: проверьте каталог и запись в списке бэкапов."
-        return 1
-    fi
     if ! temp_list="$(mktemp)"; then
         echo "Не удалось подготовить список для одиночной архивации."
         return 1
@@ -220,7 +257,299 @@ backup_selected_object() (
     fi
 
     # Исходный список сохраняется; общий механизм получает ровно одну запись.
-    backupall selected "$temp_list"
+    backupall "$backup_scope" "$temp_list"
+)
+
+backup_selected_object() {
+    local selected_record
+
+    if ! selected_record="$(selected_backup_record)"; then
+        echo -e "Архивация ${YELLOW}${BACKUP_MC_NAME}${WHITE} недоступна: проверьте каталог и запись в списке бэкапов."
+        return 1
+    fi
+    backup_single_record "$selected_record" selected
+}
+
+backup_root_managed_path() {
+    local path="$1" mode
+
+    # Проверяем канонический путь и родителей. Sticky-каталог root защищает
+    # вложенный объект root от переименования другими пользователями.
+    while [[ "$path" != / ]]; do
+        if [[ ! -O "$path" || -L "$path" ]] || ! mode="$(stat -c '%a' -- "$path")" ||
+           [[ ! "$mode" =~ ^[0-7]{1,4}$ ]]; then
+            return 1
+        fi
+        if ((8#$mode & 022)) && { [[ ! -d "$path" ]] || ! ((8#$mode & 01000)); }; then
+            return 1
+        fi
+        path="${path%/*}"
+        path="${path:-/}"
+    done
+}
+
+backup_joomla_site_records() {
+    local list_path site_user="${1:-}" site_name="${2:-}" site_db="${3:-}"
+    if [[ ! -f "$backupall2" || -L "$backupall2" ]] ||
+       ! list_path="$(realpath -e -- "$backupall2")" || ! backup_root_managed_path "$list_path"; then
+        printf 'Для бэкапа из админки сайта нужен список объектов, доступный на запись только root.\n' >&2
+        return 1
+    fi
+    awk -F';' -v user="$site_user" -v site="$site_name" -v db="$site_db" '
+        $1 != "" && $2 != "" && $1 !~ /^#/ &&
+        (user == "" || ($1 "") == (user "")) && (site == "" || ($2 "") == (site "")) {
+            key = $1 SUBSEP $2
+            count[key]++
+            if ((NF == 6 || NF == 7) && $3 == "site" && $4 != "" && (db == "" || ($4 "") == (db ""))) {
+                order[++size] = key
+                record[key] = $0
+            }
+        }
+        END {
+            for (i = 1; i <= size; i++)
+                if (count[order[i]] == 1) print record[order[i]]
+        }
+    ' "$list_path"
+}
+
+backup_joomla_site() {
+    local site_user="$1" site_name="$2" site_db="$3" site_uid selected_record row_policy
+
+    if ! site_uid="$(id -u -- "$site_user")" || [[ "$site_uid" == 0 ]]; then
+        printf 'Для бэкапа нужен существующий непривилегированный пользователь сайта.\n' >&2
+        return 1
+    fi
+    selected_record="$(backup_joomla_site_records "$site_user" "$site_name" "$site_db")" || return 1
+    if [[ -z "$selected_record" ]]; then
+        printf 'В списке бэкапов нужна одна запись сайта %s с базой %s.\n' "$site_name" "$site_db" >&2
+        return 1
+    fi
+    IFS=';' read -r _ _ _ _ _ row_policy _ <<< "$selected_record"
+    if ! backup_parse_archive_policy "$row_policy" || [[ "$BACKUP_ARCHIVE_MODE" == disabled ]]; then
+        printf 'Резервное копирование сайта %s не включено в списке RISH.\n' "$site_name" >&2
+        return 1
+    fi
+
+    backup_single_record "$selected_record" joomla
+}
+
+backup_joomla_site_name_valid() {
+    [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ &&
+       "$2" =~ ^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]
+}
+
+backup_joomla_connected_sites() {
+    local user_dir backups_dir job_dir site_user site_name site_uid site_gid inbox_mode unit
+
+    for backups_dir in /var/www/*/backups; do
+        [[ -d "$backups_dir" ]] || continue
+        user_dir=${backups_dir%/backups}
+        site_user=${user_dir##*/}
+        [[ "$site_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || continue
+        if ! backup_root_managed_path "$backups_dir" ||
+           ! site_uid="$(id -u -- "$site_user")" || [[ "$site_uid" == 0 ]] ||
+           ! site_gid="$(id -g -- "$site_user")" ||
+           [[ "$(stat -c '%u:%g:%a' -- "$backups_dir")" != "0:$site_gid:750" ]]; then
+            continue
+        fi
+
+        for job_dir in "$backups_dir"/*; do
+            site_name=${job_dir##*/}
+            [[ -d "$job_dir" && ! -L "$job_dir" ]] || continue
+            backup_joomla_site_name_valid "$site_user" "$site_name" || continue
+            [[ "$(stat -c '%u:%g:%a' -- "$job_dir")" == "0:$site_gid:750" ]] || continue
+
+            inbox_mode=""
+            if [[ -d "$job_dir/inbox" && ! -L "$job_dir/inbox" ]]; then
+                inbox_mode="$(stat -c '%u:%g:%a' -- "$job_dir/inbox")"
+            fi
+            # Даже при закрытом приёме заявок служба может ещё работать.
+            if [[ "$inbox_mode" != "0:$site_gid:730" ]]; then
+                unit="$(systemd-escape --path -- "$job_dir")" || continue
+                unit="rish-joomla-backup@$unit"
+                if ! systemctl is-active --quiet "$unit.path" 2>/dev/null &&
+                   ! systemctl is-enabled --quiet "$unit.path" 2>/dev/null &&
+                   [[ ! "$(systemctl show --property=ActiveState --value "$unit.service" 2>/dev/null)" =~ ^(active|activating|reloading)$ ]]; then
+                    continue
+                fi
+            fi
+            printf '%s;%s\n' "$site_user" "$site_name"
+        done
+    done
+}
+
+backup_joomla_setup_menu() (
+    local rows="" row site_user site_name site_db policy verified_record site_key site_marker action
+    local _user _site _type _db _remote _rest
+    local page_size=250 page_start page_end default_index=0
+    local previous_index next_index choice status=0 list_status=0
+    local terminal_size terminal_lines terminal_columns list_height
+    local menu_y menu_x menu_height menu_width menu_right_x selected_row action_y action_x
+    local action_label action_width
+    local -a records=() labels=() page_labels=()
+    local -A site_actions=()
+
+    if [[ -f "$backupall2" || -L "$backupall2" ]]; then
+        rows="$(backup_joomla_site_records)" || { list_status=$?; rows=""; }
+    fi
+
+    while IFS= read -r row; do
+        IFS=';' read -r site_user site_name _type site_db _remote policy _rest <<< "$row"
+        backup_joomla_site_name_valid "$site_user" "$site_name" || continue
+        [[ "$site_db" =~ ^[A-Za-z0-9_][A-Za-z0-9_\$.-]{0,63}$ ]] || continue
+        if ! backup_parse_archive_policy "$policy" || [[ "$BACKUP_ARCHIVE_MODE" == disabled ]]; then
+            continue
+        fi
+        site_actions["$site_user/$site_name"]=enable
+        records+=("$site_user;$site_name;$site_db")
+    done <<< "$rows"
+
+    while IFS=';' read -r site_user site_name; do
+        site_key="$site_user/$site_name"
+        if [[ -z "${site_actions[$site_key]:-}" ]]; then
+            records+=("$site_user;$site_name;")
+        fi
+        site_actions["$site_key"]=disable
+    done < <(backup_joomla_connected_sites)
+
+    for row in "${records[@]}"; do
+        IFS=';' read -r site_user site_name site_db <<< "$row"
+        if [[ "${BACKUP_MC_DIRECTORY%/}" == "/var/www/$site_user/www" && "$BACKUP_MC_NAME" == "$site_name" ]]; then
+            default_index=${#labels[@]}
+        fi
+        site_key="$site_user/$site_name"
+        site_marker='[-]'
+        if [[ "${site_actions[$site_key]}" == disable ]]; then
+            site_marker='[+]'
+        fi
+        labels+=("$site_marker $site_name ($site_user)")
+    done
+
+    if ((${#records[@]} == 0)); then
+        if [[ ! -f "$backupall2" && ! -L "$backupall2" ]]; then
+            printf 'Сначала создайте список бэкапов в меню RISH.\n'
+        elif ((list_status == 0)); then
+            printf 'В списке бэкапов нет сайтов с включённой архивацией и указанной БД.\n'
+        fi
+        vertical_menu "current" 2 0 5 "Назад"
+        return "$list_status"
+    fi
+
+    printf 'Выберите сайт для настройки бэкапов из админки.\n[+] включены, [-] отключены\n'
+    page_start=$((default_index / page_size * page_size))
+    while true; do
+        page_end=$((page_start + page_size))
+        ((page_end <= ${#labels[@]})) || page_end=${#labels[@]}
+        page_labels=("${labels[@]:page_start:page_end-page_start}")
+        previous_index=-1
+        next_index=-1
+        if ((page_start > 0)); then
+            previous_index=${#page_labels[@]}
+            page_labels+=("Предыдущая страница")
+        fi
+        if ((page_end < ${#labels[@]})); then
+            next_index=${#page_labels[@]}
+            page_labels+=("Следующая страница")
+        fi
+        page_labels+=("Назад")
+
+        terminal_size="$(stty size)"
+        read -r terminal_lines terminal_columns <<< "$terminal_size"
+        list_height=$((terminal_lines - 6))
+        ((list_height < 1)) && list_height=1
+        ((list_height > 15)) && list_height=15
+        vertical_menu "current_noclear" 2 "$list_height" 5 nomouse "default=$((default_index - page_start))" "${page_labels[@]}"
+        choice=$?
+        menu_y=$VERTICAL_MENU_LAST_Y
+        if ((choice >= page_end - page_start)); then
+            clear_last_vertical_menu
+            cursor_to "$menu_y" 1
+            if ((choice == previous_index)); then
+                page_start=$((page_start - page_size))
+            elif ((choice == next_index)); then
+                page_start=$page_end
+            else
+                return 0
+            fi
+            default_index=$page_start
+            continue
+        fi
+
+        default_index=$((page_start + choice))
+        IFS=';' read -r site_user site_name site_db <<< "${records[default_index]}"
+        site_key="$site_user/$site_name"
+        action=${site_actions[$site_key]}
+        if [[ "$action" == disable ]]; then
+            action_label="Отключить"
+        else
+            action_label="Включить"
+        fi
+        action_width=${#action_label}
+        menu_x=$VERTICAL_MENU_LAST_X
+        menu_height=$VERTICAL_MENU_LAST_HEIGHT
+        menu_width=$VERTICAL_MENU_LAST_OUTER_WIDTH
+        menu_right_x=$VERTICAL_MENU_LAST_RIGHT_X
+        selected_row=$((menu_y + VERTICAL_MENU_LAST_VISIBLE_SELECTED + 1))
+        action_x="$(vertical_menu_next_x 2)"
+
+        # vertical_menu добавляет семь столбцов к ширине текста.
+        if ((action_x + action_width + 6 <= terminal_columns)); then
+            action_y=$((selected_row - 1))
+            ((action_y > terminal_lines - 3)) && action_y=$((terminal_lines - 3))
+            ((action_y < 1)) && action_y=1
+            draw_backup_action_connector "$menu_right_x" "$action_x" "$selected_row"
+        else
+            action_x=$menu_x
+            action_y=$((menu_y + menu_height))
+        fi
+        vertical_menu "$action_y" "$action_x" 0 "$action_width" nomouse "default=1" "$action_label" "Назад"
+        choice=$?
+
+        # Подменю снизу может прокрутить терминал вместе со списком.
+        menu_y=$((menu_y + VERTICAL_MENU_LAST_Y - action_y))
+        clear_last_vertical_menu
+        if ((action_x > menu_x)); then
+            clear_menu_rect "$selected_row" "$menu_right_x" 1 "$((action_x - menu_right_x))"
+        fi
+        clear_menu_rect "$menu_y" "$menu_x" "$menu_height" "$menu_width"
+        cursor_to "$menu_y" 1
+        ((choice == 0)) || continue
+
+        if [[ "$action" == disable ]]; then
+            if /bin/bash "$SCRIPT_DIR/scripts/joomla_backup.sh" disable "$site_user" "$site_name"; then
+                printf 'Бэкапы из админки сайта %b%s%b отключены.\n' "$GREEN" "$site_name" "$WHITE"
+            else
+                status=$?
+                vertical_menu "current" 2 0 5 "Нажмите Enter"
+            fi
+            return "$status"
+        fi
+
+        printf 'Включение бэкапов из админки сайта %b%s%b. База данных %b%s%b.\n' \
+            "$GREEN" "$site_name" "$WHITE" "$GREEN" "$site_db" "$WHITE"
+
+        if ! verified_record="$(backup_joomla_site_records "$site_user" "$site_name" "$site_db")" ||
+           [[ -z "$verified_record" ]]; then
+            printf 'Запись сайта в списке бэкапов изменилась. Выберите сайт заново.\n' >&2
+            status=1
+        else
+            IFS=';' read -r _user _site _type _db _remote policy _rest <<< "$verified_record"
+            if ! backup_parse_archive_policy "$policy" || [[ "$BACKUP_ARCHIVE_MODE" == disabled ]]; then
+                printf 'Резервное копирование сайта %s отключено или настроено неверно.\n' "$site_name" >&2
+                status=1
+            elif ! db_exists "$site_db" exact; then
+                printf 'База данных %s недоступна в MariaDB.\n' "$site_db" >&2
+                status=1
+            else
+                /bin/bash "$SCRIPT_DIR/scripts/joomla_backup.sh" enable "$site_user" "$site_name" "$site_db" ||
+                    status=$?
+            fi
+        fi
+        if ((status != 0)); then
+            vertical_menu "current" 2 0 5 "Нажмите Enter"
+        fi
+        return "$status"
+    done
 )
 
 addable_current_backup_site() {
@@ -495,8 +824,9 @@ backupall() (
     local backup_list_file="${2:-$backupall2}"
     local backup_lock_file="/run/lock/rish-backup.lock"
     local backup_lock_fd backup_lock_status=0 backup_lock_umask
-    local DATE_DIR DATE_TS
-    local age_suffix backup_dir archive_name archive_status
+    local DATE_DIR DATE_TS site_date_ts
+    local age_suffix backup_dir backup_parent archive_name archive_status source_path
+    local publish_site_origin
     local part_size part_unit size_mode queue_slots reserve_bytes stale_spool
     local USER TARGET TYPE DB REMOTE ARCHIVE_FLAG EXCLUDE_LIST
     local dir key OLD_DIR date_year date_month date_rest date_month_index remote_dirs_output
@@ -550,11 +880,12 @@ backupall() (
     fi
 
     # Время относится к запуску архивации, а не к моменту открытия меню.
-    if ! DATE_TS="$(/bin/date '+%Y-%m-%d_%H-%M')" ||
-       [[ ! "$DATE_TS" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}$ ]]; then
+    if ! site_date_ts="$(/bin/date '+%Y-%m-%d_%H-%M-%S-%N')" ||
+       [[ ! "$site_date_ts" =~ ^${BACKUP_SNAPSHOT_TIME_PATTERN}$ ]]; then
         echo "Не удалось определить дату и время для имени архива."
         return 1
     fi
+    DATE_TS="${site_date_ts:0:16}"
     DATE_DIR="${DATE_TS%%_*}"
     DATE_DIR="${DATE_DIR//-/.}"
 
@@ -564,6 +895,17 @@ backupall() (
     fi
     DIR_BACKUP="$backup_dir"
 
+    if [[ "$backup_scope" == joomla ]]; then
+        backup_parent="$DIR_BACKUP"
+        while [[ ! -e "$backup_parent" ]]; do
+            backup_parent="${backup_parent%/*}"
+            backup_parent="${backup_parent:-/}"
+        done
+        if [[ ! -d "$backup_parent" ]] || ! backup_root_managed_path "$backup_parent"; then
+            backup_error_detail "Для бэкапов из админки сайта нужен временный каталог под управлением root."
+            return 1
+        fi
+    fi
     if ! mkdir -p -- "$DIR_BACKUP"; then
         echo "Не удалось создать временный каталог бэкапов: ${DIR_BACKUP}." >&2
         return 1
@@ -722,7 +1064,7 @@ backupall() (
         [[ -n "$FILE" && "$FILE" != */* && "$FILE" == *-part-[0-9]* ]] || return 1
         IFS= read -r part_number < "$spool/part-number" || return 1
         [[ "$part_number" =~ ^[0-9]+$ ]] || return 1
-        printf -v FILE '%s-part-%02d' "${FILE%-part-*}" "$part_number" || return 1
+        printf -v FILE '%s-part-%03d' "${FILE%-part-*}" "$part_number" || return 1
         # Если split начал следующую часть, предыдущая уже не последняя.
         pending=("$spool"/pending/*)
         if ((${#pending[@]} > 0)); then
@@ -755,8 +1097,8 @@ backupall() (
     }
 
     stage_backup_parts() {
-        # Каждый SQL/TAR-поток начинает собственную последовательность с 00.
-        printf '0\n' > "$RISH_BACKUP_SPOOL/part-number" || return 1
+        # Каждый SQL/TAR-поток начинает собственную последовательность с 001.
+        printf '1\n' > "$RISH_BACKUP_SPOOL/part-number" || return 1
         SHELL=/bin/bash split -b "$part_size" --numeric-suffixes --filter='backup_stage_part' -- - "$1"
     }
 
@@ -824,6 +1166,9 @@ backupall() (
             done
             if ! wait "$transfer_pid"; then
                 transfer_pid=""
+                if [[ "$backup_scope" == joomla ]]; then
+                    : > "$spool/storage-error"
+                fi
                 exit 1
             fi
             transfer_pid=""
@@ -840,6 +1185,8 @@ backupall() (
         local name="$1" available spool snapshot_remote owner_pid
         local uploader_pid="" uploader_status=0 upload_complete=0 cron_message cron_status=0
         local archive_extension=tar.gz archive_file_status=0
+        local tar_name sql_name tar_next_part sql_next_part=1
+        local existing_parts listing_status=0
         local -a pending
         shopt -s nullglob dotglob
         umask 077
@@ -853,8 +1200,21 @@ backupall() (
             backup_error_detail "Мало места в ${DIR_BACKUP} для ${TARGET}. Свободно $((available / 1048576)) МиБ, для части с резервом нужно $(((reserve_bytes + part_size + 1048575) / 1048576)) МиБ."
             return 1
         fi
-        spool="$(mktemp -d -- "$DIR_BACKUP/.rish-stream-XXXXXXXXXX")" || return 1
         snapshot_remote="${REMOTE}:${server}/${USER}/${DATE_DIR}"
+        if [[ "$backup_scope" == joomla ]]; then
+            existing_parts="$(rclone lsf --files-only --max-depth 1 --include "${name}.*" \
+                --contimeout 30s --timeout 2m --retries 3 --low-level-retries 3 \
+                "$snapshot_remote/" </dev/null 2>/dev/null)" || listing_status=$?
+            if ((listing_status != 0 && listing_status != 3)); then
+                backup_error_detail "Не удалось проверить имя резервной копии ${name} в хранилище."
+                return 23
+            fi
+            if [[ -n "$existing_parts" ]]; then
+                backup_error_detail "Имя резервной копии ${name} уже занято в хранилище."
+                return 23
+            fi
+        fi
+        spool="$(mktemp -d -- "$DIR_BACKUP/.rish-stream-XXXXXXXXXX")" || return 1
         # shellcheck disable=SC2329
         cleanup_stream_object() {
             local delete_status=0 delete_error
@@ -862,7 +1222,7 @@ backupall() (
                 kill "$uploader_pid" 2>/dev/null || true
                 wait "$uploader_pid" 2>/dev/null || true
             fi
-            if ((archive_file_status == 1)); then
+            if ((archive_file_status == 1)) && [[ "$backup_scope" != joomla ]]; then
                 # После остановки загрузчика предупреждение не смешается с прогрессом.
                 backup_clear_stage
                 backup_cleanup_warning "Файлы ${TARGET} изменились во время архивации. Копии этих файлов могут быть неточными."
@@ -907,7 +1267,19 @@ backupall() (
         else
             if [[ "$TYPE" == db ]] || { [[ -n "$DB" ]] && db_exists "$DB"; }; then
                 backup_show_stage "Создаём дамп базы ${GREEN}${DB}${WHITE}..."
-                create_database_parts "$DB" "${name}.sql.gz${age_suffix}-part-" || return 1
+                if ! create_database_parts "$DB" "${name}.sql.gz${age_suffix}-part-"; then
+                    if [[ "$backup_scope" == joomla ]]; then
+                        [[ ! -e "$spool/storage-error" ]] || return 23
+                        return 20
+                    fi
+                    return 1
+                fi
+                if ((publish_site_origin)); then
+                    IFS= read -r sql_next_part < "$spool/part-number" || return 1
+                fi
+            elif [[ "$backup_scope" == joomla ]]; then
+                backup_error_detail "База данных сайта ${TARGET} недоступна. Полная копия не создана."
+                return 24
             elif [[ -n "$DB" ]]; then
                 backup_clear_stage
                 echo -e "${YELLOW}База ${DB} не найдена: архивируем только файлы сайта.${WHITE}"
@@ -916,6 +1288,12 @@ backupall() (
                 archive_extension=sql.gz
             else
                 create_file_parts "${name}.tar.gz${age_suffix}-part-" "$spool/progress.lock" || archive_file_status=$?
+                if [[ "$backup_scope" == joomla && "$archive_file_status" -ne 0 ]]; then
+                    backup_error_detail "Не удалось получить полный архив файлов ${TARGET} (код tar: ${archive_file_status})."
+                    [[ ! -e "$spool/storage-error" ]] || return 23
+                    ((archive_file_status != 1)) || return 22
+                    return 21
+                fi
                 ((archive_file_status < 2)) || return 1
             fi
         fi
@@ -933,6 +1311,21 @@ backupall() (
         uploader_pid=""
         if ((uploader_status == 0)); then
             upload_complete=1
+            if ((publish_site_origin && sql_next_part > 1 && archive_file_status == 0)); then
+                tar_name="${name}.tar.gz${age_suffix}"
+                sql_name="${name}.sql.gz${age_suffix}"
+                if ! IFS= read -r tar_next_part < "$spool/part-number" ||
+                   ! printf 'rish-site-root-only-v2\n%s;%s;%s\n%s;%s\n%d;%d\n' \
+                        "$USER" "$TARGET" "$DB" "$tar_name" "$sql_name" \
+                        "$((tar_next_part - 1))" "$((sql_next_part - 1))" > "$spool/origin" ||
+                   ! rclone copyto --immutable --contimeout 30s --timeout 2m --retries 3 --low-level-retries 3 \
+                        "$spool/origin" "$snapshot_remote/$tar_name.rish-origin.txt" </dev/null >&2; then
+                    backup_error_detail "Копия ${TARGET} загружена, но не удалось записать отметку для скачивания из админки."
+                    [[ "$backup_scope" != joomla ]] || return 23
+                fi
+            fi
+        elif [[ "$backup_scope" == joomla && -e "$spool/storage-error" ]]; then
+            return 23
         fi
         return "$uploader_status"
     )
@@ -977,14 +1370,16 @@ backupall() (
         fi
     }
 
-    create_file_parts() {
+    create_file_parts() (
         local output_prefix="$1" progress_lock="$2"
+        local transform
         local -a pipeline_status=() progress_opts=()
+        local -a tar_command=(/usr/bin/env -u TAR_OPTIONS /usr/bin/tar -czf -)
         local tar_status
         local age_status=0
         local split_status
 
-        if [[ -t 2 ]]; then
+        if [[ "$backup_scope" != joomla && -t 2 ]]; then
             # Пропускаем кадр, пока строку терминала обновляет rclone.
             # shellcheck disable=SC2016
             progress_opts=(--checkpoint="$checkpoint"
@@ -994,9 +1389,16 @@ backupall() (
             echo "Идет создание архива файлов..."
         fi
 
+        if [[ "$backup_scope" == joomla ]]; then
+            exec {backup_lock_fd}>&- </dev/null
+            tar_command=(/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/tar -czf -)
+        fi
+        backup_source_enter_user "/var/www/$USER" "$source_path" || return 2
+        transform="$(backup_source_tar_transform "$TARGET")" || return 2
+        tar_command+=(--transform="$transform" --record-size="$recordsize" "${progress_opts[@]}" "${EXCLUDE_OPTS[@]}" -- .)
+
         if [[ "$BACKUP_ARCHIVE_MODE" == "crypto" ]]; then
-            tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
-                --record-size="$recordsize" "${progress_opts[@]}" \
+            "${tar_command[@]}" \
                 | age "${BACKUP_AGE_ARGS[@]}" \
                 | stage_backup_parts "$output_prefix"
             pipeline_status=("${PIPESTATUS[@]}")
@@ -1004,8 +1406,7 @@ backupall() (
             age_status="${pipeline_status[1]}"
             split_status="${pipeline_status[2]}"
         else
-            tar -czhf - "${EXCLUDE_OPTS[@]}" "$TARGET" \
-                --record-size="$recordsize" "${progress_opts[@]}" \
+            "${tar_command[@]}" \
                 | stage_backup_parts "$output_prefix"
             pipeline_status=("${PIPESTATUS[@]}")
             tar_status="${pipeline_status[0]}"
@@ -1019,7 +1420,7 @@ backupall() (
         fi
         # Как у tar: 0 означает успех, 1 означает изменившиеся файлы.
         return "$tar_status"
-    }
+    )
 
     create_cron_parts() (
         local output_prefix="$1"
@@ -1114,9 +1515,11 @@ backupall() (
         fi
         if ! remote_exists "$REMOTE"; then
             backup_object_error "Подключение '${REMOTE}' не найдено в rclone. Архивация ${TARGET} пропущена."
+            [[ "$backup_scope" != joomla ]] || return 23
             continue
         fi
 
+        source_path="/var/www/${USER}/www/${TARGET}"
         if [[ "$TYPE" == "cron" ]]; then
             if ! id -u -- "$USER" >/dev/null 2>&1; then
                 backup_object_error "Архивация CRON пропущена: пользователь ${USER} не найден."
@@ -1129,13 +1532,24 @@ backupall() (
                 backup_object_error "Архивация CRON ${USER} пропущена: повторный объект CRON или совпадение имени '${TARGET}' с другим объектом."
                 continue
             fi
-        elif [ ! -d "/var/www/${USER}/www/${TARGET}" ]; then
-            backup_object_error "Архивация ${TARGET} пропущена: каталог /var/www/${USER}/www/${TARGET} не найден."
+        elif [[ ! -d "$source_path" ]]; then
+            backup_object_error "Архивация ${TARGET} пропущена: каталог ${source_path} не найден."
+            continue
+        elif [[ "$TYPE" != db ]] && ! (backup_source_enter_user "/var/www/$USER" "$source_path"); then
+            backup_object_error "Архивация ${TARGET} пропущена: не удалось открыть каталог сайта."
             continue
         fi
 
+        publish_site_origin=0
+        if [[ "$TYPE" == site && "$USER" =~ ^[a-z_][a-z0-9_-]*$ &&
+              "$TARGET" =~ ^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ &&
+              "$DB" =~ ^[A-Za-z0-9_][A-Za-z0-9_\$.-]{0,63}$ ]]; then
+            publish_site_origin=1
+        fi
         if [[ "$TYPE" == "cron" ]]; then
             archive_name="cron_${USER}_${DATE_TS}"
+        elif ((publish_site_origin)); then
+            archive_name="${TARGET}_${site_date_ts}"
         else
             archive_name="${TARGET}_${DATE_TS}"
         fi
@@ -1148,15 +1562,10 @@ backupall() (
                 dir="${dir#/}"
                 dir="${dir%/}"
                 if [ -n "$dir" ]; then
-                    EXCLUDE_OPTS+=(--exclude="${TARGET}/${dir}/*")
-                    EXCLUDE_OPTS+=(--exclude="${TARGET}/${dir}/.*")
+                    EXCLUDE_OPTS+=(--exclude="./${dir}/*")
+                    EXCLUDE_OPTS+=(--exclude="./${dir}/.*")
                 fi
             done
-        fi
-
-        if [[ "$TYPE" != "cron" ]] && ! cd "/var/www/${USER}/www"; then
-            backup_object_error "Не удалось перейти в /var/www/${USER}/www. Архивация ${TARGET} пропущена."
-            continue
         fi
 
         if [[ "$TYPE" == db && -z "$DB" ]]; then
@@ -1188,12 +1597,14 @@ backupall() (
             return "$archive_status"
         else
             backup_object_error "Не удалось создать или подтвердить выгрузку бэкапа ${TARGET} в подключение '${REMOTE}'."
+            # В этом режиме список состоит из одной записи, а код нужен обработчику Joomla.
+            [[ "$backup_scope" != joomla ]] || return "$archive_status"
         fi
     done < "$backup_list_file"
 
     # Каталоги с датами общие для разных объектов пользователя.
     # Одиночный запуск не выполняет ротацию и очистку всего хранилища.
-    if [[ "$backup_scope" == "selected" ]]; then
+    if [[ "$backup_scope" != all ]]; then
         return "$overall_status"
     fi
 
@@ -1260,9 +1671,13 @@ backupall() (
                 if [[ "$remote_date" =~ ^[0-9]{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])$ ]]; then
                     DATE_DIR_HAS_FILES["$remote_date"]=1
                     retention_file="${remote_file#*/}"
+                    # Отметка хранится и удаляется вместе с частями того же дня.
+                    if [[ "$retention_file" =~ ^[^/]+_${BACKUP_SNAPSHOT_TIME_PATTERN}\.tar\.gz(\.age)?\.rish-origin\.txt$ ]]; then
+                        continue
+                    fi
                     if [[ "$retention_file" != */* && "$retention_file" =~ ^(.+)\.(tar|sql)\.gz(\.age)?-part-[0-9]+(\.end)?$ ]]; then
                         retention_object="${BASH_REMATCH[1]}"
-                        if [[ "$retention_object" =~ ^(.+)_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}$ ]]; then
+                        if [[ "$retention_object" =~ ^(.+)_${BACKUP_SNAPSHOT_TIME_PATTERN}$ ]]; then
                             retention_object="${BASH_REMATCH[1]}"
                         fi
                         RETENTION_GROUPS["all|$retention_object"]=1
@@ -1603,6 +2018,11 @@ updatelist() {
     echo "Добавлено: $added"
     echo
 }
+
+if [[ "$BACKUP_JOOMLA_MODE" == 1 ]]; then
+    backup_joomla_site "$2" "$3" "$4"
+    exit $?
+fi
 
 if [[ "$1" == "auto" ]]
 then
@@ -2654,7 +3074,7 @@ backup_crypto_choose_recipient_index() {
     printf -v "$result_var" '%s' "$choice"
 }
 
-draw_backup_crypto_action_connector() {
+draw_backup_action_connector() {
     local from_x="$1"
     local to_x="$2"
     local row="$3"
@@ -2822,7 +3242,7 @@ backup_crypto_object_actions() {
 
     selected_row=$((selected_row - 1))
     ((selected_row < 1)) && selected_row=1
-    draw_backup_crypto_action_connector "$menu_right_x" "$action_x" "$((selected_row + 1))"
+    draw_backup_action_connector "$menu_right_x" "$action_x" "$((selected_row + 1))"
     vertical_menu "$selected_row" "$action_x" 0 30 "${labels[@]}"
     choice=$?
     if ((choice == 255 || choice >= ${#actions[@]})); then
@@ -3260,7 +3680,7 @@ ensure_remote_index() {
             archive_part_counts["$archive_key"]=$(( ${archive_part_counts[$archive_key]:-0} + 1 ))
         fi
 
-        if [[ "$archive_base" =~ ^(.+)_([0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2})$ ]]; then
+        if [[ "$archive_base" =~ ^(.+)_(${BACKUP_SNAPSHOT_TIME_PATTERN})$ ]]; then
             site_name="${BASH_REMATCH[1]}"
             ts_part="${BASH_REMATCH[2]}"
         else
@@ -3276,7 +3696,7 @@ ensure_remote_index() {
         if [[ "$is_completion_part" -eq 1 ]]; then
             snapshot_complete["$snapshot_key|$archive_kind"]=1
         fi
-        [[ "$part_number" == 00 ]] || continue
+        [[ "$part_number" == 00 || "$part_number" == 001 ]] || continue
         snapshot_user["$snapshot_key"]="$user_name"
         snapshot_date["$snapshot_key"]="$date_dir"
         snapshot_site["$snapshot_key"]="$site_name"
@@ -3316,7 +3736,11 @@ ensure_remote_index() {
         seen_sites["${snapshot_user[$snapshot_key]}|$site_name"]=1
         date_part="${ts_part%%_*}"
         time_part="${ts_part##*_}"
-        label="${date_part} ${time_part//-/:}"
+        if [[ "$time_part" =~ ^([0-9]{2})-([0-9]{2})-([0-9]{2})-([0-9]{9})$ ]]; then
+            label="${date_part} ${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
+        else
+            label="${date_part} ${time_part//-/:}"
+        fi
         if [[ "$archive_kind" == sql ]]; then
             label="${label} [SQL]"
         fi
@@ -3442,7 +3866,7 @@ download_site_snapshot_archive() {
         local part_prefix="${tmp_dir}/${source_prefix}-part-"
         local part_file normal_part expected_part
         local end_count=0
-        local suffix_number=0
+        local suffix_width=2 suffix_number=0
         local -a all_part_files=() part_files=()
         local -A completed_parts=()
 
@@ -3451,6 +3875,11 @@ download_site_snapshot_archive() {
         shopt -u nullglob
         ((${#all_part_files[@]} > 0)) || return 1
         mapfile -t all_part_files < <(printf '%s\n' "${all_part_files[@]}" | LC_ALL=C sort -V)
+        normal_part="${all_part_files[0]:-}"
+        if [[ "${normal_part%.end}" == "${part_prefix}001" ]]; then
+            suffix_width=3
+            suffix_number=1
+        fi
         for part_file in "${all_part_files[@]}"; do
             if [[ "$part_file" == *.end ]]; then
                 normal_part="${part_file%.end}"
@@ -3463,7 +3892,7 @@ download_site_snapshot_archive() {
             if [[ "$part_file" != *.end && -n "${completed_parts[$part_file]+x}" ]]; then
                 continue
             fi
-            printf -v expected_part '%s%02d' "$part_prefix" "$suffix_number"
+            printf -v expected_part '%s%0*d' "$part_prefix" "$suffix_width" "$suffix_number"
             [[ "${part_file%.end}" == "$expected_part" ]] || return 1
             part_files+=("$part_file")
             suffix_number=$((suffix_number + 1))
@@ -3949,6 +4378,10 @@ do
             menu_items+=("Управление шифрованием бэкапов")
             menu_actions+=("crypto")
         fi
+    fi
+    menu_items+=("Бэкапы из админки сайта")
+    menu_actions+=("joomla_backup")
+    if [[ "$local_has_list" == 1 ]]; then
         menu_items+=("Обновить файл-список всех архивируемых объектов" "Создать файл-список всех архивируемых объектов")
         menu_actions+=("update_list" "create_list")
     fi
@@ -3980,6 +4413,7 @@ do
         restore) restore_backup_menu ;;
         restore_stream) restore_backup_menu stream ;;
         crypto) backup_crypto_management_menu ;;
+        joomla_backup) backup_joomla_setup_menu ;;
         update_list) updatelist ;;
         create_list) createlist ;;
         config_yandex) configcnf ;;

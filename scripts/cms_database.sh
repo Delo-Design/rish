@@ -120,7 +120,9 @@ cms_database_joomla_update() (
     echo 'После замены пароля обнаружена ошибка синтаксиса PHP; запись отменена.' >&2
     return 1
   fi
-  if ! cp -- "$config" "$backup_temporary" || ! chmod --reference="$config" -- "$temporary"; then
+  if ! cp -- "$config" "$backup_temporary" ||
+    ! chmod 0400 -- "$backup_temporary" ||
+    ! chmod --reference="$config" -- "$temporary"; then
     echo 'Не удалось подготовить резервную копию или сохранить права конфигурации.' >&2
     return 1
   fi

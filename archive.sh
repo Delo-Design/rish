@@ -9,6 +9,8 @@ if [[ -f /root/rish/scripts/backup_crypto.sh ]]; then
 else
   source "${SCRIPT_DIR}/scripts/backup_crypto.sh"
 fi
+# shellcheck source=scripts/backup_source.sh
+source "${SCRIPT_DIR}/scripts/backup_source.sh" || exit 1
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -25,7 +27,7 @@ prepare_archive_crypto_for_path() {
   local selected_path="$1"
   local list_file="${backupall2:-}"
   local resolved_path user target
-  local row_user row_target row_type row_db row_remote row_policy row_exclude
+  local row_user row_target _row_type _row_db _row_remote row_policy _row_exclude
 
   ARCHIVE_USE_CRYPTO=0
   ARCHIVE_CRYPTO_RECIPIENTS=()
@@ -47,7 +49,7 @@ prepare_archive_crypto_for_path() {
   user="${BASH_REMATCH[1]}"
   target="${BASH_REMATCH[2]}"
 
-  while IFS=';' read -r row_user row_target row_type row_db row_remote row_policy row_exclude; do
+  while IFS=';' read -r row_user row_target _row_type _row_db _row_remote row_policy _row_exclude; do
     [[ "$row_user" == "$user" && "$row_target" == "$target" ]] || continue
     if ! backup_parse_archive_policy "$row_policy"; then
       echo -e "Настройка архивирования ${RED}${target}${WHITE} некорректна: ${BACKUP_ARCHIVE_POLICY_ERROR}." >&2
@@ -112,7 +114,6 @@ function save_archive_exclude() {
 }
 
 function select_archive_exclude_dirs() {
-  local folder="$1"
   local default_exclude="${ARCHIVE_EXCLUDE:-}"
   local exclude_input
   local excl
@@ -142,7 +143,7 @@ function select_archive_exclude_dirs() {
       case "$?" in
         0)
           normalized_exclude_arr+=("$normalized")
-          ARCHIVE_EXCLUDE_ARGS+=("--exclude=$folder/${normalized}/*")
+          ARCHIVE_EXCLUDE_ARGS+=("--exclude=./${normalized}/*")
           ;;
         1) ;;
         *)
@@ -163,7 +164,18 @@ function select_archive_exclude_dirs() {
   done
 }
 
-function print_archive_exclude_preview() {
+archive_enter_directory() {
+  local path="$1" lexical resolved
+  lexical="$(realpath -ms -- "$path")" || return 1
+  if [[ "$lexical" =~ ^(/var/www/[^/]+)/www/ ]]; then
+    backup_source_enter_user "${BASH_REMATCH[1]}" "$lexical"
+  elif ! resolved="$(realpath -e -- "$path")" || ! backup_source_enter_resolved "$resolved"; then
+    printf 'Не удалось открыть каталог %s.\n' "$path" >&2
+    return 1
+  fi
+}
+
+function print_archive_exclude_preview() (
   local folder_path="$1"
   shift
   local folder
@@ -176,6 +188,8 @@ function print_archive_exclude_preview() {
 
   folder="$(basename "$folder_path")"
   parent_path="$(dirname "$folder_path")"
+  disk_free="$(df -h -P "$parent_path" | awk 'NR==2 {print $4}')"
+  archive_enter_directory "$folder_path" || return 1
 
   for arg in "$@"; do
     if [[ "$arg" =~ --exclude=.+ ]]; then
@@ -183,8 +197,7 @@ function print_archive_exclude_preview() {
     fi
   done
 
-  folder_size_mb=$(du --apparent-size --dereference -sm "${du_exclude[@]}" "$folder_path" | cut -f1)
-  disk_free="$(df -h -P "$parent_path" | awk 'NR==2 {print $4}')"
+  folder_size_mb=$(du --apparent-size -sm "${du_exclude[@]}" -- . | cut -f1)
 
   if [[ "$#" -gt 0 ]]; then
     echo -e "За исключением папок:"
@@ -206,16 +219,15 @@ function print_archive_exclude_preview() {
     echo -e "Свободное место на диске: ${YELLOW}определить не удалось${WHITE}"
   fi
   echo
-}
+)
 
 function confirm_archive_with_exclude() {
   local folder_path="$1"
-  local folder="$2"
   local choice
 
   while true; do
-    select_archive_exclude_dirs "$folder" || return 1
-    print_archive_exclude_preview "$folder_path" "${ARCHIVE_EXCLUDE_ARGS[@]}"
+    select_archive_exclude_dirs || return 1
+    print_archive_exclude_preview "$folder_path" "${ARCHIVE_EXCLUDE_ARGS[@]}" || return 1
 
     vertical_menu "current" 1 0 30 "Начать архивацию" "Изменить исключаемые папки" "Выйти"
     choice=$?
@@ -294,9 +306,8 @@ function archive() {
 
   # --- Размер папки до архивации ---
   if [[ -d "$fullpath" ]]; then
-    # du считает логический размер (apparent-size), разыменовывая симлинки
     local size_bytes
-    size_bytes=$(du --apparent-size --dereference -sm -- "$fullpath" | cut -f1)
+    size_bytes=$(archive_enter_directory "$fullpath" && du --apparent-size -sm -- . | cut -f1) || return 1
 
     echo -e "Размер папки ${GREEN}$folder${WHITE}: ${YELLOW}${size_bytes} MB${WHITE}"
     echo
@@ -335,7 +346,9 @@ function archive() {
 
   [[ $is_site -eq 1 && $has_db -eq 1 ]] && base_options+=("archive_site_and_db::Создать архив сайта ${folder} и базы данных ${folder}")
   base_options+=("archive_site::Создать архив папки ${folder}")
-  [[ $has_db -eq 1 ]] && base_options+=("archive_db::Создать архив базы данных ${folder}")
+  if ((has_db == 1)); then
+    base_options+=("archive_db::Создать архив базы данных ${folder}")
+  fi
   [[ $is_site -eq 1 && $has_db -eq 1 ]] && base_options+=("archive_site_with_exclude::Создать архив сайта ${folder} с исключениями и базы данных ${folder}")
   base_options+=("archive_folder_with_exclude::Создать архив папки ${folder} с исключениями")
 
@@ -385,8 +398,11 @@ function archive() {
   ARCHIVE_EXCLUDE_ARGS=()
 
   case "$action" in
-    archive_site_and_db)
-      archive_site "$fullpath" "$base_name"
+    archive_site_and_db|archive_site_with_exclude)
+      if [[ "$action" == archive_site_with_exclude ]]; then
+        confirm_archive_with_exclude "$fullpath" || return 1
+      fi
+      archive_site "$fullpath" "$base_name" "${ARCHIVE_EXCLUDE_ARGS[@]}" || return "$?"
       archive_db "$folder" "$base_name"
       ;;
     archive_site)
@@ -395,34 +411,34 @@ function archive() {
     archive_db)
       archive_db "$folder" "$base_name"
       ;;
-    archive_site_with_exclude)
-      confirm_archive_with_exclude "$fullpath" "$folder" || return 1
-      archive_site "$fullpath" "$base_name" "${ARCHIVE_EXCLUDE_ARGS[@]}"
-      archive_db "$folder" "$base_name"
-      ;;
-
     archive_folder_with_exclude)
-      confirm_archive_with_exclude "$fullpath" "$folder" || return 1
+      confirm_archive_with_exclude "$fullpath" || return 1
       archive_site "$fullpath" "$base_name" "${ARCHIVE_EXCLUDE_ARGS[@]}"
       ;;
   esac
 
 }
 
-function archive_site() {
+function archive_site() (
   local folder_path="$1"
   local archive_name="$2"
   shift 2
   local arg
   local extra_args=("$@")
   local parent_path
-  local folder
+  local folder transform
   local crypto_suffix=""
-  parent_path="$(dirname "$folder_path")"
+  local tar_command=(/usr/bin/env -u TAR_OPTIONS /usr/bin/tar)
+  parent_path="$(realpath -e -- "$(dirname -- "$folder_path")")" || return 1
   folder="$(basename "$folder_path")"
+  archive_enter_directory "$folder_path" || return 1
+  if [[ "$parent_path" == "$PWD" || "$parent_path" == "$PWD/"* ]]; then
+    printf 'Каталог для готового архива находится внутри архивируемой папки.\n' >&2
+    return 1
+  fi
+  transform="$(backup_source_tar_transform "$folder")" || return 1
   [[ "$ARCHIVE_USE_CRYPTO" -eq 1 ]] && crypto_suffix=".age"
   local archive_path="${parent_path}/${archive_name}.tar.gz${crypto_suffix}"
-  local archive_tmp="${archive_path}.rish-tmp.$$"
 
   # Формируем исключения для du
   local du_exclude=()
@@ -434,7 +450,7 @@ function archive_site() {
 
   # Вычисление размера папки в мегабайтах с учетом исключений
   local folder_size_mb
-  folder_size_mb=$(du --apparent-size --dereference -sm "${du_exclude[@]}" "$folder_path" | cut -f1)
+  folder_size_mb=$(du --apparent-size -sm "${du_exclude[@]}" -- . | cut -f1)
 
   # Параметры для checkpoint
   local checkpoint=50000  # Проверять каждые 10 000 блоков
@@ -459,7 +475,7 @@ function archive_site() {
 
   local tar_rc
   local age_rc=0
-  local tar_err_file
+  local archive_tmp tar_err_file archive_mode
   local tar_reason=""
   local -a pipeline_status=()
 
@@ -467,35 +483,38 @@ function archive_site() {
     echo -e "${RED}Не удалось${WHITE} подготовить временный файл для анализа ошибок tar."
     return 2
   }
+  archive_tmp=""
+  trap 'rm -f -- "$tar_err_file"; [[ -z "$archive_tmp" ]] || rm -f -- "$archive_tmp"' EXIT
+  archive_tmp="$(mktemp -- "${archive_path}.rish-tmp.XXXXXXXX")" || return 2
 
   if [[ "$ARCHIVE_USE_CRYPTO" -eq 1 ]]; then
-    tar -czhf - -C "$parent_path" "${extra_args[@]}" \
+    "${tar_command[@]}" -czf - --transform="$transform" "${extra_args[@]}" \
       --record-size=$recordsize --checkpoint=$checkpoint \
       --checkpoint-action=exec="echo -e \"${CURSORUP}Обработано: \$((TAR_CHECKPOINT / 1000)) MB${ERASEUNTILLENDOFLINE}\r\" >&2" \
-      "$folder" \
+      -- . \
       2> >(tee "$tar_err_file" >&2) \
       | age "${ARCHIVE_CRYPTO_ARGS[@]}" > "$archive_tmp"
     pipeline_status=("${PIPESTATUS[@]}")
     tar_rc="${pipeline_status[0]}"
     age_rc="${pipeline_status[1]}"
-    if [[ "$age_rc" -ne 0 || "$tar_rc" -ge 2 ]]; then
-      rm -f -- "$archive_tmp"
-      if [[ "$age_rc" -ne 0 ]]; then
-        tar_reason="age завершился с ошибкой ${age_rc}"
-        tar_rc=2
-      fi
-    elif ! mv -f -- "$archive_tmp" "$archive_path"; then
-      rm -f -- "$archive_tmp"
-      tar_reason="не удалось сохранить зашифрованный архив"
+    if [[ "$age_rc" -ne 0 ]]; then
+      tar_reason="age завершился с ошибкой ${age_rc}"
       tar_rc=2
     fi
   else
-    tar -czhf "$archive_path" -C "$parent_path" "${extra_args[@]}" \
+    "${tar_command[@]}" -czf "$archive_tmp" --transform="$transform" "${extra_args[@]}" \
       --record-size=$recordsize --checkpoint=$checkpoint \
       --checkpoint-action=exec="echo -e \"${CURSORUP}Обработано: \$((TAR_CHECKPOINT / 1000)) MB${ERASEUNTILLENDOFLINE}\r\" >&2" \
-      "$folder" \
+      -- . \
       2> >(tee "$tar_err_file" >&2)
     tar_rc=$?
+  fi
+  if ((tar_rc < 2)); then
+    printf -v archive_mode '%03o' "$((0666 & ~$(umask)))"
+    if ! chmod "$archive_mode" -- "$archive_tmp" || ! mv -fT -- "$archive_tmp" "$archive_path"; then
+      tar_reason="не удалось сохранить архив"
+      tar_rc=2
+    fi
   fi
   echo -e "${CURSORUP}${ERASEUNTILLENDOFLINE}"
 
@@ -505,8 +524,6 @@ function archive_site() {
       tar_reason="$(grep -v 'Обработано:' "$tar_err_file" | sed '/^[[:space:]]*$/d' | tail -n 1)"
     fi
   fi
-  rm -f "$tar_err_file"
-
   case "$tar_rc" in
     0)
       echo -e "Архив ${GREEN}$(basename "$archive_path")${WHITE} успешно создан."
@@ -525,18 +542,12 @@ function archive_site() {
       tar_rc=0
       ;;
     2)
-      if [[ "$ARCHIVE_USE_CRYPTO" -ne 1 ]]; then
-        rm -f -- "$archive_path"
-      fi
       echo -e "\n${RED}Ошибка${WHITE} при создании архива ${RED}${archive_name}${WHITE} (код tar: 2)."
       if [[ -n "$tar_reason" ]]; then
         echo -e "Причина: ${RED}${tar_reason}${WHITE}"
       fi
       ;;
     *)
-      if [[ "$ARCHIVE_USE_CRYPTO" -ne 1 ]]; then
-        rm -f -- "$archive_path"
-      fi
       echo -e "\n${RED}Ошибка${WHITE} при создании архива ${RED}${archive_name}${WHITE} (код tar: ${tar_rc})."
       if [[ -n "$tar_reason" ]]; then
         echo -e "Причина: ${RED}${tar_reason}${WHITE}"
@@ -545,7 +556,7 @@ function archive_site() {
   esac
 
   return "$tar_rc"
-}
+)
 
 function archive_db() {
   local dbname="$1"
@@ -2169,6 +2180,13 @@ restore_remote_site() (
 
 # Если скрипт вызван напрямую — запускаем функцию
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  if [[ "${1:-}" == "--no-dereference" ]]; then
+    shift
+    if [[ "$#" -ne 2 || -z "$1" || -z "$2" || "$1" == */* || "$1" == . || "$1" == .. ]]; then
+      printf 'Использование: %s --no-dereference <имя-папки> <родительский-каталог>\n' "${0##*/}" >&2
+      exit 1
+    fi
+  fi
   if [[ "${1:-}" == --restore-remote ]]; then
     shift
     if [[ "$#" -ne 9 ]]; then
