@@ -73,13 +73,21 @@ stop_legacy_timer() {
 }
 
 publish_schedule() {
-    local cron state=not_configured temporary checked_at
+    local cron state=not_configured temporary checked_at localtime server_timezone
     if ! cron="$(crontab -l -u root 2>&1)"; then
         [[ "$cron" == 'no crontab for root' ]] || state=unknown
         cron=
     fi
 
     checked_at="$(date +%s)" || return 1
+    if localtime="$(readlink -f -- /etc/localtime)" && [[ "$localtime" == /usr/share/zoneinfo/* ]]; then
+        server_timezone="${localtime#/usr/share/zoneinfo/}"
+    else
+        server_timezone="$(timedatectl show -p Timezone --value 2>/dev/null)" || server_timezone=""
+    fi
+    if [[ ! "$server_timezone" =~ ^[A-Za-z0-9_.+/-]{1,100}$ ]]; then
+        server_timezone=""
+    fi
     temporary="$(mktemp -- "$STATUS_DIR/.schedule.XXXXXXXX")" || return 1
     if ! (
         set -o pipefail
@@ -115,9 +123,10 @@ publish_schedule() {
                 sub(/[<>].*$/, "", command)
                 if (unquote(command) == "/root/rish/backup2.sh") print expression "\t" zone
             }
-        ' <<< "$cron" | jq -Rn --arg state "$state" --argjson checked_at "$checked_at" '
-            [inputs | split("\t") | {expression: .[0]} +
-                (if .[1] == "" then {} else {timezone: .[1]} end)] as $jobs |
+        ' <<< "$cron" | jq -Rn --arg state "$state" --argjson checked_at "$checked_at" --arg server_timezone "$server_timezone" '
+            [inputs | split("\t") | .[0] as $expression |
+                (if .[1] == "" then $server_timezone else .[1] end) as $timezone |
+                {expression: $expression} + (if $timezone == "" then {} else {timezone: $timezone} end)] as $jobs |
             {state: (if $jobs == [] then $state else "configured" end), jobs: $jobs, checked_at: $checked_at}
         ' > "$temporary"
     ) || ! chgrp -- "$SITE_GID" "$temporary" || ! chmod 0640 -- "$temporary" ||
