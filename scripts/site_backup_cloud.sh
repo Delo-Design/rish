@@ -107,10 +107,17 @@ cloud_snapshot_id() {
     printf '%s\n' "${digest%% *}"
 }
 
-# 2 означает неподтверждённое происхождение; 1 — ошибку чтения хранилища.
+# Копии без отметки проверяются по спискам частей. Если отметка есть, она должна совпасть.
+# 2 означает несоответствие отметки; 1 — ошибку проверки.
 cloud_verify_origin() {
     local seconds="$1" path="$2" scratch="$3" listing="$4" tar_name="$5" sql_name="$6"
-    local sidecar="$tar_name.rish-origin.txt" size tar_count sql_count
+    local sidecar="$tar_name.rish-origin.txt" listed_origin size tar_count sql_count
+
+    listed_origin="$(awk -F';' -v sidecar="$sidecar" '
+        ($2 "") == (sidecar "") { count++; size = $1 }
+        END { printf "%d:%s\n", count, size }
+    ' "$listing")" || return 1
+    [[ "$listed_origin" != 0: ]] || return 0
 
     tar_count="$(wc -l < "$scratch/tar.parts")" || return 1
     sql_count="$(wc -l < "$scratch/sql.parts")" || return 1
@@ -119,12 +126,7 @@ cloud_verify_origin() {
         "${tar_count//[[:space:]]/}" "${sql_count//[[:space:]]/}" > "$scratch/origin.expected" || return 1
     size="$(wc -c < "$scratch/origin.expected")" || return 1
     size="${size//[[:space:]]/}"
-    if ! awk -F';' -v sidecar="$sidecar" -v size="$size" '
-        ($2 "") == (sidecar "") { count++; actual = $1 }
-        END { exit (count != 1 || (actual "") != (size "")) }
-    ' "$listing"; then
-        return 2
-    fi
+    [[ "$listed_origin" == "1:$size" ]] || return 2
     if ! (ulimit -f 4 && timeout -k 2s "${seconds}s" rclone cat --max-depth 1 \
         --contimeout 4s --timeout 6s --retries 1 --low-level-retries 1 \
         -- "$path/$sidecar" </dev/null) > "$scratch/origin.actual"; then
@@ -159,36 +161,27 @@ cloud_snapshot_candidates() {
     done < "$listing"
 }
 
-cloud_sort_candidates() {
-    local scratch="$1" path origin_index
+cloud_collect_candidates() {
+    local scratch="$1" path
     mkdir -- "$scratch/days" || return 1
-    origin_index="$scratch/origins"
-    : > "$origin_index" || return 1
-    awk -F'[;/]' -v out="$scratch/days" -v origins="$origin_index" '
+    awk -F'[;/]' -v out="$scratch/days" '
         NF == 3 && $1 ~ /^[0-9]+$/ &&
         $2 ~ /^[0-9][0-9][0-9][0-9]\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])$/ {
             file = out "/" $2
             if (previous != file && previous != "") close(previous)
             print $1 ";" $3 >> file
-            if ($3 ~ /\.rish-origin\.txt$/) print $2 ";" $3 >> origins
             previous = file
         }
     ' "$scratch/listing" || return 1
     for path in "$scratch/days/"*; do
         [[ -f "$path" ]] || continue
         cloud_snapshot_candidates "$path" "${path##*/}" || return 1
-    done > "$scratch/day-candidates"
-
-    # После первых десяти копий проверяем только кандидатов без файла происхождения.
-    awk -F';' '
-        FILENAME == ARGV[1] { origins[$1 SUBSEP $2]++; next }
-        { print $0 ";" (origins[$2 SUBSEP ($3 ".rish-origin.txt")] != 1 ? "legacy" : "marked") }
-    ' "$origin_index" "$scratch/day-candidates"
+    done
 }
 
 cloud_refresh() (
     set -o pipefail
-    local base scratch output day timestamp tar_name sql_name encrypted snapshot size time date listing candidate
+    local base scratch output day timestamp tar_name sql_name encrypted snapshot size time date listing
     local count=0 deadline budget origin legacy=false
     # shellcheck source=scripts/backup_restore.sh
     source "$RISH_DIR/scripts/backup_restore.sh" || return 1
@@ -200,27 +193,17 @@ cloud_refresh() (
 
     deadline=$((SECONDS + 65))
     cloud_list_remote 40 2 "$base" "$scratch/listing" '????.??.??/' -R || return 1
-    cloud_sort_candidates "$scratch" | sort -ru -t ';' -k1,1 -k2,2 -k3,3 > "$scratch/candidates" ||
+    cloud_collect_candidates "$scratch" | sort -ru -t ';' -k1,1 -k2,2 -k3,3 > "$scratch/candidates" ||
         return 1
     : > "$scratch/rows" || return 1
-    while IFS=';' read -r timestamp day tar_name sql_name candidate; do
+    while IFS=';' read -r timestamp day tar_name sql_name; do
+        ((count < 10)) || break
         if ((SECONDS >= deadline)); then
             printf '%s\n' 'Превышено время ожидания списка бэкапов RISH.' >&2
             return 1
         fi
         listing="$scratch/days/$day"
-        if ((count >= 10)) && [[ "$legacy" == true ]]; then
-            break
-        fi
-        if ((count >= 10)) && [[ "$candidate" != legacy ]]; then
-            continue
-        fi
         cloud_manifests "$listing" "$scratch" "$tar_name" "$sql_name" || continue
-        if [[ "$candidate" == legacy ]]; then
-            legacy=true
-            ((count < 10)) || break
-            continue
-        fi
         budget=$((deadline - SECONDS))
         ((budget > 0)) || return 1
         ((budget <= 8)) || budget=8

@@ -377,8 +377,14 @@ make_export() (
     printf '%s\n' "$archive"
 )
 
-backup_to_storage() {
+report_joomla_backup_progress() {
+    write_status backup running "$1"
+}
+
+backup_to_storage() (
     local attempt result
+    export STATUS_DIR SITE_GID
+    export -f write_status report_joomla_backup_progress
     for ((attempt = 0; attempt < 20; attempt++)); do
         result=0
         /bin/bash "$RISH_DIR/backup2.sh" --joomla-site "$SITE_USER" "$SITE_NAME" "$DATABASE" \
@@ -387,7 +393,7 @@ backup_to_storage() {
         sleep 15
     done
     return 75
-}
+)
 
 process_request() {
     local action="$1" archive="" result=0 now last=0 next_at message DATABASE

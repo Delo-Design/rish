@@ -1102,10 +1102,16 @@ backupall() (
         SHELL=/bin/bash split -b "$part_size" --numeric-suffixes --filter='backup_stage_part' -- - "$1"
     }
 
+    report_storage_progress() {
+        if [[ "$backup_scope" == joomla ]] && declare -F report_joomla_backup_progress >/dev/null; then
+            report_joomla_backup_progress "$1" || true
+        fi
+    }
+
     upload_stream_parts() {
         local spool="$RISH_BACKUP_SPOOL"
         local remote_path="$1" owner_pid="$2" part finished transfer_pid=""
-        local source_dir status cancelled=0
+        local source_dir status cancelled=0 uploaded=0
         local clear_progress="" progress_fd=""
         local -a ready progress_opts=()
         if [[ -t 2 ]]; then
@@ -1155,6 +1161,7 @@ backupall() (
                 printf '%s\n' "$part" >> "$spool/attempted-parts" || exit 1
             fi
             printf '%sВыгрузка части %b%s%b.\n' "$clear_progress" "$GREEN" "$part" "$WHITE" >&2
+            report_storage_progress "Отправляется часть $((uploaded + 1))."
             rclone copy --files-from-raw "$spool/upload-list" --no-traverse \
                 "${progress_opts[@]}" \
                 --contimeout 30s --timeout 2m --retries 3 --low-level-retries 3 \
@@ -1172,6 +1179,8 @@ backupall() (
                 exit 1
             fi
             transfer_pid=""
+            uploaded=$((uploaded + 1))
+            report_storage_progress "Отправлено частей: $uploaded."
             if [[ -n "$progress_fd" ]]; then
                 flock -u "$progress_fd" || exit 1
             fi
@@ -1267,6 +1276,7 @@ backupall() (
         else
             if [[ "$TYPE" == db ]] || { [[ -n "$DB" ]] && db_exists "$DB"; }; then
                 backup_show_stage "Создаём дамп базы ${GREEN}${DB}${WHITE}..."
+                report_storage_progress 'Создаётся дамп базы данных.'
                 if ! create_database_parts "$DB" "${name}.sql.gz${age_suffix}-part-"; then
                     if [[ "$backup_scope" == joomla ]]; then
                         [[ ! -e "$spool/storage-error" ]] || return 23
@@ -1287,6 +1297,7 @@ backupall() (
             if [[ "$TYPE" == db ]]; then
                 archive_extension=sql.gz
             else
+                report_storage_progress 'Создаётся архив файлов сайта.'
                 create_file_parts "${name}.tar.gz${age_suffix}-part-" "$spool/progress.lock" || archive_file_status=$?
                 if [[ "$backup_scope" == joomla && "$archive_file_status" -ne 0 ]]; then
                     backup_error_detail "Не удалось получить полный архив файлов ${TARGET} (код tar: ${archive_file_status})."
