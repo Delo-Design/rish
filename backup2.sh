@@ -2050,6 +2050,11 @@ updatelist() {
     echo "Оставлено: $kept"
     echo "Удалено: $removed"
     echo "Добавлено: $added"
+    if ((added > 0)); then
+        printf 'Новым объектам назначено подключение %b%s%b.\n' "$GREEN" "$new_objects_remote" "$WHITE"
+    else
+        printf 'Подключение %b%s%b не применялось. Новых объектов нет.\n' "$YELLOW" "$new_objects_remote" "$WHITE"
+    fi
     echo
 }
 
@@ -4352,22 +4357,60 @@ choose_backup_menu_item() {
     done
 }
 
+backup_list_remote_summary() {
+    local list_file="$1"
+
+    awk -F';' -v default_remote="${rclone_remote//\\/\\\\}" '
+        /^[[:space:]]*(#|$)/ || $1 == "" || $2 == "" { next }
+        {
+            remote = $5 ""
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", remote)
+            if (remote == "") {
+                remote = default_remote ""
+                uses_default = 1
+            }
+            if (!(remote in seen)) {
+                seen[remote] = 1
+                remotes[++count] = remote
+            }
+        }
+        END {
+            if (!count) {
+                print "нет объектов"
+                exit
+            }
+            for (i = 1; i <= count; i++) {
+                remote = remotes[i]
+                if (uses_default && remote == (default_remote "")) {
+                    remote = (remote == "" ? "по умолчанию не задано" : remote " по умолчанию")
+                }
+                printf "%s%s", (i == 1 ? "" : ", "), remote
+            }
+            print ""
+        }
+    ' < "$list_file"
+}
+
 select_backup_list() {
     local -n selected_list_ref="$1"
-    local list_file list_name list_choice=0
+    local list_file list_name first_list_name remote_summary list_choice=0
     local -a list_menu=()
 
     if ((${#backup_lists[@]} > 1)); then
+        first_list_name="${backup_lists[0]##*/}"
         for list_file in "${backup_lists[@]}"; do
             list_name="${list_file##*/}"
+            # Основной список может иметь то же имя в другом каталоге.
+            if [[ "$list_name" == "$first_list_name" ]] && ((${#list_menu[@]} > 0)); then
+                list_menu[0]+=" (основной)"
+            fi
             case "$list_name" in
                 default=*|nomouse) list_name="'$list_name'" ;;
             esac
-            # Основной список может иметь то же имя в другом каталоге.
-            if [[ "$list_name" == "${list_menu[0]:-}" ]]; then
-                list_menu[0]+=" (основной)"
+            if ! remote_summary="$(backup_list_remote_summary "$list_file" 2>/dev/null)"; then
+                remote_summary="подключения недоступны"
             fi
-            list_menu+=("$list_name")
+            list_menu+=("$list_name ($remote_summary)")
         done
         echo "Выберите файл списка архивации."
         choose_backup_menu_item list_choice "${list_menu[@]}" || return 1

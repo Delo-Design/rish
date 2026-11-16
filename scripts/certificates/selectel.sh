@@ -56,12 +56,10 @@ selectel_cert_sync_script_path() {
 }
 
 selectel_cert_sync_is_enabled() {
-  command -v systemctl >/dev/null 2>&1 || return 1
   systemctl is-enabled --quiet "$RISH_SELECTEL_CERT_SYNC_TIMER" 2>/dev/null
 }
 
 selectel_cert_sync_is_active() {
-  command -v systemctl >/dev/null 2>&1 || return 1
   systemctl is-active --quiet "$RISH_SELECTEL_CERT_SYNC_TIMER" 2>/dev/null
 }
 
