@@ -57,13 +57,17 @@ cloud_storage_path() {
         return 1
     fi
 
-    remote="${row%%[[:space:]]*}"
+    remote="${row#"${row%%[![:space:]]*}"}"
+    remote="${remote%"${remote##*[![:space:]]}"}"
     remote="${remote:-$rclone_remote}"
     if ! available="$(timeout -k 2s 5s rclone listremotes </dev/null)"; then
         return 1
     fi
     if ! grep -Fxq -- "$remote:" <<< "$available"; then
-        remote="$rclone_remote"
+        remote="${remote%%[[:space:]]*}"
+        if ! grep -Fxq -- "$remote:" <<< "$available"; then
+            remote="$rclone_remote"
+        fi
     fi
     if [[ -z "$remote" || "$remote" == *[:/]* || "$remote" == *[$'\n\r']* ||
           "$server" == /* || "$server" == *[$'\n\r']* ||

@@ -31,6 +31,34 @@ require_cmd() {
 require_cmd rclone
 require_cmd jq
 
+load_remote_names() {
+  if ! KNOWN_REMOTES="$(rclone listremotes 2>/dev/null)"; then
+    echo "ОШИБКА: не удалось получить список подключений rclone." >&2
+    return 1
+  fi
+}
+
+remote_name_exists() {
+  local name="$1" env_type
+  [[ "$name" != *$'\n'* ]] || return 1
+  if grep -Fxq -- "$name:" <<< "$KNOWN_REMOTES"; then
+    return 0
+  fi
+
+  # rclone interprets an environment type before the file type and uppercases the key.
+  env_type="$(printenv "RCLONE_CONFIG_${name^^}_TYPE")" || return 1
+  [[ -n "$env_type" ]]
+}
+
+available_remote_name() {
+  local base="$1" candidate="$1" suffix=2
+  while remote_name_exists "$candidate"; do
+    candidate="${base}${suffix}"
+    suffix=$((suffix + 1))
+  done
+  printf '%s\n' "$candidate"
+}
+
 YANDEX_CLIENT_ID="${YANDEX_CLIENT_ID:-$DEFAULT_YANDEX_CLIENT_ID}"
 YANDEX_CLIENT_SECRET="${YANDEX_CLIENT_SECRET:-$DEFAULT_YANDEX_CLIENT_SECRET}"
 
@@ -55,36 +83,20 @@ echo "Вы можете создать новое подключение или 
 mkdir -p "${HOME}/.config/rclone"
 touch "${HOME}/.config/rclone/rclone.conf"
 chmod 600 "${HOME}/.config/rclone/rclone.conf" 2>/dev/null
-REMOTE_LIST_RAW="$(rclone config dump 2>/dev/null || true)"
-REMOTE_ITEMS=()
+load_remote_names || exit 1
+if ! YANDEX_REMOTE_NAMES="$(rclone config dump 2>/dev/null | jq -er \
+    '[to_entries[] | select(.value.type == "yandex") | .key] | join("\n")' 2>/dev/null)"; then
+  echo "ОШИБКА: не удалось получить список подключений Яндекс.Диска." >&2
+  exit 1
+fi
+
+REMOTE_ITEMS=("Создать новое подключение yandex disk")
 REMOTE_NAMES=()
-if [[ -n "$REMOTE_LIST_RAW" ]]; then
-  while IFS= read -r rem; do
-    [[ -z "$rem" ]] && continue
-    REMOTE_NAMES+=("$rem")
-  done < <(printf '%s' "$REMOTE_LIST_RAW" | jq -r 'to_entries[] | select(.value.type == "yandex") | .key' 2>/dev/null || true)
-fi
-
-REMOTE_SET="|"
-for rem in "${REMOTE_NAMES[@]}"; do
-  REMOTE_SET+="${rem}|"
-done
-
-if [[ -n "$REMOTE_LIST_RAW" ]]; then
-  base="${REMOTE_NAME}"
-  if [[ "$REMOTE_SET" == *"|${base}|"* ]]; then
-    i=2
-    while [[ "$REMOTE_SET" == *"|${base}${i}|"* ]]; do
-      ((i++))
-    done
-    REMOTE_NAME="${base}${i}"
-  fi
-fi
-
-REMOTE_ITEMS+=("Создать новое подключение yandex disk")
-for rem in "${REMOTE_NAMES[@]}"; do
+while IFS= read -r rem; do
+  [[ -n "$rem" ]] || continue
+  REMOTE_NAMES+=("$rem")
   REMOTE_ITEMS+=("Изменить ${rem}")
-done
+done <<< "$YANDEX_REMOTE_NAMES"
 REMOTE_ITEMS+=("Выйти")
 
 vertical_menu "current" 1 0 0 "${REMOTE_ITEMS[@]}"
@@ -101,6 +113,7 @@ if [[ "$MENU_CHOICE" -eq $((${#REMOTE_ITEMS[@]} - 1)) ]]; then
 fi
 
 if [[ "$MENU_CHOICE" -eq 0 ]]; then
+  REMOTE_NAME="$(available_remote_name "$REMOTE_NAME")"
   echo -e -n "Введите имя подключения (${COLOR_GREEN}${REMOTE_NAME}${COLOR_RESET} по умолчанию):${COLOR_GREEN}"
   read -r -e -i "$REMOTE_NAME" -p " " INPUT_REMOTE
   echo -en "${COLOR_RESET}"
@@ -108,14 +121,9 @@ if [[ "$MENU_CHOICE" -eq 0 ]]; then
     REMOTE_NAME="$INPUT_REMOTE"
   fi
 
-  while [[ "$REMOTE_SET" == *"|${REMOTE_NAME}|"* ]]; do
+  while remote_name_exists "$REMOTE_NAME"; do
     echo -e "${COLOR_YELLOW}ВНИМАНИЕ:${COLOR_RESET} подключение ${COLOR_YELLOW}${REMOTE_NAME}${COLOR_RESET} уже существует."
-    base="${REMOTE_NAME}"
-    i=2
-    while [[ "$REMOTE_SET" == *"|${base}${i}|"* ]]; do
-      ((i++))
-    done
-    SUGGESTED="${base}${i}"
+    SUGGESTED="$(available_remote_name "$REMOTE_NAME")"
     echo -e "Предложение: ${COLOR_GREEN}${SUGGESTED}${COLOR_RESET}"
     vertical_menu "current" 1 0 0 "Использовать ${SUGGESTED}" "Ввести свое имя" "Выйти"
     CHOICE_CONFIRM=$?
@@ -242,13 +250,30 @@ RCLONE_TOKEN_JSON="$(jq -cn \
   --arg ex "$EXPIRY" \
   '{access_token:$at,token_type:$tt,refresh_token:$rt,expiry:$ex}')"
 
+if [[ "$MENU_CHOICE" -eq 0 ]]; then
+  load_remote_names || exit 1
+  if remote_name_exists "$REMOTE_NAME"; then
+    printf 'ОШИБКА: имя подключения %b%s%b уже занято. Запустите настройку снова и выберите другое имя.\n' \
+      "$COLOR_YELLOW" "$REMOTE_NAME" "$COLOR_RESET" >&2
+    exit 1
+  fi
+elif ! rclone config dump 2>/dev/null | jq -e --arg remote "$REMOTE_NAME" \
+    '.[$remote].type == "yandex"' >/dev/null 2>&1; then
+  printf 'ОШИБКА: подключение %b%s%b недоступно для обновления Яндекс.Диска.\n' \
+    "$COLOR_YELLOW" "$REMOTE_NAME" "$COLOR_RESET" >&2
+  exit 1
+fi
+
 echo -e "Создаю/обновляю подключение ${COLOR_GREEN}${REMOTE_NAME}${COLOR_RESET}..."
-rclone config create "$REMOTE_NAME" yandex \
+if ! rclone config create "$REMOTE_NAME" yandex \
   client_id "$YANDEX_CLIENT_ID" \
   client_secret "$YANDEX_CLIENT_SECRET" \
   token "$RCLONE_TOKEN_JSON" \
   hard_delete true \
-  --non-interactive >/dev/null
+  --non-interactive >/dev/null; then
+  echo "ОШИБКА: не удалось сохранить подключение Яндекс.Диска." >&2
+  exit 1
+fi
 
 echo "Проверяю доступность подключения..."
 ABOUT_OUT="$(rclone about "${REMOTE_NAME}:" 2>/dev/null || true)"

@@ -634,7 +634,7 @@ add_current_backup_site() (
         printf 'Привязанная к сайту база %b%s%b не найдена в MariaDB.\n' "$YELLOW" "$mapped_db" "$WHITE"
         return 1
     fi
-    if ! tmp_list="$(mktemp -- "${backupall2}.site.XXXXXX")"; then
+    if ! tmp_list="$(mktemp -- "$(dirname -- "$backupall2")/.${backupall2##*/}.site.XXXXXX")"; then
         echo -e "${LRED}Не удалось создать временный файл списка бэкапов.${WHITE}"
         return 1
     fi
@@ -744,6 +744,7 @@ show_enabled_backup_objects() (
 
 add_cron_backup_objects() {
     local list_file="$1"
+    local new_objects_remote="${2:-$rclone_remote}"
     local user target type rest user_path key cron_target suffix tmp_list
     local -a users=() new_rows=() new_users=()
     local -A candidates=(["root"]=1) cron_targets=() object_names=() duplicate_names=()
@@ -791,12 +792,12 @@ add_cron_backup_objects() {
             suffix=$((suffix + 1))
             cron_target="cron-${suffix}"
         done
-        new_rows+=("${user};${cron_target};cron;;${rclone_remote};yes;")
+        new_rows+=("${user};${cron_target};cron;;${new_objects_remote};yes;")
         new_users+=("$user")
     done
     ((${#new_rows[@]} > 0)) || return 0
 
-    tmp_list="$(mktemp "${list_file}.cron.XXXXXX")" || return 1
+    tmp_list="$(mktemp -- "$(dirname -- "$list_file")/.${list_file##*/}.cron.XXXXXX")" || return 1
     if ! cp -p -- "$list_file" "$tmp_list"; then
         rm -f -- "$tmp_list"
         return 1
@@ -815,7 +816,8 @@ add_cron_backup_objects() {
     for user in "${new_users[@]}"; do
         echo -e "Добавлен CRON: ${GREEN}${user}${WHITE}"
     done
-    echo -e "Новые объекты CRON: подключение ${GREEN}${rclone_remote}${WHITE}, ${YELLOW}без шифрования${WHITE}."
+    printf 'Новые объекты CRON: подключение %b%s%b, %bбез шифрования%b.\n' \
+        "$GREEN" "$new_objects_remote" "$WHITE" "$YELLOW" "$WHITE"
 }
 
 # Подоболочка закрывает дескриптор блокировки при выходе, включая ранний return.
@@ -823,6 +825,7 @@ backupall() (
     local overall_status=0
     local backup_scope="${1:-all}"
     local backup_list_file="${2:-$backupall2}"
+    local remote_override="${3:-}"
     local backup_lock_file="/run/lock/rish-backup.lock"
     local backup_lock_fd backup_lock_status=0 backup_lock_umask
     local DATE_DIR DATE_TS site_date_ts
@@ -836,7 +839,7 @@ backupall() (
     local BACKUP_REMOVE_ERROR
     local current_year current_month current_month_index oldest_month_index
     local keep_last_count keep_monthly_count retention_limit=10000 failed_count failed_limit failed_more
-    local -a EXCLUDE_OPTS EXCLUDE_DIRS REMOTE_DIRS DATE_DIRS FAILED_REMOVALS
+    local -a EXCLUDE_OPTS EXCLUDE_DIRS REMOTE_DIRS DATE_DIRS FAILED_REMOVALS VALID_REMOTES
     local -A KEEP_DIRS MONTHLY_MONTHS DATE_DIR_HAS_FILES RETENTION_GROUPS GROUP_DATES
 
     backup_log() {
@@ -877,6 +880,24 @@ backupall() (
     fi
     if [[ "$backup_lock_status" -ne 0 ]]; then
         echo -e "Не удалось установить блокировку: ${LRED}${backup_lock_file}${WHITE}."
+        return 1
+    fi
+
+    mapfile -t VALID_REMOTES < <(rclone listremotes 2>/dev/null | sed 's/:$//')
+
+    remote_exists() {
+        local remote_name="$1"
+        local r
+        for r in "${VALID_REMOTES[@]}"; do
+            if [ "$r" = "$remote_name" ]; then
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    if [[ -n "$remote_override" ]] && ! remote_exists "$remote_override"; then
+        backup_error_detail "Выбранное подключение '${remote_override}' не найдено в rclone. Архивация отменена."
         return 1
     fi
 
@@ -950,18 +971,6 @@ backupall() (
     done
 
     declare -A CLEANUP_TARGETS CLEANUP_REMOTES
-    mapfile -t VALID_REMOTES < <(rclone listremotes 2>/dev/null | sed 's/:$//')
-
-    remote_exists() {
-        local remote_name="$1"
-        local r
-        for r in "${VALID_REMOTES[@]}"; do
-            if [ "$r" = "$remote_name" ]; then
-                return 0
-            fi
-        done
-        return 1
-    }
 
     backup_show_stage() {
         if [[ -t 2 ]]; then
@@ -1517,18 +1526,24 @@ backupall() (
             TYPE="$(object_type_for_target "$TARGET")"
         fi
 
-        if [ -z "$REMOTE" ]; then
-            REMOTE="$rclone_remote"
-        fi
-        REMOTE="${REMOTE%%[[:space:]]*}"
-        if ! remote_exists "$REMOTE"; then
-            echo -e "Подключение ${LRED}'${REMOTE}'${WHITE} не найдено, используем ${YELLOW}'${rclone_remote}'${WHITE}."
-            REMOTE="$rclone_remote"
-        fi
-        if ! remote_exists "$REMOTE"; then
-            backup_object_error "Подключение '${REMOTE}' не найдено в rclone. Архивация ${TARGET} пропущена."
-            [[ "$backup_scope" != joomla ]] || return 23
-            continue
+        if [[ -n "$remote_override" ]]; then
+            REMOTE="$remote_override"
+        else
+            REMOTE="${REMOTE#"${REMOTE%%[![:space:]]*}"}"
+            REMOTE="${REMOTE%"${REMOTE##*[![:space:]]}"}"
+            REMOTE="${REMOTE:-$rclone_remote}"
+            if [[ "$backup_scope" != auto ]] && ! remote_exists "$REMOTE"; then
+                REMOTE="${REMOTE%%[[:space:]]*}"
+                if ! remote_exists "$REMOTE"; then
+                    echo -e "Подключение ${LRED}'${REMOTE}'${WHITE} не найдено, используем ${YELLOW}'${rclone_remote}'${WHITE}."
+                    REMOTE="$rclone_remote"
+                fi
+            fi
+            if ! remote_exists "$REMOTE"; then
+                backup_object_error "Подключение '${REMOTE}' не найдено в rclone. Архивация ${TARGET} пропущена."
+                [[ "$backup_scope" != joomla ]] || return 23
+                continue
+            fi
         fi
 
         source_path="/var/www/${USER}/www/${TARGET}"
@@ -1612,11 +1627,11 @@ backupall() (
             # В этом режиме список состоит из одной записи, а код нужен обработчику Joomla.
             [[ "$backup_scope" != joomla ]] || return "$archive_status"
         fi
-    done < "$backup_list_file"
+    done < "$backup_list_file" || return 1
 
     # Каталоги с датами общие для разных объектов пользователя.
     # Одиночный запуск не выполняет ротацию и очистку всего хранилища.
-    if [[ "$backup_scope" != all ]]; then
+    if [[ "$backup_scope" != all && "$backup_scope" != auto ]]; then
         return "$overall_status"
     fi
 
@@ -1876,6 +1891,8 @@ createlist() {
 }
 
 updatelist() {
+    local list_file="$1"
+    local new_objects_remote=""
     local tmp_list
     local removed=0
     local added=0
@@ -1883,18 +1900,18 @@ updatelist() {
     local line_no=0
 
     echo
-    echo "Обновляем список объектов для архивации."
+    printf 'Обновляем список объектов для архивации %b%s%b.\n' "$YELLOW" "$list_file" "$WHITE"
     echo
 
-    if [ ! -f "$backupall2" ]; then
-        echo -e "${LRED}Файл списка не найден:${WHITE} ${backupall2}"
-        echo "Сначала создайте файл-список."
+    if [[ ! -f "$list_file" || ! -r "$list_file" ]]; then
+        printf 'Файл списка недоступен: %b%s%b.\n' "$LRED" "$list_file" "$WHITE"
         return 1
     fi
+    echo "Выберите подключение для новых объектов в этом списке."
+    select_backup_remote new_objects_remote update || return 1
 
     tmp_list=$(mktemp) || return 1
     declare -A EXISTING_TARGETS
-    shopt -s nullglob
 
     while IFS=';' read -r USER TARGET TYPE DB REMOTE ARCHIVE_FLAG EXCLUDE_LIST || [[ -n "$USER" ]]; do
         local kind_label
@@ -1972,9 +1989,13 @@ updatelist() {
         echo "${USER};${TARGET};${TYPE};${DB};${REMOTE};${ARCHIVE_FLAG};${EXCLUDE_LIST}" >> "$tmp_list"
         EXISTING_TARGETS["${USER}|${TARGET}"]=1
         kept=$((kept + 1))
-    done < "$backupall2"
+    done < "$list_file" || {
+        rm -f -- "$tmp_list"
+        return 1
+    }
 
     # directory содержит настраиваемый glob, например /var/www/*/www.
+    shopt -s nullglob
     # shellcheck disable=SC2231
     for file in $directory/*
     do
@@ -1999,7 +2020,7 @@ updatelist() {
             db="$r"
         fi
 
-        echo "${currentuser};${r};${TYPE};${db};${rclone_remote};yes;" >> "$tmp_list"
+        printf '%s;%s;%s;%s;%s;yes;\n' "$currentuser" "$r" "$TYPE" "$db" "$new_objects_remote" >> "$tmp_list"
         EXISTING_TARGETS["$key"]=1
         added=$((added + 1))
         if [ "$TYPE" = "site" ]; then
@@ -2010,18 +2031,19 @@ updatelist() {
     done
     shopt -u nullglob
 
-    if ! add_cron_backup_objects "$tmp_list"; then
+    if ! add_cron_backup_objects "$tmp_list" "$new_objects_remote"; then
         rm -f -- "$tmp_list"
         echo -e "Не удалось ${LRED}обновить объекты CRON${WHITE}. Исходный список сохранён."
         return 1
     fi
     added=$((added + BACKUP_CRON_ADDED))
 
-    {
-        printf '%s\n' "$BACKUP_LIST_HEADER"
-        cat "$tmp_list"
-    } > "$backupall2"
-    rm -f "$tmp_list"
+    if ! { printf '%s\n' "$BACKUP_LIST_HEADER" && cat "$tmp_list"; } > "$list_file"; then
+        rm -f -- "$tmp_list"
+        printf 'Не удалось сохранить список %b%s%b.\n' "$LRED" "$list_file" "$WHITE"
+        return 1
+    fi
+    rm -f -- "$tmp_list"
 
     echo
     echo "Обновление завершено."
@@ -2036,19 +2058,14 @@ if [[ "$BACKUP_JOOMLA_MODE" == 1 ]]; then
     exit $?
 fi
 
-if [[ "$1" == "auto" ]]
-then
-    if [ ! -r "$backupall2" ]; then
+if [[ "$1" == "auto" ]]; then
+    if [[ ! -f "$backupall2" || ! -r "$backupall2" ]]; then
         echo -e "Автоматическая архивация пропущена: файл списка не найден или недоступен: ${LRED}${backupall2}${WHITE}"
         exit 1
     fi
-    if ! is_remote_configured; then
-        echo -e "Автоматическая архивация пропущена: подключение ${LRED}'${rclone_remote}'${WHITE} не настроено."
-        exit 1
-    fi
-	echo "Автоматическая архивация"
-	backupall
-	exit $?
+    echo "Автоматическая архивация"
+    backupall auto
+    exit $?
 fi
 
 edit_backup_config() {
@@ -2088,7 +2105,7 @@ edit_backup_config() {
 configcnf() {
    echo "Конфигурируем rclone (Yandex Disk)"
    echo
-   bash /root/rish/ydisk_oauth_device_login.sh "$rclone_remote"
+   bash /root/rish/ydisk_oauth_device_login.sh ydisk
 }
 
 remote_info() {
@@ -2158,12 +2175,11 @@ remote_info() {
 }
 
 backup_list_remote_data() {
-    local new_remote="$1"
-    local mode="$2"
+    local list_file="$1" new_remote="$2" mode="$3"
 
     [[ -n "$new_remote" && "$new_remote" != *';'* && "$new_remote" != *$'\n'* && "$new_remote" != *$'\r'* ]] || return 1
     [[ "$mode" == "summary" || "$mode" == "update" ]] || return 1
-    [[ -f "$backupall2" && ! -L "$backupall2" ]] || return 1
+    [[ -f "$list_file" && ! -L "$list_file" ]] || return 1
 
     awk -F';' -v OFS=';' -v remote="${new_remote//\\/\\\\}" -v mode="$mode" '
         /^[[:space:]]*(#|$)/ {
@@ -2186,19 +2202,24 @@ backup_list_remote_data() {
             if (invalid) exit 2
             if (mode == "summary") print total + 0 ";" changed + 0
         }
-    ' "$backupall2"
+    ' < "$list_file"
 }
 
 offer_backup_list_remote_update() {
-    local new_remote="$1"
+    local list_file="$1" new_remote="$2"
     local summary total changed choice list_dir list_name tmp_file
 
-    if [[ ! -e "$backupall2" && ! -L "$backupall2" ]]; then
-        echo -e "Файл списка архивации ещё не создан: ${YELLOW}${backupall2}${WHITE}"
+    if [[ ! -e "$list_file" && ! -L "$list_file" ]]; then
+        echo -e "Файл списка архивации ещё не создан: ${YELLOW}${list_file}${WHITE}"
         return 0
     fi
-    if ! summary="$(backup_list_remote_data "$new_remote" summary)"; then
-        echo -e "Не удалось ${LRED}прочитать список архивации${WHITE}: ${YELLOW}${backupall2}${WHITE}"
+    if [[ -L "$list_file" ]]; then
+        printf 'Назначение подключения недоступно для списка по символической ссылке %b%s%b.\n' \
+            "$YELLOW" "$list_file" "$WHITE"
+        return 1
+    fi
+    if ! summary="$(backup_list_remote_data "$list_file" "$new_remote" summary)"; then
+        echo -e "Не удалось ${LRED}прочитать список архивации${WHITE}: ${YELLOW}${list_file}${WHITE}"
         echo "Проверьте формат записей и доступ к файлу. Подключения объектов не изменены."
         return 1
     fi
@@ -2212,7 +2233,7 @@ offer_backup_list_remote_update() {
         return 0
     fi
 
-    echo -e "Список архивации: ${YELLOW}${backupall2}${WHITE}"
+    echo -e "Список архивации: ${YELLOW}${list_file}${WHITE}"
     echo "Применить подключение ко всем объектам существующего списка?"
     echo -e "Будет изменено записей: ${YELLOW}${changed}${WHITE}. Остальные настройки объектов сохранятся."
     vertical_menu "current" 1 0 5 "default=0" \
@@ -2224,18 +2245,18 @@ offer_backup_list_remote_update() {
         return 0
     fi
 
-    list_dir="$(dirname "$backupall2")"
-    list_name="$(basename "$backupall2")"
+    list_dir="$(dirname -- "$list_file")"
+    list_name="${list_file##*/}"
     if ! tmp_file="$(mktemp "${list_dir}/.${list_name}.rish-tmp.XXXXXX")"; then
         echo -e "Не удалось ${LRED}создать временный файл${WHITE}. Подключения объектов не изменены."
         return 1
     fi
     # Копируем права и владельца; исходный список заменяем только после подготовки.
-    if ! cp -p -- "$backupall2" "$tmp_file" || \
-       ! backup_list_remote_data "$new_remote" update > "$tmp_file" || \
-       ! mv -f -- "$tmp_file" "$backupall2"; then
+    if ! cp -p -- "$list_file" "$tmp_file" || \
+       ! backup_list_remote_data "$list_file" "$new_remote" update > "$tmp_file" || \
+       ! mv -fT -- "$tmp_file" "$list_file"; then
         rm -f -- "$tmp_file"
-        echo -e "Не удалось ${LRED}обновить подключения объектов${WHITE}: ${YELLOW}${backupall2}${WHITE}"
+        echo -e "Не удалось ${LRED}обновить подключения объектов${WHITE}: ${YELLOW}${list_file}${WHITE}"
         return 1
     fi
     echo -e "Объектам списка назначено подключение ${GREEN}${new_remote}${WHITE}. Изменено записей: ${GREEN}${changed}${WHITE}."
@@ -2292,7 +2313,7 @@ select_default_remote() {
                 rclone_remote="$selected_remote"
                 echo
                 echo -e "Подключение по умолчанию изменено на ${GREEN}${rclone_remote}${WHITE}."
-                offer_backup_list_remote_update "$rclone_remote"
+                offer_backup_list_remote_update "$backupall2" "$rclone_remote"
                 ;;
         esac
     done
@@ -4104,7 +4125,7 @@ restore_backup_menu() {
 
         remote_menu=()
         for selected_remote in "${remotes[@]}"; do
-            remote_menu+=("$selected_remote")
+            remote_menu+=("Открыть $selected_remote")
         done
         remote_menu+=("Выход")
         remote_exit_index=$(( ${#remote_menu[@]} - 1 ))
@@ -4291,6 +4312,117 @@ restore_backup_menu() {
     done
 }
 
+collect_backup_lists() {
+    local list_file
+    backup_lists=()
+    if [[ -f "$backupall2" && -r "$backupall2" ]]; then
+        backup_lists+=("$backupall2")
+    fi
+    for list_file in "$SCRIPT_DIR"/backup_list*; do
+        [[ -f "$list_file" && -r "$list_file" && ! -L "$list_file" ]] || continue
+        [[ "$list_file" -ef "$backupall2" ]] && continue
+        backup_lists+=("$list_file")
+    done
+}
+
+choose_backup_menu_item() {
+    local result_var="$1"
+    shift
+    local offset=0 page_size=250 page_count choice
+    local -a page
+
+    while true; do
+        # vertical_menu возвращает индекс через код выхода. Код 255 означает Esc.
+        page=("${@:offset+1:page_size}")
+        page_count=${#page[@]}
+        ((offset == 0)) || page+=("Предыдущая страница")
+        ((offset + page_count >= $#)) || page+=("Следующая страница")
+        page+=("Отмена")
+        vertical_menu "current" 2 12 5 nomouse "${page[@]}"
+        choice=$?
+        if ((choice < page_count)); then
+            printf -v "$result_var" '%d' "$((offset + choice))"
+            return 0
+        fi
+        case "${page[choice]:-}" in
+            "Предыдущая страница") offset=$((offset - page_size)) ;;
+            "Следующая страница") offset=$((offset + page_size)) ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
+select_backup_list() {
+    local -n selected_list_ref="$1"
+    local list_file list_name list_choice=0
+    local -a list_menu=()
+
+    if ((${#backup_lists[@]} > 1)); then
+        for list_file in "${backup_lists[@]}"; do
+            list_name="${list_file##*/}"
+            case "$list_name" in
+                default=*|nomouse) list_name="'$list_name'" ;;
+            esac
+            # Основной список может иметь то же имя в другом каталоге.
+            if [[ "$list_name" == "${list_menu[0]:-}" ]]; then
+                list_menu[0]+=" (основной)"
+            fi
+            list_menu+=("$list_name")
+        done
+        echo "Выберите файл списка архивации."
+        choose_backup_menu_item list_choice "${list_menu[@]}" || return 1
+    fi
+    selected_list_ref="${backup_lists[list_choice]:-}"
+    if [[ ! -f "$selected_list_ref" || ! -r "$selected_list_ref" ]]; then
+        echo "Файл списка архивации недоступен."
+        return 1
+    fi
+}
+
+select_backup_remote() {
+    local result_var="$1"
+    local mode="$2" remotes_output remote remote_choice=0
+    local -a remotes=() remote_menu=()
+
+    if ! remotes_output="$(rclone listremotes 2>/dev/null)" || [[ -z "$remotes_output" ]]; then
+        echo "Нет доступных подключений rclone."
+        [[ "$mode" == update ]] || return 1
+        remotes=("$rclone_remote")
+        remote_menu=("Записать подключение по умолчанию ${rclone_remote}")
+    else
+        if [[ "$mode" == archive ]]; then
+            remotes=("")
+            remote_menu=("По настройкам из файла")
+        fi
+        while IFS= read -r remote; do
+            remote="${remote%:}"
+            remotes+=("$remote")
+            remote_menu+=("Использовать $remote")
+        done <<< "$remotes_output"
+    fi
+    choose_backup_menu_item remote_choice "${remote_menu[@]}" || return 1
+    printf -v "$result_var" '%s' "${remotes[remote_choice]}"
+}
+
+backup_all_from_menu() {
+    local selected_list backup_remote=""
+
+    select_backup_list selected_list || return 1
+    printf 'Список архивации: %b%s%b\n' "$YELLOW" "$selected_list" "$WHITE"
+    echo "Выберите подключение для этой выгрузки."
+    select_backup_remote backup_remote archive || return 1
+    backupall all "$selected_list" "$backup_remote"
+}
+
+assign_backup_list_remote_from_menu() {
+    local selected_list selected_remote=""
+
+    select_backup_list selected_list || return 1
+    printf 'Выберите подключение для всех объектов списка %b%s%b.\n' "$YELLOW" "${selected_list##*/}" "$WHITE"
+    select_backup_remote selected_remote assign || return 1
+    offer_backup_list_remote_update "$selected_list" "$selected_remote"
+}
+
 if [[ -n "$BACKUP_REMOTE_MENU_MODE" ]]; then
     restore_backup_menu "$BACKUP_REMOTE_MENU_MODE" "${2:-}"
     exit $?
@@ -4310,7 +4442,10 @@ echo -e "Файл настроек: ${YELLOW}${config_file}${WHITE}"
 echo -e "Последних резервных копий хранить: ${GREEN}${keeplast}${WHITE} (keeplast)"
 echo -e "Предыдущих месяцев хранить по одной копии: ${GREEN}${keepmonthly}${WHITE} (keepmonthly)"
 
-if [ ! -f "$backupall2" ]
+collect_backup_lists
+if [[ ! -f "$backupall2" ]] && ((${#backup_lists[@]} > 0)); then
+    printf 'Списки архивации найдены в %b%s%b.\n' "$YELLOW" "$SCRIPT_DIR" "$WHITE"
+elif [ ! -f "$backupall2" ]
 then
 	echo
 	echo -e "${LRED}Файл списка архивируемых объектов не найден:${WHITE} ${backupall2}"
@@ -4329,7 +4464,13 @@ else
 		echo -e "В списке есть зашифрованные бэкапы, но команда ${LRED}age не установлена${WHITE}."
 	fi
 fi
-if crontab -l 2>/dev/null | grep -Eq '^[[:space:]]*[^#].*/root/rish/backup2\.sh[[:space:]]+auto([[:space:]]|$)'; then
+if [[ ! -f "$backupall2" || ! -r "$backupall2" ]] && ((${#backup_lists[@]} > 0)); then
+    echo
+    printf 'Основной список архивации недоступен: %b%s%b.\n' "$YELLOW" "$backupall2" "$WHITE"
+    echo 'В задании CRON укажите полный путь к нужному списку.'
+    echo '  /root/rish/backup2.sh auto "<путь к списку>"'
+    echo
+elif crontab -l 2>/dev/null | grep -Eq '^[[:space:]]*[^#].*/root/rish/backup2\.sh[[:space:]]+auto([[:space:]]|$)'; then
     echo
     echo -e "Задание ${GREEN}/root/rish/backup2.sh auto${WHITE} найдено в CRON.${WHITE}"
     echo
@@ -4356,6 +4497,7 @@ do
     menu_actions=()
     IFS=$' \t\n'
 
+    collect_backup_lists
     if [ -f "$backupall2" ]; then
         local_has_list=1
     fi
@@ -4370,36 +4512,37 @@ do
         menu_items+=("Добавить ${current_site_record#*;} в список бэкапов")
         menu_actions+=("add_current_site")
     fi
-    if [ "$local_has_list" -eq 0 ]; then
+    if ((${#backup_lists[@]} == 0)); then
         menu_items+=("Создать файл-список всех архивируемых объектов")
         menu_actions+=("create_list")
-    else
-        if selected_backup_record >/dev/null; then
-            menu_items+=("Архивация ${BACKUP_MC_NAME}")
-            menu_actions+=("backup_selected")
-        fi
-        if [ "$local_remote_ready" -eq 1 ]; then
-            menu_items+=("Архивация всех сайтов сервера" "Скачать копию из бекапа на сервер")
-            menu_actions+=("backup_all" "restore")
-            if [ "$local_has_remote" -eq 1 ]; then
-                menu_items+=("Восстановить сайт из бэкапа потоком")
-                menu_actions+=("restore_stream")
-            fi
-        fi
-        if backup_crypto_available; then
-            menu_items+=("Управление шифрованием бэкапов")
-            menu_actions+=("crypto")
-        fi
+    fi
+    if selected_backup_record >/dev/null; then
+        menu_items+=("Архивация ${BACKUP_MC_NAME}")
+        menu_actions+=("backup_selected")
+    fi
+    if ((${#backup_lists[@]} > 0 && local_has_remote)); then
+        menu_items+=("Архивация всех сайтов сервера")
+        menu_actions+=("backup_all")
+    fi
+    if ((local_has_remote)); then
+        menu_items+=("Скачать копию из бекапа на сервер" "Восстановить сайт из бэкапа потоком")
+        menu_actions+=("restore" "restore_stream")
+    fi
+    if ((local_has_list)) && backup_crypto_available; then
+        menu_items+=("Управление шифрованием бэкапов")
+        menu_actions+=("crypto")
     fi
     menu_items+=("Бэкапы из админки сайта")
     menu_actions+=("joomla_backup")
-    if [[ "$local_has_list" == 1 ]]; then
-        menu_items+=("Обновить файл-список всех архивируемых объектов" "Создать файл-список всех архивируемых объектов")
-        menu_actions+=("update_list" "create_list")
-    fi
-    if [[ "$local_has_remote" -eq 1 && ( "$local_has_list" -eq 0 || "$local_remote_ready" -eq 0 ) ]]; then
-        menu_items+=("Восстановить сайт из бэкапа потоком")
-        menu_actions+=("restore_stream")
+    if ((${#backup_lists[@]} > 0)); then
+        menu_items+=("Обновить файл-список всех архивируемых объектов")
+        menu_actions+=("update_list")
+        if ((local_has_remote)); then
+            menu_items+=("Назначить подключение всем объектам списка")
+            menu_actions+=("assign_list_remote")
+        fi
+        menu_items+=("Создать файл-список всех архивируемых объектов")
+        menu_actions+=("create_list")
     fi
     menu_items+=("Создать/Обновить подключение яндекс-диска" "Создать/Выбрать подключение по умолчанию")
     menu_actions+=("config_yandex" "select_remote")
@@ -4421,12 +4564,16 @@ do
     case "${menu_actions[$choice]}" in
         add_current_site) add_current_backup_site ;;
         backup_selected) backup_selected_object ;;
-        backup_all) backupall ;;
+        backup_all) backup_all_from_menu ;;
         restore) restore_backup_menu ;;
         restore_stream) restore_backup_menu stream ;;
         crypto) backup_crypto_management_menu ;;
         joomla_backup) backup_joomla_setup_menu ;;
-        update_list) updatelist ;;
+        update_list)
+            selected_backup_list=""
+            select_backup_list selected_backup_list && updatelist "$selected_backup_list"
+            ;;
+        assign_list_remote) assign_backup_list_remote_from_menu ;;
         create_list) createlist ;;
         config_yandex) configcnf ;;
         select_remote) select_default_remote ;;
