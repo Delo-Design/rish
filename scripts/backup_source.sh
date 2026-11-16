@@ -1,5 +1,18 @@
 #!/bin/bash
 
+site_backup_group_gid() {
+    local user="$1" uid="$2" site_gid="$3" allow_empty="${4:-0}"
+    local entry gid members apache_groups
+    entry="$(getent group "rish-backup-$uid")" || return 1
+    IFS=: read -r _ _ gid members <<< "$entry"
+    [[ "$gid" =~ ^[1-9][0-9]*$ && "$gid" != "$site_gid" ]] || return 1
+    [[ "$members" == "$user" || ( "$allow_empty" == 1 && -z "$members" ) ]] || return 1
+
+    apache_groups="$(id -G -- apache)" || return 1
+    [[ " $apache_groups " != *" $gid "* ]] || return 1
+    printf '%s\n' "$gid"
+}
+
 # Выполняется в подоболочке архиватора: tar читает открытый рабочий каталог.
 backup_source_enter_user() {
     local base="$1" path="$2" resolved

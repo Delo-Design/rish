@@ -4,6 +4,8 @@ umask 077
 export LC_ALL=C
 
 RISH_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || exit 1
+# shellcheck source=scripts/backup_source.sh
+source "$RISH_DIR/scripts/backup_source.sh" || exit 1
 SITE_ROOT=/var/www
 SYSTEMD_DIR=/etc/systemd/system
 BACKUP_LOCK=/run/lock/rish-backup.lock
@@ -56,13 +58,77 @@ check_user_directory() {
     fi
 }
 
+php_fpm_workers_need_backup_group() {
+    local master_pid="$1" backup_gid="$2"
+    ps --ppid "$master_pid" -o euid=,supgid= |
+        awk -v uid="$SITE_UID" -v gid="$backup_gid" '
+            $1 == uid && ("," $2 ",") !~ ("," gid ",") { stale = 1 }
+            END { exit !stale }
+        '
+}
+
+refresh_backup_php_fpm_groups() {
+    local backup_gid="$1" pool_config version service master_pid deadline
+    local -A reload_masters=()
+
+    for pool_config in /etc/opt/remi/php[0-9][0-9]/php-fpm.d/"$SITE_USER.conf"; do
+        [[ -f "$pool_config" ]] || continue
+        version="${pool_config%/php-fpm.d/*}"
+        version="${version##*/}"
+        service="$version-php-fpm.service"
+        systemctl is-active --quiet "$service" || continue
+        master_pid="$(systemctl show --property=MainPID --value "$service")" ||
+            fail "Не удалось определить основной процесс $service."
+        [[ "$master_pid" =~ ^[1-9][0-9]*$ ]] || fail "Основной процесс $service не запущен."
+        php_fpm_workers_need_backup_group "$master_pid" "$backup_gid" || continue
+        /opt/remi/"$version"/root/usr/sbin/php-fpm -t ||
+            fail "Исправьте конфигурацию $service и повторите включение бэкапов."
+        reload_masters["$service"]="$master_pid"
+    done
+
+    for service in "${!reload_masters[@]}"; do
+        systemctl reload "$service" || fail "Не удалось обновить процессы $service для доступа к бэкапам."
+    done
+
+    # Remi отправляет сигнал асинхронно. Ждём ухода воркеров без новой группы.
+    deadline=$((SECONDS + 30))
+    for service in "${!reload_masters[@]}"; do
+        while php_fpm_workers_need_backup_group "${reload_masters[$service]}" "$backup_gid"; do
+            ((SECONDS < deadline)) || fail "Процессы $service ещё обновляются. Повторите включение бэкапов."
+            sleep 1
+        done
+        systemctl is-active --quiet "$service" || fail "Служба $service не работает после перечитывания конфигурации."
+    done
+}
+
+prepare_user_backups() {
+    local group="rish-backup-$SITE_UID" backup_gid
+    if [[ -e "$USER_BACKUPS" || -L "$USER_BACKUPS" ]]; then
+        backup_gid="$(site_backup_group_gid "$SITE_USER" "$SITE_UID" "$SITE_GID")" ||
+            fail 'Проверьте отдельную группу для каталога бэкапов пользователя.'
+    else
+        groupadd --system --force -- "$group" || fail 'Не удалось создать группу бэкапов.'
+        backup_gid="$(site_backup_group_gid "$SITE_USER" "$SITE_UID" "$SITE_GID" 1)" ||
+            fail 'Группа бэкапов уже используется.'
+        if ! (set -o pipefail; getent passwd | awk -F: -v gid="$backup_gid" '$4 == gid { used = 1 } END { exit used }'); then
+            fail 'Группа бэкапов используется как основная или её не удалось проверить.'
+        fi
+        if ! backup_gid="$(site_backup_group_gid "$SITE_USER" "$SITE_UID" "$SITE_GID")"; then
+            usermod --append --groups "$group" -- "$SITE_USER" || fail 'Не удалось добавить пользователя в группу бэкапов.'
+            backup_gid="$(site_backup_group_gid "$SITE_USER" "$SITE_UID" "$SITE_GID")" ||
+                fail 'Не удалось подтвердить состав группы бэкапов.'
+        fi
+
+        refresh_backup_php_fpm_groups "$backup_gid"
+    fi
+    prepare_directory "$USER_BACKUPS" "$backup_gid" 750
+}
+
 valid_database() {
     [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_\$.-]{0,63}$ ]]
 }
 
 open_site_source() {
-    # shellcheck source=scripts/backup_source.sh
-    source "$RISH_DIR/scripts/backup_source.sh" || return 1
     backup_source_enter_user "$SITE_ROOT/$SITE_USER" "$SITE_PARENT/$SITE_NAME"
 }
 
@@ -176,7 +242,7 @@ rollback_activation() {
 }
 
 enable_site() (
-    local database="$3" unit template temporary active=0 enabled=0
+    local database="$3" unit template temporary access_lock active=0 enabled=0
     local activation_started=0 inbox_was_open=0
     site_paths "$1" "$2"
     valid_database "$database" || fail 'Некорректное имя базы данных.'
@@ -184,7 +250,9 @@ enable_site() (
     (open_site_source) || fail 'Не удалось открыть каталог сайта в пределах каталога пользователя.'
     unit="$(systemd-escape --path -- "$JOB_DIR")" || fail 'Не удалось определить имя службы.'
 
-    prepare_directory "$USER_BACKUPS" "$SITE_GID" 750
+    exec {access_lock}>>"/run/lock/rish-backup-access-$SITE_UID.lock" || fail 'Не удалось открыть блокировку настройки бэкапов.'
+    flock -x "$access_lock" || fail 'Не удалось заблокировать настройку бэкапов.'
+    prepare_user_backups
     prepare_directory "$JOB_DIR" "$SITE_GID" 750
     prepare_directory "$STATUS_DIR" "$SITE_GID" 750
     prepare_directory "$DOWNLOADS" "$SITE_GID" 750
@@ -232,10 +300,11 @@ enable_site() (
 )
 
 disable_site() {
-    local unit path_unit service_unit load_state
+    local unit path_unit service_unit load_state backup_gid
     site_paths "$1" "$2"
     check_user_directory
-    if ! trusted_directory "$USER_BACKUPS" "$SITE_GID" 750 ||
+    if ! backup_gid="$(site_backup_group_gid "$SITE_USER" "$SITE_UID" "$SITE_GID")" ||
+       ! trusted_directory "$USER_BACKUPS" "$backup_gid" 750 ||
        ! trusted_directory "$JOB_DIR" "$SITE_GID" 750; then
         fail 'Каталог заданий не найден или имеет некорректные права.'
     fi
@@ -625,13 +694,14 @@ process_cloud_requests() (
 )
 
 run_site() {
-    local path="$1" worker_lock status=0
+    local path="$1" worker_lock backup_gid status=0
     [[ "$path" == "$SITE_ROOT/"* ]] || fail 'Некорректный каталог заданий.'
     local relative="${path#"$SITE_ROOT/"}"
     site_paths "${relative%%/*}" "${relative##*/}"
     [[ "$path" == "$JOB_DIR" ]] || fail 'Некорректный каталог заданий.'
     check_user_directory
-    if ! trusted_directory "$USER_BACKUPS" "$SITE_GID" 750 ||
+    if ! backup_gid="$(site_backup_group_gid "$SITE_USER" "$SITE_UID" "$SITE_GID")" ||
+       ! trusted_directory "$USER_BACKUPS" "$backup_gid" 750 ||
        ! trusted_directory "$JOB_DIR" "$SITE_GID" 750 ||
        { ! trusted_directory "$INBOX" "$SITE_GID" 730 && ! trusted_directory "$INBOX" "$SITE_GID" 710; } ||
        ! trusted_directory "$STATUS_DIR" "$SITE_GID" 750 ||

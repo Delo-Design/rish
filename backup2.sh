@@ -339,7 +339,7 @@ backup_joomla_site_name_valid() {
 }
 
 backup_joomla_connected_sites() {
-    local user_dir backups_dir job_dir site_user site_name site_uid site_gid inbox_mode unit
+    local user_dir backups_dir job_dir site_user site_name site_uid site_gid backup_gid inbox_mode unit
 
     for backups_dir in /var/www/*/backups; do
         [[ -d "$backups_dir" ]] || continue
@@ -349,7 +349,8 @@ backup_joomla_connected_sites() {
         if ! backup_root_managed_path "$backups_dir" ||
            ! site_uid="$(id -u -- "$site_user")" || [[ "$site_uid" == 0 ]] ||
            ! site_gid="$(id -g -- "$site_user")" ||
-           [[ "$(stat -c '%u:%g:%a' -- "$backups_dir")" != "0:$site_gid:750" ]]; then
+           ! backup_gid="$(site_backup_group_gid "$site_user" "$site_uid" "$site_gid")" ||
+           [[ "$(stat -c '%u:%g:%a' -- "$backups_dir")" != "0:$backup_gid:750" ]]; then
             continue
         fi
 

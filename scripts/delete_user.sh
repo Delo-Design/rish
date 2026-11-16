@@ -116,6 +116,9 @@ DeleteUser() {
   local apache_group_membership_removed=0
   local group_entry
   local group_members
+  local backup_group
+  local backup_gid=""
+  local current_gid
   local backup_dir=""
   local php_template="${RISH_HOME}/templates/php-fpm-www.conf.template"
   local -a server_users=()
@@ -514,6 +517,16 @@ DeleteUser() {
     fi
   fi
 
+  backup_group="rish-backup-$user_uid"
+  if getent group "$backup_group" >/dev/null; then
+    # shellcheck source=scripts/backup_source.sh
+    if ! source "$RISH_HOME/scripts/backup_source.sh" ||
+      ! backup_gid="$(site_backup_group_gid "$user" "$user_uid" "$(id -g -- "$user")" 1)"; then
+      echo -e "Не удалось подтвердить принадлежность группы бэкапов ${YELLOW}${backup_group}${WHITE}. Группа сохранена."
+      deletion_errors=1
+    fi
+  fi
+
   if ! check_user_home_for_deletion "$user" "$home_dir" "$user_uid" || ! userdel --remove "$user"; then
     if id "$user" > /dev/null 2>&1; then
       echo -e "Не удалось удалить учетную запись Linux ${RED}${user}${WHITE}."
@@ -615,6 +628,18 @@ DeleteUser() {
   if ! rm -rf -- "$user_root"; then
     echo -e "Не удалось удалить каталог ${RED}${user_root}${WHITE}."
     deletion_errors=1
+  elif [[ -n "$backup_gid" ]] && group_entry="$(getent group "$backup_group")"; then
+    IFS=: read -r _ _ current_gid group_members <<< "$group_entry"
+    if [[ -e "$user_root" || -L "$user_root" || "$current_gid" != "$backup_gid" || -n "$group_members" ]] ||
+      getent passwd "$user" >/dev/null || getent passwd "$user_uid" >/dev/null; then
+      echo -e "Не удалось подтвердить, что группу бэкапов ${YELLOW}${backup_group}${WHITE} можно удалить. Группа сохранена."
+      deletion_errors=1
+    elif groupdel -- "$backup_group"; then
+      echo -e "Группа бэкапов ${GREEN}${backup_group}${WHITE} удалена."
+    else
+      echo -e "Не удалось удалить группу бэкапов ${RED}${backup_group}${WHITE}."
+      deletion_errors=1
+    fi
   fi
   if ! rm -f -- "$sftp_authorized_keys_file"; then
     echo -e "Не удалось удалить файл ключей SFTP ${RED}${sftp_authorized_keys_file}${WHITE}."
