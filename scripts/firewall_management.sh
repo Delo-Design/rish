@@ -227,15 +227,16 @@ PY
 }
 
 rish_fw_network() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "${2:-block}" <<'PY'
 import ipaddress, sys
 try:
     if '%' in sys.argv[1]:
         raise ValueError()
     net = ipaddress.ip_network(sys.argv[1], strict=False)
-    loopback = ipaddress.ip_network('127.0.0.0/8' if net.version == 4 else '::1/128')
-    if net.prefixlen == 0 or net.network_address.is_unspecified or net.overlaps(loopback):
-        raise ValueError()
+    if sys.argv[2] != 'source':
+        loopback = ipaddress.ip_network('127.0.0.0/8' if net.version == 4 else '::1/128')
+        if net.prefixlen == 0 or net.network_address.is_unspecified or net.overlaps(loopback):
+            raise ValueError()
     print(net)
 except ValueError:
     print('Неверный или запрещённый IP/CIDR.', file=sys.stderr)
@@ -2908,11 +2909,27 @@ rish_fw_ssh_port() {
   printf '%s\n' "$server_port"
 }
 
+rish_fw_port_parts() {
+  local spec="$1" start end protocol
+  if [[ ! "$spec" =~ ^0*([0-9]{1,5})(-0*([0-9]{1,5}))?/(tcp|udp|sctp|dccp)$ ]]; then
+    rish_fw_error "Формат порта: 443/tcp или 8000-8010/tcp."
+    return 1
+  fi
+  start=$((10#${BASH_REMATCH[1]}))
+  end="${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}"
+  end=$((10#$end))
+  protocol="${BASH_REMATCH[4]}"
+  if ((start < 1 || end > 65535 || end < start)); then
+    rish_fw_error "Укажите порт от 1 до 65535 или диапазон от меньшего порта к большему."
+    return 1
+  fi
+  printf '%s %s %s\n' "$start" "$end" "$protocol"
+}
+
 rish_fw_port_guard() {
-  local spec="$1" ssh_port start end protocol
-  [[ "$spec" =~ ^([0-9]+)(-([0-9]+))?/(tcp|udp|sctp|dccp)$ ]] || { rish_fw_error "Формат порта: 443/tcp или 8000-8010/tcp."; return 1; }
-  start=$((10#${BASH_REMATCH[1]})); end="${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}"; end=$((10#$end)); protocol="${BASH_REMATCH[4]}"
-  ((start >= 1 && end <= 65535 && end >= start)) || return 1
+  local spec="$1" ssh_port start end protocol parts
+  parts=$(rish_fw_port_parts "$spec") || return 1
+  read -r start end protocol <<<"$parts"
   ssh_port=$(rish_fw_ssh_port) || return 1
   if [[ "$protocol" == tcp ]] && ((ssh_port >= start && ssh_port <= end)); then
     rish_fw_error "Нельзя закрыть порт текущего SSH-соединения ${ssh_port}/tcp."; return 1
@@ -3033,10 +3050,11 @@ rish_fw_endpoint_change() (
   [[ "$kind" == port || "$kind" == service ]] && [[ "$action" == add || "$action" == remove ]] || return 2
   rish_fw_active || return 1
   if [[ "$kind" == port ]]; then
-    [[ "$value" =~ ^([0-9]+)(-([0-9]+))?/(tcp|udp|sctp|dccp)$ ]] || return 1
-    local start=$((10#${BASH_REMATCH[1]})) end="${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}"
-    end=$((10#$end)); ((start >= 1 && end >= start && end <= 65535)) || return 1
-    [[ "$action" != remove ]] || rish_fw_port_guard "$value" || return 1
+    if [[ "$action" == add ]]; then
+      rish_fw_port_parts "$value" >/dev/null || return 1
+    else
+      rish_fw_port_guard "$value" || return 1
+    fi
   else
     [[ "$value" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
     rish_fw_cmd --get-services | tr ' ' '\n' | grep -Fxq -- "$value" || return 1
@@ -4820,28 +4838,454 @@ rish_fw_ip_lookup_menu() {
   rish_fw_ip_lookup_actions "$address"
 }
 
-rish_fw_ports_menu() {
-  local choice=0 value kind action mode label values info_rc action_label kind_label result
+rish_fw_rich_port_data() {
+  python3 - "$1" "${4:-}" 3<<<"$2" 4<<<"$3" <<'PY'
+import ipaddress
+import re
+import shlex
+import sys
+
+def port_range(value):
+    if re.fullmatch(r'[0-9]+(?:-[0-9]+)?', value):
+        ports = sorted(set(int(part) for part in value.split('-')))
+    else:
+        try:
+            from firewall.functions import getPortRange
+        except ImportError:
+            return value
+        ports = getPortRange(value)
+        if not isinstance(ports, (tuple, list)):
+            return value
+    return '-'.join(str(port) for port in ports)
+
+def port_endpoint(tokens):
+    if 'port' not in tokens:
+        return None
+    port_index = tokens.index('port')
+    port, protocol = tokens[port_index + 1:port_index + 3]
+    if not port.startswith('port=') or protocol not in {
+        'protocol=tcp', 'protocol=udp', 'protocol=sctp', 'protocol=dccp'
+    }:
+        return None
+    return '%s/%s' % (port_range(port.partition('=')[2]), protocol.partition('=')[2])
+
+def simple_key(tokens):
+    # Only compare bare accepts. Destination, rate, logging and priority
+    # can change how a rule is applied and retain their own exact identities.
+    if tokens[1:2] == ['priority=0']:
+        tokens = tokens[:1] + tokens[2:]
+    if len(tokens) != 8:
+        return None
+    rule, family, source, address, element, _, _, action = tokens
+    if (rule != 'rule' or family not in ('family=ipv4', 'family=ipv6')
+            or source != 'source' or not address.startswith('address=')
+            or element != 'port' or action != 'accept'):
+        return None
+    endpoint = port_endpoint(tokens)
+    if endpoint is None:
+        return None
+    value = address.partition('=')[2].replace('[', '').replace(']', '')
+    return family, ipaddress.ip_network(value, strict=False), endpoint
+
+def log_prefix_is_lossless(rule, tokens):
+    prefixes = [token for token in tokens if token.startswith('prefix=')]
+    _, marker, tail = rule.partition(' prefix="')
+    if not marker:
+        return not prefixes
+    prefix, closing_quote, suffix = tail.partition('"')
+    # Firewalld emits the prefix verbatim. More quotes can make a prefix
+    # indistinguishable from a shorter prefix plus another quoted attribute.
+    # Its parser also strips control characters before passing text to shlex.
+    return bool(prefix and closing_quote and '"' not in suffix and '=' not in prefix
+                and not re.search(r'[\x00-\x1f\x7f-\x9f]', prefix)
+                and prefixes == ['prefix=' + prefix])
+
+def port_rule(rule):
+    tokens = shlex.split(rule)
+    endpoint = port_endpoint(tokens)
+    if endpoint is None:
+        return None
+    actions = [index for index, token in enumerate(tokens)
+               if token in ('accept', 'drop', 'reject', 'mark')]
+    if len(actions) > 1:
+        raise ValueError('неоднозначное действие')
+    if not actions or tokens[actions[0]] != 'accept':
+        return None
+    action_options = tokens[actions[0] + 1:]
+    if action_options and (len(action_options) not in (2, 3)
+                           or action_options[0] != 'limit'
+                           or not action_options[1].startswith('value=')
+                           or len(action_options) == 3 and not action_options[2].startswith('burst=')):
+        raise ValueError('неизвестные параметры accept')
+    writable = 'no'
+    if 'source' in tokens:
+        index = tokens.index('source') + 1
+        inverted = tokens[index] == 'NOT'
+        kind, _, source = tokens[index + inverted].partition('=')
+        if kind == 'address':
+            if not inverted and log_prefix_is_lossless(rule, tokens):
+                writable = 'yes'
+        elif kind == 'mac':
+            source = 'MAC ' + source
+        elif kind == 'ipset':
+            source = 'ipset ' + source
+        else:
+            raise ValueError('неизвестный источник')
+        label = endpoint + (' — кроме ' if inverted else ' — с ') + source
+    else:
+        family = next((token.partition('=')[2].upper()
+                       for token in tokens if token.startswith('family=')), '')
+        label = endpoint + ' — любой ' + (family + ' ' if family else '') + 'источник зоны'
+    if 'destination' in tokens:
+        destination_index = tokens.index('destination') + 1
+        inverted = tokens[destination_index] == 'NOT'
+        kind, _, destination = tokens[destination_index + inverted].partition('=')
+        if kind == 'ipset':
+            destination = 'ipset ' + destination
+        label += (' · кроме назначения ' if inverted else ' · к ') + destination
+    if action_options:
+        label += ' · лимит ' + action_options[1].partition('=')[2]
+    return endpoint, writable, label
+
+def rules(fd, zone_summary=False):
+    with open(fd, encoding='utf-8') as handle:
+        if zone_summary:
+            for line in handle:
+                if line.strip() == 'rich rules:':
+                    break
+            else:
+                raise ValueError('отсутствует поле rich rules')
+        for line in handle:
+            rule = line.strip()
+            if rule:
+                yield rule
+
+def show_rows():
+    rows, skipped = {}, set()
+    for mode, fd in ((1, 3), (2, 4)):
+        for rule in rules(fd, zone_summary=True):
+            if rule in rows:
+                previous, summary = rows[rule]
+                rows[rule] = (previous | mode, summary)
+                continue
+            try:
+                summary = port_rule(rule)
+            except (ValueError, IndexError):
+                skipped.add(rule)
+                continue
+            if summary is not None:
+                rows[rule] = (mode, summary)
+    print(len(skipped))
+    for rule, (mode, (endpoint, writable, label)) in rows.items():
+        print('%d\t%s\t%s\t%s\t%s' % (mode, endpoint, writable, label, rule))
+
+def matching_rule(fd, requested, key):
+    equivalent = None
+    for rule in rules(fd):
+        if rule == requested:
+            return rule
+        try:
+            if equivalent is None and simple_key(shlex.split(rule)) == key:
+                equivalent = rule
+        except (ValueError, IndexError):
+            continue
+    return equivalent
+
+try:
+    if sys.argv[1] == 'match':
+        requested = sys.argv[2]
+        key = simple_key(shlex.split(requested))
+        if key is None:
+            raise ValueError('некорректное правило для порта')
+        runtime = matching_rule(3, requested, key)
+        saved = matching_rule(4, requested, key)
+        state = int(runtime is not None) + 2 * int(saved is not None)
+        print('%d\t%s' % (state, runtime or saved or requested))
+    elif sys.argv[1] == 'check-remove':
+        summary = port_rule(sys.argv[2])
+        if summary is None or summary[1] != 'yes':
+            sys.exit(1)
+    else:
+        show_rows()
+except (ValueError, IndexError, OSError) as error:
+    print('Не удалось разобрать rich rules: %s.' % error, file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+rish_fw_rich_port_state() {
+  local rule="$1" runtime saved state=0
+  runtime=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --list-rich-rules) || return 1
+  saved=$(rish_fw_cmd --permanent --zone="$RISH_FW_ZONE" --list-rich-rules) || return 1
+  if grep -Fxq -- "$rule" <<<"$runtime"; then state=1; fi
+  if grep -Fxq -- "$rule" <<<"$saved"; then state=$((state | 2)); fi
+  printf '%s\n' "$state"
+}
+
+rish_fw_rich_port_add() (
+  local rule="$1" runtime saved match state output added_saved=0 reused_runtime=1
+  rish_fw_active && rish_fw_lock || return 1
+  if ! runtime=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --list-rich-rules) ||
+      ! saved=$(rish_fw_cmd --permanent --zone="$RISH_FW_ZONE" --list-rich-rules) ||
+      ! match=$(rish_fw_rich_port_data match "$runtime" "$saved" "$rule"); then
+    rish_fw_error "Не удалось прочитать состояние правила."
+    return 1
+  fi
+  IFS=$'\t' read -r state rule <<<"$match"
+  if (((state & 2) == 0)); then
+    if output=$(rish_fw_cmd --permanent --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" 2>&1); then
+      # An ALREADY_ENABLED response does not make this invocation the owner.
+      if [[ "$output" == success ]]; then added_saved=1; fi
+    fi
+    [[ -z "$output" || "$output" == success ]] || printf '%s\n' "$output" >&2
+    state=$(rish_fw_rich_port_state "$rule") || {
+      rish_fw_error "Не удалось проверить сохранение правила."
+      return 1
+    }
+    if (((state & 2) == 0)); then
+      rish_fw_error "Правило не сохранено."
+      return 1
+    fi
+  fi
+  if (((state & 1) == 0)); then
+    if output=$(rish_fw_cmd --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" 2>&1); then
+      if [[ "$output" == success ]]; then reused_runtime=0; fi
+    fi
+    [[ -z "$output" || "$output" == success ]] || printf '%s\n' "$output" >&2
+    state=$(rish_fw_rich_port_state "$rule") || {
+      rish_fw_error "Не удалось проверить применение правила."
+      return 1
+    }
+  fi
+  if [[ "$state" == 3 ]]; then
+    if ((reused_runtime)); then
+      printf 'Разрешение есть в сохранённой конфигурации. Если у действующей копии есть таймер, она отключится по его истечении до загрузки сохранённой конфигурации.\n' >&2
+    else
+      printf 'Правило активно и сохранено.\n' >&2
+    fi
+    printf '%s\n' "$rule"
+    return 0
+  fi
+  if [[ "$state" == 2 && "$added_saved" == 1 ]]; then
+    rish_fw_quiet --permanent --zone="$RISH_FW_ZONE" --remove-rich-rule="$rule" || true
+    if [[ "$(rish_fw_rich_port_state "$rule")" == 0 ]]; then
+      rish_fw_error "Не удалось применить правило. Новая сохранённая копия удалена."
+      return 1
+    fi
+  fi
+  rish_fw_error "Правило не подтверждено в обеих конфигурациях. Проверьте обновлённый список."
+  return 1
+)
+
+rish_fw_rich_port_add_menu() {
+  local selection_var="$1" spec parts start end protocol port address network new_rule
+  read -r -p "Порт/диапазон и протокол, например 3306/tcp: " spec || return 0
+  if [[ -z "$spec" ]]; then return 0; fi
+  parts=$(rish_fw_port_parts "$spec") || { rish_fw_pause; return 1; }
+  read -r -p "IP или подсеть источника: " address || return 0
+  if [[ -z "$address" ]]; then return 0; fi
+  network=$(rish_fw_network "$address" source) || { rish_fw_pause; return 1; }
+  read -r start end protocol <<<"$parts"
+  port="$start"
+  [[ "$start" == "$end" ]] || port+="-$end"
+  printf -v new_rule 'rule family="ipv%s" source address="%s" port port="%s" protocol="%s" accept' \
+    "$(rish_fw_family "$network")" "$network" "$port" "$protocol"
   printf '\n'
   rish_fw_field "Зона" "$RISH_FW_ZONE"
-  for mode in runtime permanent; do
-    local -a flag=()
-    label="активные"; [[ "$mode" != permanent ]] || { flag=(--permanent); label="постоянные"; }
-    values=$(rish_fw_cmd "${flag[@]}" --zone="$RISH_FW_ZONE" --list-all); info_rc=$?
-    rish_fw_zone_fields "$values"
-    if [[ "$info_rc" == 0 && "$RISH_FW_ZONE_FIELDS" == *' services '* ]]; then
-      rish_fw_field "Службы — ${label}" "${RISH_FW_ZONE_SERVICES:-нет}"
-    else
-      rish_fw_field "Службы — ${label}" "не удалось прочитать" "$RISH_FW_YELLOW"
+  rish_fw_field "Порт/диапазон" "$port/$protocol"
+  rish_fw_field "IP или подсеть источника" "$network"
+  printf 'Правило применится сразу и сохранится после перезагрузки.\n'
+  rish_fw_confirm "Разрешить доступ с указанного IP или подсети?" || return 0
+  if new_rule=$(rish_fw_rich_port_add "$new_rule"); then
+    printf -v "$selection_var" '%s' "$new_rule"
+  fi
+  rish_fw_pause
+}
+
+rish_fw_rich_port_remove() (
+  local rule="$1" port="$2" expected="$3" state saved remaining
+  if ! rish_fw_rich_port_data check-remove "" "" "$rule"; then
+    rish_fw_error "Для этого правила доступен только просмотр."
+    return 1
+  fi
+  rish_fw_active && rish_fw_port_guard "$port" && rish_fw_lock || return 1
+  state=$(rish_fw_rich_port_state "$rule") || {
+    rish_fw_error "Не удалось проверить состояние выбранного правила."
+    return 1
+  }
+  if [[ "$state" != "$expected" || "$state" == 0 ]]; then
+    rish_fw_error "Состояние правила изменилось. Выберите его снова в обновлённом списке."
+    return 1
+  fi
+  # Remove the saved copy first so rollback never needs to recreate a timed rule.
+  if ((state & 2)); then
+    rish_fw_quiet --permanent --zone="$RISH_FW_ZONE" --remove-rich-rule="$rule" || true
+    saved=$(rish_fw_cmd --permanent --zone="$RISH_FW_ZONE" --list-rich-rules) || {
+      rish_fw_error "Не удалось проверить сохранённое правило после удаления."
+      return 1
+    }
+    if grep -Fxq -- "$rule" <<<"$saved"; then
+      rish_fw_error "Сохранённое правило не удалено."
+      return 1
     fi
-    if [[ "$info_rc" == 0 && "$RISH_FW_ZONE_FIELDS" == *' ports '* ]]; then
-      rish_fw_field "Порты — ${label}" "${RISH_FW_ZONE_PORTS:-нет}"
-    else
-      rish_fw_field "Порты — ${label}" "не удалось прочитать" "$RISH_FW_YELLOW"
+  fi
+  if ((state & 1)); then
+    rish_fw_quiet --zone="$RISH_FW_ZONE" --remove-rich-rule="$rule" || true
+  fi
+  remaining=$(rish_fw_rich_port_state "$rule") || {
+    rish_fw_error "Не удалось проверить результат удаления правила."
+    return 1
+  }
+  if [[ "$remaining" == 0 ]]; then
+    printf 'Правило для %s%s%s удалено.\n' "$RISH_FW_GREEN" "$port" "$RISH_FW_RESET"
+    return 0
+  fi
+  if [[ "$state" == 3 && "$remaining" == 1 ]]; then
+    if rish_fw_quiet --permanent --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" &&
+        [[ "$(rish_fw_rich_port_state "$rule")" == 3 ]]; then
+      rish_fw_error "Активное правило не удалено. Сохранённое правило восстановлено."
+      return 1
     fi
+    rish_fw_error "Не удалось подтвердить восстановление сохранённого правила."
+  fi
+  rish_fw_error "Правило осталось в конфигурации. Проверьте обновлённый список."
+  return 1
+)
+
+rish_fw_ports_menu() {
+  local choice=0 value kind action mode label values info_rc action_label kind_label result
+  local runtime saved rows skipped row rule port state writable rule_label i last first columns lines
+  local page=0 page_size=12 rich_ok selected_rule="" default menu_mode menu_width menu_height row_width context_choice
+  local -a items actions rule_rows
+  local -a scopes=("" "активное" "постоянное" "активное и постоянное")
+  local -a context_items=("Сведения" "Удалить" "Назад")
+  local context_columns=$((19 + ${#context_items[0]}))
+  while true; do
+    printf '\n'
+    rish_fw_field "Зона" "$RISH_FW_ZONE"
+    rich_ok=1
+    for mode in runtime permanent; do
+      local -a flag=()
+      label="активные"; [[ "$mode" != permanent ]] || { flag=(--permanent); label="постоянные"; }
+      values=$(rish_fw_cmd "${flag[@]}" --zone="$RISH_FW_ZONE" --list-all); info_rc=$?
+      if [[ "$mode" == runtime ]]; then runtime="$values"; else saved="$values"; fi
+      [[ "$info_rc" == 0 ]] || rich_ok=0
+      rish_fw_zone_fields "$values"
+      if [[ "$info_rc" == 0 && "$RISH_FW_ZONE_FIELDS" == *' services '* ]]; then
+        rish_fw_field "Службы — ${label}" "${RISH_FW_ZONE_SERVICES:-нет}"
+      else
+        rish_fw_field "Службы — ${label}" "не удалось прочитать" "$RISH_FW_YELLOW"
+      fi
+      if [[ "$info_rc" == 0 && "$RISH_FW_ZONE_FIELDS" == *' ports '* ]]; then
+        rish_fw_field "Порты — ${label}" "${RISH_FW_ZONE_PORTS:-нет}"
+      else
+        rish_fw_field "Порты — ${label}" "не удалось прочитать" "$RISH_FW_YELLOW"
+      fi
+    done
+
+    items=("Открыть порт/диапазон" "Закрыть порт/диапазон" "Открыть службу" "Закрыть службу"
+           "Открыть порт для IP или подсети")
+    actions=(add-port remove-port add-service remove-service add-rich-port)
+    menu_mode=current; menu_width=38; menu_height=0; default=""
+    rule_rows=()
+    if ((rich_ok)) && rows=$(rish_fw_rich_port_data rows "$runtime" "$saved"); then
+      skipped=${rows%%$'\n'*}
+      if [[ "$rows" == *$'\n'* ]]; then
+        mapfile -t rule_rows <<<"${rows#*$'\n'}"
+      elif [[ "$skipped" == 0 ]]; then
+        rish_fw_field "Rich rules с port … accept" "нет"
+      fi
+      if [[ "$skipped" != 0 ]]; then
+        rish_fw_field "Rich rules, которые не удалось разобрать" "$skipped" "$RISH_FW_YELLOW"
+      fi
+    else
+      rish_fw_field "Rich rules с port … accept" "не удалось прочитать" "$RISH_FW_YELLOW"
+    fi
+    if ((${#rule_rows[@]} > 0)); then
+      if [[ -n "$selected_rule" ]]; then
+        for i in "${!rule_rows[@]}"; do
+          if [[ "${rule_rows[$i]}" == *$'\t'"$selected_rule" ]]; then
+            page=$((i / page_size))
+            break
+          fi
+        done
+      fi
+      if ((page * page_size >= ${#rule_rows[@]})); then page=$(((${#rule_rows[@]} - 1) / page_size)); fi
+      first=$((page * page_size))
+      last=$((first + page_size))
+      columns=$(tput cols 2>/dev/null) || columns=80
+      [[ "$columns" =~ ^[1-9][0-9]{0,4}$ ]] || columns=80
+      row_width=$((columns - 9)); ((row_width >= 1)) || row_width=1
+      # Reserve room for the connector and context menu when both menus fit.
+      if ((columns >= menu_width + context_columns)); then row_width=$((columns - context_columns)); fi
+      ((menu_width <= row_width)) || menu_width=$row_width
+      printf 'Enter или щелчок — действия над правилом.\n'
+      menu_mode=current_noclear
+      if [[ -t 0 ]]; then
+        lines=$(tput lines 2>/dev/null) || lines=24
+        menu_height=$((lines - $(get_cursor_row) - ${#context_items[@]}))
+        ((menu_height >= 1)) || menu_height=1
+      fi
+      for ((i=first; i<last && i<${#rule_rows[@]}; i++)); do
+        IFS=$'\t' read -r state port writable rule_label rule <<<"${rule_rows[$i]}"
+        row="$rule_label · ${scopes[$state]}"
+        if ((${#row} > row_width)); then row="${row:0:row_width-1}…"; fi
+        [[ "$rule" != "$selected_rule" ]] || default=${#items[@]}
+        items+=("$row"); actions+=("rule:$i")
+      done
+      if ((page > 0)); then items+=("Предыдущая страница"); actions+=(prev); fi
+      if ((last < ${#rule_rows[@]})); then items+=("Следующая страница"); actions+=(next); fi
+    fi
+    default=${default:-${#items[@]}}
+    items+=("Назад")
+    choice=0
+    vertical_menu "$menu_mode" 2 "$menu_height" "$menu_width" "default=$default" "${items[@]}" || choice=$?
+    case "${actions[$choice]:-back}" in
+      add-port) kind=port; action=add; break ;;
+      remove-port) kind=port; action=remove; break ;;
+      add-service) kind=service; action=add; break ;;
+      remove-service) kind=service; action=remove; break ;;
+      add-rich-port)
+        if [[ "$menu_mode" == current_noclear ]]; then
+          clear
+          rish_fw_header
+        fi
+        rish_fw_rich_port_add_menu selected_rule || true
+        ;;
+      prev) page=$((page - 1)); selected_rule="" ;;
+      next) page=$((page + 1)); selected_rule="" ;;
+      rule:*)
+        i="${actions[$choice]#rule:}"
+        IFS=$'\t' read -r state port writable rule_label rule <<<"${rule_rows[$i]}"
+        selected_rule="$rule"
+        context_choice=0
+        if [[ "$writable" == yes ]]; then
+          rish_fw_context_menu "${context_items[@]}" || context_choice=$?
+        else
+          rish_fw_context_menu "${context_items[0]}" "${context_items[2]}" || context_choice=$?
+        fi
+        if ((context_choice == 0)) || [[ "$writable" == yes && "$context_choice" == 1 ]]; then
+          clear
+          rish_fw_field "Зона" "$RISH_FW_ZONE"
+          rish_fw_field "Правило" "$rule"
+          rish_fw_field "Состояние" "${scopes[$state]}"
+          if ((context_choice == 0)); then
+            rish_fw_pause
+          elif rish_fw_confirm "Удалить выбранное rich rule?"; then
+            rish_fw_rich_port_remove "$rule" "$port" "$state" || true
+            rish_fw_pause
+          fi
+        fi
+        ;;
+      *) return 0 ;;
+    esac
+    clear
+    rish_fw_header
   done
-  vertical_menu current 2 0 38 default=4 "Открыть порт/диапазон" "Закрыть порт/диапазон" "Открыть службу" "Закрыть службу" "Назад" || choice=$?
-  case "$choice" in 0) kind=port; action=add;; 1) kind=port; action=remove;; 2) kind=service; action=add;; 3) kind=service; action=remove;; *) return 0;; esac
+  if [[ "$menu_mode" == current_noclear ]]; then
+    clear
+    rish_fw_header
+  fi
   if [[ "$kind" == port ]]; then read -r -p "Порт/диапазон и протокол, например 443/tcp: " value; else read -r -p "Имя службы firewalld: " value; fi
   action_label="открыть доступ"; [[ "$action" != remove ]] || action_label="закрыть доступ"
   kind_label="Порт/диапазон"; [[ "$kind" != service ]] || kind_label="Служба"

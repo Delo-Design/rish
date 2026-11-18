@@ -152,6 +152,106 @@ is_valid_site_email() {
   [[ "$top_level_domain" =~ ^([A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)$ ]]
 }
 
+print_created_user_credentials() {
+  local user="$1"
+  local sftp_password="$2"
+  local database_password="$3"
+  local site_login="$4"
+  local site_password="$5"
+  local credentials_file="$6"
+  local terminal_columns="${COLUMNS:-80}"
+  local content_width=48
+  local framed=1
+  local i line label chunk offset label_length padding
+  # Each row is a label/value pair. Add color only after measuring plain text.
+  local -a rows=(
+    "Сохраните доступы" ""
+    "" ""
+    "SFTP" ""
+    "  Логин:         " "$user"
+    "  Пароль:        " "$sftp_password"
+    "" ""
+    "MariaDB" ""
+    "  Сервер:        " "localhost"
+    "  Логин:         " "$user"
+    "  Пароль:        " "$database_password"
+    "" ""
+    "Администратор новых сайтов" ""
+    "  Логин (E-mail): " "$site_login"
+    "  Пароль:         " "$site_password"
+    "" ""
+    "Файл доступов:" ""
+    "  " "$credentials_file"
+  )
+
+  if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+    terminal_columns="$(tput cols 2>/dev/null)" || terminal_columns="${COLUMNS:-80}"
+  fi
+  [[ "$terminal_columns" =~ ^[1-9][0-9]{0,3}$ ]] || terminal_columns=80
+
+  for ((i = 0; i < ${#rows[@]}; i += 2)); do
+    line="${rows[i]}${rows[i + 1]}"
+    if ((${#line} > content_width)); then
+      content_width=${#line}
+    fi
+  done
+
+  # Leave the last terminal column free to avoid automatic line wrapping.
+  if ((terminal_columns < 8)); then
+    framed=0
+    content_width=$((terminal_columns - 1))
+    ((content_width > 0)) || content_width=1
+  elif ((content_width > terminal_columns - 5)); then
+    content_width=$((terminal_columns - 5))
+  fi
+
+  if ((framed)); then
+    printf '┌'
+    repl '─' "$((content_width + 2))"
+    printf '┐\n'
+  fi
+
+  for ((i = 0; i < ${#rows[@]}; i += 2)); do
+    label="${rows[i]}"
+    line="${label}${rows[i + 1]}"
+    offset=0
+    while true; do
+      chunk="${line:offset:content_width}"
+      label_length=$((${#label} - offset))
+      ((label_length >= 0)) || label_length=0
+      if ((label_length > ${#chunk})); then
+        label_length=${#chunk}
+      fi
+
+      if ((framed)); then
+        printf '│ '
+      fi
+      printf '%s' "${chunk:0:label_length}"
+      if ((label_length < ${#chunk})); then
+        printf '%b%s%b' "$GREEN" "${chunk:label_length}" "$WHITE"
+      fi
+      if ((framed)); then
+        padding=$((content_width - ${#chunk}))
+        printf '%*s │\n' "$padding" ''
+      else
+        printf '\n'
+      fi
+
+      offset=$((offset + content_width))
+      ((offset < ${#line})) || break
+    done
+  done
+
+  if ((framed)); then
+    printf '└'
+    repl '─' "$((content_width + 2))"
+    printf '┘\n'
+  fi
+  printf '\nSFTP: по умолчанию вход по SSH-ключу.\n'
+  printf 'Публичные ключи: %b%s%b\n' "$GREEN" "/etc/ssh/authorized_keys/${user}" "$WHITE"
+  return 0
+}
+
 CreateUser() {
   local NAME
   local default_username="$1"  # Получаем первый параметр, переданный в функцию
@@ -165,9 +265,10 @@ CreateUser() {
   local -a rollback_args=()
   # try to create user
 
+  printf '%bСоздание пользователя\n\n' "$WHITE"
   while true; do
-    echo -e "Используйте только латинские буквы и цифры. Начинать с цифры нельзя — первый символ должен быть латинской буквой. Пример: okna40."
-    echo -e -n "${WHITE}Введите имя пользователя (пустая строка для выхода):${GREEN}"
+    echo "Имя: латинские буквы и цифры, первый символ буква. Пример: okna40."
+    echo -e -n "${WHITE}Имя пользователя (Enter для выхода):${GREEN}"
     if [[ -z "$default_username" ]]; then
       read -r -e -p " " NAME  # Не задаем значение по умолчанию, если параметр пустой
     else
@@ -196,8 +297,8 @@ CreateUser() {
       continue
     fi
 
-    echo -e "${WHITE}Будет создан пользователь с именем: ${VIOLET}${NAME}${WHITE}"
-    if vertical_menu "current" 2 0 5 "Да" "Нет"
+    echo -e "${WHITE}Создать пользователя ${VIOLET}${NAME}${WHITE}?"
+    if vertical_menu "current" 2 0 5 "Создать" "Изменить имя"
     then
       if id -u "${NAME}" >/dev/null 2>&1
       then
@@ -213,17 +314,13 @@ CreateUser() {
     echo -e "${WHITE}"
     return 0
   else
-    echo -e "${WHITE}Создаем пользователя ${GREEN}${NAME}${WHITE}"
+    printf '\n%bАдминистратор новых сайтов\n' "$WHITE"
   fi
-  echo -e "${WHITE}"
-  echo "При создании новых сайтов Joomla требуется указать учетную запись для администратора."
-  echo "Вы можете указать имя этой учетной записи, чтобы в дальнейшем не тратить время на ее изменение."
-  echo -e "Если вы не укажете имя сейчас - оно будет создано автоматически. "
-  echo -e "Изменить его можно будет в файле ${GREEN}${RISH_CREDENTIALS_DIR}/${NAME}${WHITE}"
-  echo
-  echo "Введите E-mail учетной записи администратора для создаваемых сайтов по умолчанию."
   while true; do
-    read -r -e -p "(Можно не заполнять — нажмите Enter): " DEFAULTSITEACCOUNT
+    printf '%b' "$GREEN"
+    read -r -e -i "info@${NAME}.com" \
+      -p $'\001\033[0m\002Логин (E-mail): \001\033[0;32m\002' DEFAULTSITEACCOUNT
+    printf '%b' "$WHITE"
     if [[ -z "$DEFAULTSITEACCOUNT" ]] || is_valid_site_email "$DEFAULTSITEACCOUNT"; then
       break
     fi
@@ -250,6 +347,7 @@ CreateUser() {
   rollback_args=("$NAME" "$home_existed" "$user_root_existed" \
     "$authorized_keys_file_existed" "$private_group_existed" "$mariadb_user_created" "$credentials_created")
 
+  printf '\nСоздаём пользователя %b%s%b...\n' "$GREEN" "$NAME" "$WHITE"
   if ! useradd -s /sbin/nologin "$NAME"; then
     fail_user_creation "создание учётной записи Linux" "${rollback_args[@]}"
     return 1
@@ -289,11 +387,6 @@ CreateUser() {
   rollback_args=("$NAME" "$home_existed" "$user_root_existed" \
     "$authorized_keys_file_existed" "$private_group_existed" "$mariadb_user_created" "$credentials_created")
 
-  echo -e "Пароль SFTP-пользователя ${NAME}: ${GREEN}${pass}${WHITE}"
-  echo -e "Пароль для баз данных ${NAME}: ${GREEN}${pass2}${WHITE}"
-  echo -e "Учетная запись по умолчанию: ${GREEN}${DEFAULTSITEACCOUNT}${WHITE}"
-  echo -e "Учетные данные записаны в файл ${GREEN}${credentials_file}${WHITE}"
-
   if ! usermod -aG sftp "$NAME"; then
     fail_user_creation "добавление пользователя в группу sftp" "${rollback_args[@]}"
     return 1
@@ -317,8 +410,6 @@ CreateUser() {
     fail_user_creation "создание защищённого файла ключей SFTP" "${rollback_args[@]}"
     return 1
   fi
-  echo -e "Публичные ключи SFTP для ${GREEN}${NAME}${WHITE} добавляются в ${GREEN}/etc/ssh/authorized_keys/${NAME}${WHITE}."
-
   # Удаляем конфигурацию php по умолчанию (это файлы типа php74-php.conf)
   find /etc/httpd/conf.d -type f -name 'php[0-9][0-9]-php.conf' -exec rm -f {} +
 
@@ -327,15 +418,17 @@ CreateUser() {
     return 1
   fi
 
-  if mariadb  -e "CREATE USER ${NAME}@localhost IDENTIFIED BY '${pass2}';"
+  if mariadb  -e "CREATE USER '${NAME}'@'localhost' IDENTIFIED BY '${pass2}';"
   then
     mariadb_user_created=1
-    echo -e "пользователь ${GREEN}${NAME}${WHITE} успешно создан"
   else
     echo -e "во время создания пользователя ${RED}${NAME}${WHITE} MySQL произошла ошибка"
     fail_user_creation "создание учётной записи MariaDB" "${rollback_args[@]}"
     return 1
   fi
+
+  printf '\nПользователь %b%s%b создан.\n\n' "$GREEN" "$NAME" "$WHITE"
+  print_created_user_credentials "$NAME" "$pass" "$pass2" "$DEFAULTSITEACCOUNT" "$pass3" "$credentials_file"
 
   return 0
 }
