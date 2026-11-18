@@ -1893,7 +1893,7 @@ createlist() {
 updatelist() {
     local list_file="$1"
     local new_objects_remote=""
-    local tmp_list
+    local tmp_list remote_summary remote_color="$GREEN"
     local removed=0
     local added=0
     local kept=0
@@ -1907,6 +1907,11 @@ updatelist() {
         printf 'Файл списка недоступен: %b%s%b.\n' "$LRED" "$list_file" "$WHITE"
         return 1
     fi
+    if ! remote_summary="$(backup_list_remote_summary "$list_file" 2>/dev/null)"; then
+        remote_summary="не удалось прочитать"
+        remote_color="$YELLOW"
+    fi
+    printf 'Текущие подключения списка: %b%s%b\n\n' "$remote_color" "$remote_summary" "$WHITE"
     echo "Выберите подключение для новых объектов в этом списке."
     select_backup_remote new_objects_remote update || return 1
 

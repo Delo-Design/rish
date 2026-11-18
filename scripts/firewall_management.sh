@@ -4844,6 +4844,7 @@ import ipaddress
 import re
 import shlex
 import sys
+from itertools import islice
 
 def port_range(value):
     if re.fullmatch(r'[0-9]+(?:-[0-9]+)?', value):
@@ -4967,7 +4968,7 @@ def rules(fd, zone_summary=False):
             if rule:
                 yield rule
 
-def show_rows():
+def show_rows(selected_rule):
     rows, skipped = {}, set()
     for mode, fd in ((1, 3), (2, 4)):
         for rule in rules(fd, zone_summary=True):
@@ -4982,8 +4983,12 @@ def show_rows():
                 continue
             if summary is not None:
                 rows[rule] = (mode, summary)
-    print(len(skipped))
-    for rule, (mode, (endpoint, writable, label, lookup_source)) in rows.items():
+    visible = list(islice(rows, 100))
+    if selected_rule in rows and selected_rule not in visible:
+        visible[-1] = selected_rule
+    print('%d\t%d' % (len(skipped), len(rows)))
+    for rule in visible:
+        mode, (endpoint, writable, label, lookup_source) = rows[rule]
         print('%d\t%s\t%s\t%s\t%s\t%s' % (mode, endpoint, writable, label, lookup_source, rule))
 
 def matching_rule(fd, requested, key):
@@ -5056,7 +5061,7 @@ try:
     elif sys.argv[1] == 'check-saved':
         check_saved_rules(sys.argv[2])
     else:
-        show_rows()
+        show_rows(sys.argv[2])
 except (ValueError, IndexError, OSError) as error:
     print('Не удалось разобрать rich rules: %s.' % error, file=sys.stderr)
     sys.exit(1)
@@ -5222,9 +5227,130 @@ rish_fw_rich_port_remove() (
   return 1
 )
 
+rish_fw_listening_ports_menu() (
+  rish_fw_zone_fields "$1"
+  printf 'Слушающие порты\n\n'
+  if ! command -v ss >/dev/null; then
+    rish_fw_error "Команда ss недоступна. Она входит в пакет iproute."
+  elif ! PYTHONIOENCODING=utf-8 python3 - "$RISH_FW_ZONE_INTERFACES" "$RISH_FW_GREEN" "$RISH_FW_RESET" <<'PY'
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+from collections import defaultdict
+
+zone_interfaces, green, reset = sys.argv[1:]
+environment = dict(os.environ, LC_ALL='C')
+environment.pop('COLUMNS', None)
+services = {'sshd': 'SSH', 'httpd': 'Apache', 'mariadbd': 'MariaDB'}
+process_pattern = re.compile(r'\("([^"]+)",pid=\d+,fd=\d+\)')
+wildcards = {'*': 'Все адреса', '0.0.0.0': 'Все IPv4-адреса', '::': 'Все IPv6-адреса'}
+
+
+def output(*command):
+    result = subprocess.run(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            encoding='utf-8', errors='replace', timeout=4, check=True)
+    if result.stderr.strip():
+        raise ValueError(command[0])
+    return result.stdout
+
+
+def external_interfaces():
+    interfaces = set()
+    for family in ('-4', '-6'):
+        for route in json.loads(output('ip', '-j', family, 'route', 'show', 'default')):
+            paths = [route, *route.get('nexthops', [])]
+            interfaces.update(path['dev'] for path in paths if path.get('dev'))
+    return (interfaces or set(zone_interfaces.split())) - {'lo'}
+
+
+def address_label(host, device, bindings):
+    suffix = f' ({device})' if device else ''
+    if host not in wildcards:
+        return green + host + reset + suffix
+    if host != '*' and ('*', device) in bindings:
+        return ''
+    if ('0.0.0.0', device) in bindings and ('::', device) in bindings and host != '*':
+        return 'Все IPv4 и IPv6' + suffix if host == '0.0.0.0' else ''
+    return wildcards[host] + suffix
+
+
+try:
+    interfaces = external_interfaces()
+    local_addresses = defaultdict(set)
+    if interfaces:
+        for link in json.loads(output('ip', '-j', 'address', 'show', 'scope', 'global')):
+            if link['ifname'] in interfaces:
+                for info in link.get('addr_info', []):
+                    # ip can emit empty entries for addresses excluded by the scope filter.
+                    local = info.get('local')
+                    if local:
+                        host = str(ipaddress.ip_address(local))
+                        local_addresses[host].add(link['ifname'])
+
+    rows = defaultdict(set)
+    # Older ss versions wrap columns even when stdout is a pipe.
+    sockets = output('ss', '-H', '-lntup')
+    for socket in re.split(r'\n(?=(?:tcp|udp)[ \t])', sockets):
+        fields = socket.split(None, 6)
+        if len(fields) < 6 or fields[0] not in ('tcp', 'udp'):
+            continue
+        endpoint, port = fields[4].rsplit(':', 1)
+        if not port.isdecimal():
+            continue
+        host, _, device = endpoint.replace(']', '').lstrip('[').partition('%')
+        if device and device not in interfaces:
+            continue
+        if host != '*':
+            address = ipaddress.ip_address(host)
+            if address.version == 6 and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            host = str(address)
+            if address.is_loopback or (not address.is_unspecified and host not in local_addresses):
+                continue
+            if device and not address.is_unspecified and device not in local_addresses[host]:
+                continue
+        names = process_pattern.findall(fields[6]) if len(fields) == 7 else []
+        names = {services.get(name, name) for name in names if name.isprintable()}
+        service = ', '.join(sorted(names)) or '—'
+        rows[(int(port), fields[0].upper(), service)].add((host, device))
+except (OSError, KeyError, ValueError, subprocess.SubprocessError):
+    sys.exit(1)
+
+if interfaces:
+    heading = 'Интерфейс' if len(interfaces) == 1 else 'Интерфейсы'
+    print(f"{heading}: {green}{', '.join(sorted(interfaces))}{reset}\n")
+if not rows:
+    print('Слушающих портов на сетевых интерфейсах нет.')
+    sys.exit(0)
+
+port_width = 9
+service_width = max(len('Служба'), max(len(key[2]) for key in rows))
+print(f"{'Порт':<{port_width}} │ {'Служба':<{service_width}} │ Где слушает")
+for (port, protocol, service), bindings in sorted(rows.items()):
+    label = f'{port}/{protocol}'
+    addresses = []
+    for host, device in sorted(bindings):
+        display = address_label(host, device, bindings)
+        if display:
+            addresses.append(display)
+    padding = ' ' * (port_width - len(label))
+    print(f'{green}{label}{reset}{padding} │ {service:<{service_width}} │ {addresses[0]}')
+    for address in addresses[1:]:
+        print(f"{'':<{port_width}} │ {'':<{service_width}} │ {address}")
+PY
+  then
+    rish_fw_error "Не удалось получить список слушающих портов."
+  fi
+  printf '\n'
+  vertical_menu current 2 0 25 "Назад" || true
+)
+
 rish_fw_ports_menu() {
   local choice=0 value kind action mode label values info_rc action_label kind_label result
-  local runtime saved rows skipped row rule port state writable rule_label lookup_source i last first columns lines
+  local runtime saved rows skipped rule_total row rule port state writable rule_label lookup_source i last first columns lines
   local page=0 page_size=12 rich_ok selected_rule="" default menu_mode menu_width menu_height row_width context_choice
   local -a items actions rule_rows
   local -a scopes=("" "активное" "постоянное" "активное и постоянное")
@@ -5254,16 +5380,19 @@ rish_fw_ports_menu() {
     done
 
     items=("Открыть порт/диапазон" "Закрыть порт/диапазон" "Открыть службу" "Закрыть службу"
-           "Открыть порт для IP или подсети")
-    actions=(add-port remove-port add-service remove-service add-rich-port)
+           "Открыть порт для IP или подсети" "Слушающие порты")
+    actions=(add-port remove-port add-service remove-service add-rich-port listening-ports)
     menu_mode=current; menu_width=38; menu_height=0; default=""
     rule_rows=()
-    if ((rich_ok)) && rows=$(rish_fw_rich_port_data rows "$runtime" "$saved"); then
-      skipped=${rows%%$'\n'*}
+    if ((rich_ok)) && rows=$(rish_fw_rich_port_data rows "$runtime" "$saved" "$selected_rule"); then
+      IFS=$'\t' read -r skipped rule_total <<<"${rows%%$'\n'*}"
       if [[ "$rows" == *$'\n'* ]]; then
         mapfile -t rule_rows <<<"${rows#*$'\n'}"
       elif [[ "$skipped" == 0 ]]; then
         rish_fw_field "Rich rules с port … accept" "нет"
+      fi
+      if ((rule_total > ${#rule_rows[@]})); then
+        printf 'Показано %s%s из %s%s rich rules.\n' "$RISH_FW_YELLOW" "${#rule_rows[@]}" "$rule_total" "$RISH_FW_RESET"
       fi
       if [[ "$skipped" != 0 ]]; then
         rish_fw_field "Rich rules, которые не удалось разобрать" "$skipped" "$RISH_FW_YELLOW"
@@ -5321,6 +5450,10 @@ rish_fw_ports_menu() {
           rish_fw_header
         fi
         rish_fw_rich_port_add_menu selected_rule || true
+        ;;
+      listening-ports)
+        clear
+        rish_fw_listening_ports_menu "$runtime"
         ;;
       prev) page=$((page - 1)); selected_rule="" ;;
       next) page=$((page + 1)); selected_rule="" ;;
