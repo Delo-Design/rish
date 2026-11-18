@@ -37,5 +37,8 @@ k  Восстановить CRON
 9  Бэкaпы (peзepвноe кoпиpoвaниe)
     bash /root/rish/backup2.sh --mc %f %d
 
+   IP сервера  {SERVER_IP}
+  bash -c 'source /root/rish/scripts/server_common.sh && rish_show_mc_menu_server_ip "$1"' -- %m
+
 0  Клонирование сайта
   bash /root/rish/scripts/clonesite.sh

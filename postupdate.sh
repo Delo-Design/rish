@@ -50,6 +50,7 @@ UpdateMcMenu() {
 
   v=$(tr -d '\r' < /root/rish/version | awk '{$1=$1;print}')
   sed -i "s/{VER}/$v/g" "$menu_target" || return 1
+  rish_refresh_mc_menu_server_ip "$menu_target" >/dev/null || return 1
   echo -e "Меню Midnight Commander ${GREEN}обновлено${WHITE}."
 }
 

@@ -4917,14 +4917,21 @@ def port_rule(rule):
                            or not action_options[1].startswith('value=')
                            or len(action_options) == 3 and not action_options[2].startswith('burst=')):
         raise ValueError('неизвестные параметры accept')
-    writable = 'no'
-    if 'source' in tokens:
-        index = tokens.index('source') + 1
+    writable, lookup_source = 'no', '-'
+    # In canonical output, source comes directly after the rule attributes.
+    # A lossy log prefix can otherwise be mistaken for a source clause.
+    source_index = 1
+    while source_index < len(tokens) and tokens[source_index].startswith(('family=', 'priority=')):
+        source_index += 1
+    if tokens[0] == 'rule' and tokens[source_index:source_index + 1] == ['source']:
+        index = source_index + 1
         inverted = tokens[index] == 'NOT'
         kind, _, source = tokens[index + inverted].partition('=')
         if kind == 'address':
-            if not inverted and log_prefix_is_lossless(rule, tokens):
-                writable = 'yes'
+            if not inverted:
+                lookup_source = source.replace('[', '').replace(']', '') or '-'
+                if log_prefix_is_lossless(rule, tokens):
+                    writable = 'yes'
         elif kind == 'mac':
             source = 'MAC ' + source
         elif kind == 'ipset':
@@ -4945,7 +4952,7 @@ def port_rule(rule):
         label += (' · кроме назначения ' if inverted else ' · к ') + destination
     if action_options:
         label += ' · лимит ' + action_options[1].partition('=')[2]
-    return endpoint, writable, label
+    return endpoint, writable, label, lookup_source
 
 def rules(fd, zone_summary=False):
     with open(fd, encoding='utf-8') as handle:
@@ -4976,8 +4983,8 @@ def show_rows():
             if summary is not None:
                 rows[rule] = (mode, summary)
     print(len(skipped))
-    for rule, (mode, (endpoint, writable, label)) in rows.items():
-        print('%d\t%s\t%s\t%s\t%s' % (mode, endpoint, writable, label, rule))
+    for rule, (mode, (endpoint, writable, label, lookup_source)) in rows.items():
+        print('%d\t%s\t%s\t%s\t%s\t%s' % (mode, endpoint, writable, label, lookup_source, rule))
 
 def matching_rule(fd, requested, key):
     equivalent = None
@@ -4990,6 +4997,47 @@ def matching_rule(fd, requested, key):
         except (ValueError, IndexError):
             continue
     return equivalent
+
+def check_saved_rules(zone_file):
+    prefixes, needs_xml = [], False
+    for rule in rules(4):
+        tokens = shlex.split(rule)
+        if tokens[:1] != ['rule']:
+            raise ValueError('неожиданный формат сохранённого правила')
+        if not log_prefix_is_lossless(rule, tokens):
+            needs_xml = True
+        values = [token.partition('=')[2] for token in tokens if token.startswith('prefix=')]
+        if values:
+            log_types = [token for token in tokens if token in ('log', 'nflog')]
+            if len(values) != 1 or len(log_types) != 1:
+                raise ValueError('неоднозначный префикс журнала')
+            prefixes.append((log_types[0], values[0]))
+    if not needs_xml:
+        return
+    if not zone_file:
+        sys.exit(2)
+
+    # Saved writes reparse every rule in the zone. Check the XML behind
+    # ambiguous CLI output, including prefixes on rules outside this menu.
+    from xml.etree import ElementTree
+    try:
+        zone = ElementTree.parse(zone_file).getroot()
+    except ElementTree.ParseError as error:
+        raise ValueError('не удалось разобрать XML зоны') from error
+    if zone.tag != 'zone':
+        raise ValueError('ожидался XML зоны firewalld')
+    verified = []
+    for log_type in ('log', 'nflog'):
+        for element in zone.findall('./rule/' + log_type):
+            prefix = element.get('prefix')
+            if not prefix:
+                continue
+            if (re.search(r'["=\x00-\x1f\x7f-\x9f]', prefix)
+                    or shlex.split('prefix="%s"' % prefix) != ['prefix=' + prefix]):
+                raise ValueError('префикс журнала не сохраняется при повторном разборе')
+            verified.append((log_type, prefix))
+    if sorted(prefixes) != sorted(verified):
+        raise ValueError('префиксы журнала в firewalld и XML зоны различаются')
 
 try:
     if sys.argv[1] == 'match':
@@ -5005,12 +5053,28 @@ try:
         summary = port_rule(sys.argv[2])
         if summary is None or summary[1] != 'yes':
             sys.exit(1)
+    elif sys.argv[1] == 'check-saved':
+        check_saved_rules(sys.argv[2])
     else:
         show_rows()
 except (ValueError, IndexError, OSError) as error:
     print('Не удалось разобрать rich rules: %s.' % error, file=sys.stderr)
     sys.exit(1)
 PY
+}
+
+rish_fw_rich_port_check_saved() {
+  local saved="$1" status=0 zone_file
+  rish_fw_rich_port_data check-saved "" "$saved" || status=$?
+  if ((status == 0)); then return 0; fi
+  if ((status == 2)) &&
+      zone_file=$(rish_fw_cmd --permanent --path-zone="$RISH_FW_ZONE") &&
+      [[ "$zone_file" == /* ]] &&
+      rish_fw_rich_port_data check-saved "" "$saved" "$zone_file"; then
+    return 0
+  fi
+  rish_fw_error "Запись отменена. Не удалось подтвердить сохранность постоянных rich rules зоны $RISH_FW_ZONE."
+  return 1
 }
 
 rish_fw_rich_port_state() {
@@ -5033,6 +5097,7 @@ rish_fw_rich_port_add() (
   fi
   IFS=$'\t' read -r state rule <<<"$match"
   if (((state & 2) == 0)); then
+    rish_fw_rich_port_check_saved "$saved" || return 1
     if output=$(rish_fw_cmd --permanent --zone="$RISH_FW_ZONE" --add-rich-rule="$rule" 2>&1); then
       # An ALREADY_ENABLED response does not make this invocation the owner.
       if [[ "$output" == success ]]; then added_saved=1; fi
@@ -5119,6 +5184,11 @@ rish_fw_rich_port_remove() (
   fi
   # Remove the saved copy first so rollback never needs to recreate a timed rule.
   if ((state & 2)); then
+    saved=$(rish_fw_cmd --permanent --zone="$RISH_FW_ZONE" --list-rich-rules) || {
+      rish_fw_error "Не удалось прочитать постоянные rich rules зоны $RISH_FW_ZONE."
+      return 1
+    }
+    rish_fw_rich_port_check_saved "$saved" || return 1
     rish_fw_quiet --permanent --zone="$RISH_FW_ZONE" --remove-rich-rule="$rule" || true
     saved=$(rish_fw_cmd --permanent --zone="$RISH_FW_ZONE" --list-rich-rules) || {
       rish_fw_error "Не удалось проверить сохранённое правило после удаления."
@@ -5154,7 +5224,7 @@ rish_fw_rich_port_remove() (
 
 rish_fw_ports_menu() {
   local choice=0 value kind action mode label values info_rc action_label kind_label result
-  local runtime saved rows skipped row rule port state writable rule_label i last first columns lines
+  local runtime saved rows skipped row rule port state writable rule_label lookup_source i last first columns lines
   local page=0 page_size=12 rich_ok selected_rule="" default menu_mode menu_width menu_height row_width context_choice
   local -a items actions rule_rows
   local -a scopes=("" "активное" "постоянное" "активное и постоянное")
@@ -5227,7 +5297,7 @@ rish_fw_ports_menu() {
         ((menu_height >= 1)) || menu_height=1
       fi
       for ((i=first; i<last && i<${#rule_rows[@]}; i++)); do
-        IFS=$'\t' read -r state port writable rule_label rule <<<"${rule_rows[$i]}"
+        IFS=$'\t' read -r state port writable rule_label lookup_source rule <<<"${rule_rows[$i]}"
         row="$rule_label · ${scopes[$state]}"
         if ((${#row} > row_width)); then row="${row:0:row_width-1}…"; fi
         [[ "$rule" != "$selected_rule" ]] || default=${#items[@]}
@@ -5256,7 +5326,7 @@ rish_fw_ports_menu() {
       next) page=$((page + 1)); selected_rule="" ;;
       rule:*)
         i="${actions[$choice]#rule:}"
-        IFS=$'\t' read -r state port writable rule_label rule <<<"${rule_rows[$i]}"
+        IFS=$'\t' read -r state port writable rule_label lookup_source rule <<<"${rule_rows[$i]}"
         selected_rule="$rule"
         context_choice=0
         if [[ "$writable" == yes ]]; then
@@ -5270,6 +5340,10 @@ rish_fw_ports_menu() {
           rish_fw_field "Правило" "$rule"
           rish_fw_field "Состояние" "${scopes[$state]}"
           if ((context_choice == 0)); then
+            if [[ "$lookup_source" != - ]]; then
+              printf '\n'
+              rish_fw_ip_lookup "$lookup_source" || true
+            fi
             rish_fw_pause
           elif rish_fw_confirm "Удалить выбранное rich rule?"; then
             rish_fw_rich_port_remove "$rule" "$port" "$state" || true

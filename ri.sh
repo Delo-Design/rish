@@ -1446,6 +1446,7 @@ EOF
       if ${LocalServer}; then
         cat "${RISH_HOME}/templates/mc.menu.local" >> /etc/mc/mc.menu
       fi
+      rish_refresh_mc_menu_server_ip /etc/mc/mc.menu >/dev/null || exit 1
     fi
     v=$(tr -d '\r' < /root/rish/version | awk '{$1=$1;print}')
     sed -i "s/{VER}/$v/g" /etc/mc/mc.menu

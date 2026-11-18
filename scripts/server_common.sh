@@ -3,6 +3,33 @@
 # Shared server, package installation and split-screen UI helpers. Sourcing only defines functions.
 # shellcheck disable=SC2154
 
+rish_refresh_mc_menu_server_ip() {
+  # U+2007 (figure space) occupies the shortcut column without a visible mark.
+  local menu_file="$1" server_ip label_prefix="   IP сервера  "
+
+  server_ip=$(ip route get 1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }') || server_ip=""
+  [[ "$server_ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || server_ip="не определён"
+  printf '%s\n' "$server_ip"
+
+  if grep -Fxq -- "$label_prefix$server_ip" "$menu_file"; then
+    return 0
+  fi
+  grep -q -- "^$label_prefix" "$menu_file" || return 1
+  sed -i -- "s/^$label_prefix.*/$label_prefix$server_ip/" "$menu_file"
+}
+
+rish_show_mc_menu_server_ip() {
+  local server_ip refresh_failed=0
+  server_ip=$(rish_refresh_mc_menu_server_ip "$1") || refresh_failed=1
+  clear
+  printf 'IP сервера: \033[0;33m%s\033[0m\n' "$server_ip"
+  if ((refresh_failed)); then
+    printf 'Не удалось обновить строку с IP в меню.\n'
+  fi
+  printf '\nНажмите Enter\n'
+  read -r _
+}
+
 rish_initialize_split_screen() {
   local size
 
