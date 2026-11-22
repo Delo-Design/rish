@@ -18,51 +18,122 @@ RED='\033[0;31m'
 LRED='\033[1;31m'
 WHITE='\033[0m'
 YELLOW='\033[0;33m'
-RISH_SETTINGS_NEED_FIX=0
 
 source "${RISH_HOME}/windows.sh"
 cd /root || exit 1
-clear
+if [[ -t 0 && -t 1 ]]; then
+  clear -x
+fi
 
 version_gt() {
   test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"
 }
 
-Update() {
-  local action_status
+PrintVersionLine() {
+  local label="$1" version="$2" missing_label="$3"
+  local hint="${4:-}" hint_color="${5:-}"
+  local color="$GREEN"
 
-  # Извлекаем файл версии из архива
-  if tar -xzf "rish2.tar.gz" --strip-components=1 "rish/version"
-  then
-    # Если файл версии не существует в папке rish, то устанавливаем версию 0.0.0
-    if [ ! -f "/root/rish/version" ]; then
-      echo "Ваша версия RISH не известна."
-      folder_version="0.0.0"
-    else
-      folder_version=$(cat "/root/rish/version")
-      echo -e "Ваша версия RISH ${GREEN}${folder_version}${WHITE}"
-    fi
-    archive_version=$(cat "/root/version")
-    rm -f "/root/version" > /dev/null
+  if [[ -z "$version" ]]; then
+    version="$missing_label"
+    color="$YELLOW"
+  fi
+  printf '  %-8s  %b%s%b' "$label" "$color" "$version" "$WHITE"
+  if [[ -n "$hint" ]]; then
+    printf ' · %b%s%b' "$hint_color" "$hint" "$WHITE"
+  fi
+  printf '\n'
+}
+
+PrintInstalledVersions() {
+  local packages package version
+  local php_version_list="" apache_version="" mariadb_version=""
+  local -a php_versions=()
+
+  if ! packages=$(rpm -qa --qf '%{NAME} %{VERSION}\n' 2>/dev/null); then
+    printf '  %bНе удалось прочитать%b установленные версии пакетов.\n' "$YELLOW" "$WHITE"
+    return
+  fi
+
+  while read -r package version; do
+    case "$package" in
+      php[0-9][0-9]-php-fpm|php-fpm) php_versions+=("$version") ;;
+      httpd) apache_version="$version" ;;
+      MariaDB-server|mariadb-server) mariadb_version="$version" ;;
+    esac
+  done <<< "$packages"
+
+  if ((${#php_versions[@]} > 0)); then
+    php_version_list=$(printf '%s\n' "${php_versions[@]}" | sort -Vu)
+    php_version_list=${php_version_list//$'\n'/, }
+  fi
+
+  PrintVersionLine 'PHP-FPM' "$php_version_list" 'не установлен'
+  PrintVersionLine 'Apache' "$apache_version" 'не установлен'
+  PrintVersionLine 'MariaDB' "$mariadb_version" 'не установлена'
+}
+
+PrintSettingsWarning() {
+  case "$1" in
+    0) ;;
+    1)
+      printf '  Требуется %bпроверка и восстановление%b настроек RISH.\n' "$YELLOW" "$WHITE"
+      ;;
+    *)
+      printf '  Проверка настроек RISH завершилась с %bошибкой%b.\n' "$RED" "$WHITE"
+      ;;
+  esac
+}
+
+Update() {
+  local archive_source="${1:-}"
+  local archive_version folder_version installed_version update_label def choice action_status
+  local version_hint="" version_hint_color="$YELLOW"
+  local settings_status="$rish_check_status" preserve_check_output=0
+
+  if archive_version=$(tar -xOzf rish2.tar.gz rish/version) && [[ -n "$archive_version" ]]; then
+    installed_version=$(cat "${RISH_HOME}/version" 2>/dev/null)
+    folder_version="${installed_version:-0.0.0}"
     update_label="Установить RISH ${archive_version}"
-    def="default=0"
+    def="default=5"
     if version_gt "${archive_version}" "${folder_version}"; then
-      echo -e "Доступна более новая версия RISH для обновления – ${GREEN}${archive_version}${WHITE}"
-      echo "Рекомендуем обновиться до этой версии."
-      echo
-    else
-      echo -e "Ваша версия RISH ${GREEN}актуальна${WHITE} - обновление не требуется."
-      echo "Но если нужно - вы можете переустановить RISH."
-      echo
+      def="default=0"
+      version_hint="доступна ${archive_version}"
+    elif [[ "$archive_version" == "$folder_version" ]]; then
       update_label="Переустановить RISH ${archive_version}"
-      def="default=5"
+      version_hint="актуальна"
+      version_hint_color="$GREEN"
+    else
+      version_hint="в архиве ${archive_version}"
     fi
-    if [[ "$RISH_SETTINGS_NEED_FIX" -eq 1 ]]; then
+
+    if [[ "$archive_source" == local ]]; then
+      version_hint=""
+    fi
+    if [[ "$settings_status" -eq 1 ]]; then
       def="default=1"
+    elif [[ "$settings_status" -ne 0 ]]; then
+      preserve_check_output=1
     fi
+
     while true; do
       # Без терминала меню может принять конец ввода за Enter.
       [[ -t 0 && -t 1 ]] || exit 1
+      if [[ "$preserve_check_output" -eq 0 ]]; then
+        clear -x
+      fi
+      preserve_check_output=0
+
+      PrintVersionLine 'RISH' "$installed_version" 'неизвестна' "$version_hint" "$version_hint_color"
+      PrintVersionLine 'Kernel' "$(uname -r 2>/dev/null)" 'не удалось определить'
+      PrintInstalledVersions
+      if [[ "$archive_source" == local ]]; then
+        printf '\n  Для обновления RISH использует архив %b/root/rish2.tar.gz%b.\n' "$YELLOW" "$WHITE"
+        printf '  При выходе архив удалится. Для онлайн-проверки откройте меню снова.\n'
+      fi
+      PrintSettingsWarning "$settings_status"
+      echo
+
       vertical_menu "current" 2 0 50 "${def}" "${update_label}" "Проверка и восстановление настроек RISH" "Проверка обновлений PHP" "Проверка обновлений Apache" "Проверка обновлений MariaDB" "Выйти"
       choice=$?
       [[ -t 0 && -t 1 ]] || exit 1
@@ -123,11 +194,16 @@ Update() {
           exit "$action_status"
           ;;
       esac
+      if [[ "$choice" -eq 1 ]]; then
+        settings_status="$action_status"
+      fi
       def="default=$choice"
       echo
+      [[ -t 0 && -t 1 ]] || exit 1
+      vertical_menu "current" 2 0 5 nomouse "Вернуться к сводке"
     done
   else
-    echo "Внутри архива отсутствует файл версии. Что-то пошло не так."
+    echo "Не удалось прочитать версию RISH из архива."
     echo "Обновление невозможно."
     echo
     vertical_menu "current" 2 0 5 "Нажмите Enter"
@@ -139,31 +215,21 @@ echo "Проверяем настройки RISH..."
 bash "${RISH_HOME}/rish_check.sh" silent
 rish_check_status=$?
 
-case "$rish_check_status" in
-  0)
-    ;;
-  1)
-    RISH_SETTINGS_NEED_FIX=1
-    echo
-    echo -e "${YELLOW}Требуется проверка и восстановление настроек RISH${WHITE}"
-    echo
-    ;;
-  2)
-    echo
-    echo -e "${RED}Проверка настроек RISH завершилась с ошибкой:${WHITE}"
+if [[ "$rish_check_status" -ne 0 ]]; then
+  echo
+  PrintSettingsWarning "$rish_check_status"
+  if [[ "$rish_check_status" -eq 2 ]]; then
     bash "${RISH_HOME}/rish_check.sh"
-    echo
-    ;;
-esac
+  fi
+  echo
+fi
 
 echo "Проверяем обновление..."
 if [[ -f /root/rish2.tar.gz ]]; then
   echo
   echo -e "Найден архив ${YELLOW}rish2.tar.gz${WHITE} в папке /root"
-  echo "Проверка в интернете не выполняется."
-  echo "Если хотите обновиться через интернет – удалите файл вручную."
   echo
-  Update
+  Update local
 else
   echo "Скачиваем архив RISH с rish.su..."
   if curl -L --connect-timeout 15 --max-time 60 --fail --progress-bar -o rish2.tar.gz https://rish.su/rish2.tar.gz

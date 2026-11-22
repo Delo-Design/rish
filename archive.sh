@@ -1200,32 +1200,78 @@ function restore_folder() {
 }
 
 restore_site_find_config() {
-  local name="$1" f
+  local name="$1" named_config="/etc/httpd/conf.d/$1.conf" f roots
   RESTORE_SITE_CONF=""
-  for f in /etc/httpd/conf.d/*.conf; do
-    [[ -f "$f" ]] || continue
-    if awk -v name="$name" '$1 == "ServerName" && $2 == name { found=1 } END { exit !found }' "$f"; then
-      RESTORE_SITE_CONF="$f"
+  if [[ -f "$named_config" ]]; then
+    RESTORE_SITE_CONF="$named_config"
+    if roots="$(rish_read_vhost_document_roots "$name" --inherit "$named_config")" && [[ -n "$roots" ]]; then
       return 0
     fi
+  fi
+  for f in /etc/httpd/conf.d/*.conf; do
+    [[ "$f" != "$named_config" && -f "$f" ]] || continue
+    if roots="$(rish_read_vhost_document_roots "$name" --inherit "$f")"; then
+      if [[ -n "$roots" ]]; then
+        RESTORE_SITE_CONF="$f"
+        return 0
+      fi
+      [[ -n "$RESTORE_SITE_CONF" ]] || RESTORE_SITE_CONF="$f"
+    fi
   done
-  return 1
+  [[ -n "$RESTORE_SITE_CONF" ]]
 }
 
 restore_site_check_config() {
-  local conf_file="$1" target="$2" document_root
-  document_root="$(awk '$1 == "DocumentRoot" { print $2; exit }' "$conf_file")"
-  [[ -n "$document_root" ]] || return 1
-  document_root="$(realpath -ms -- "$document_root")" || return 1
-  if [[ "$document_root" != "$target" && "$document_root" != "$target/"* ]]; then
-    echo -e "DocumentRoot сайта указывает на другую папку: ${YELLOW}${document_root}${WHITE}."
+  local conf_file="$1" target="$2" document_root document_roots
+  if ! document_roots="$(rish_read_vhost_document_roots "${target##*/}" --inherit "$conf_file")" || [[ -z "$document_roots" ]]; then
+    printf 'Не удалось определить DocumentRoot в %b%s%b.\n' "$YELLOW" "$conf_file" "$WHITE"
+    return 1
+  fi
+  while IFS= read -r document_root; do
+    if [[ "$document_root" != /* ]]; then
+      printf 'Не удалось определить абсолютный путь DocumentRoot в %b%s%b.\n' "$YELLOW" "$conf_file" "$WHITE"
+      return 1
+    fi
+    document_root="$(realpath -ms -- "$document_root")" || return 1
+    if [[ "$document_root" != "$target" && "$document_root" != "$target/"* ]]; then
+      echo -e "DocumentRoot сайта указывает на другую папку: ${YELLOW}${document_root}${WHITE}."
+      return 1
+    fi
+  done <<< "$document_roots"
+}
+
+restore_site_offer_document_root() (
+  local SM_DIRECTORY="$1" SM_FILE_NAME="$2" public_path="$3" new_root
+
+  source "${SCRIPT_DIR}/scripts/site_manager.sh" || return 1
+  if ! site_manager_resolve_context || ((!SM_DELETE_AVAILABLE)) ||
+    [[ "$SM_SITE_PATH" != "$SM_DIRECTORY/$SM_FILE_NAME" ]]; then
+    return 1
+  fi
+  new_root="$SM_SITE_PATH/${public_path##*/}"
+  [[ ! -L "$new_root" && "$(realpath -e -- "$new_root")" == "$public_path" ]] || return 1
+
+  site_manager_commit_document_root /etc/httpd/conf.d "$new_root" select
+)
+
+restore_site_find_sql_file() {
+  local base="${1%.tar.gz}" decrypt_identity="$2" encrypted_sql_file="$3"
+
+  if [[ -n "$decrypt_identity" ]]; then
+    [[ -f "$encrypted_sql_file" ]] || return 1
+    printf '%s\n' "$encrypted_sql_file"
+  elif [[ -f "${base}.sql" ]]; then
+    printf '%s\n' "${base}.sql"
+  elif [[ -f "${base}.sql.gz" ]]; then
+    printf '%s\n' "${base}.sql.gz"
+  else
     return 1
   fi
 }
 
 function restore_site() {
   local file="$1" site_guess="$2" site_path="${3:-}" decrypt_identity="${4:-}" encrypted_sql_file="${5:-}"
-  local context="${6:-site_restore_source}" base target_path target_user target_hint document_root choice ret
+  local context="${6:-site_restore_source}" sql_file target_path target_user target_hint document_root document_roots choice ret
   local skip_create=0 has_database=0 conf_file="" sql_label
   # shellcheck disable=SC2034
   local -A site_restore_source=(['kind']=file ['tar']="$file" ['identity']="$decrypt_identity")
@@ -1244,8 +1290,9 @@ function restore_site() {
       else
         # Вне каталога сайтов сначала учитываем фактического владельца
         # существующего vhost: он мог отличаться от владельца в бэкапе.
-        if restore_site_find_config "$site_guess"; then
-          document_root="$(awk '$1 == "DocumentRoot" { print $2; exit }' "$RESTORE_SITE_CONF")"
+        if restore_site_find_config "$site_guess" &&
+          document_roots="$(rish_read_vhost_document_roots "$site_guess" --inherit "$RESTORE_SITE_CONF")"; then
+          document_root="${document_roots%%$'\n'*}"
           if [[ "$document_root" =~ ^(/var/www/[^/]+/www/[^/]+)(/|$) ]]; then
             target_path="${BASH_REMATCH[1]}"
             [[ "${target_path##*/}" != "$site_guess" ]] || target_hint="$target_path"
@@ -1268,15 +1315,9 @@ function restore_site() {
       return 1
     fi
     site_path="$(realpath -e -- "$site_path")" || return 1
-    base="${file%.tar.gz}"
-    if [[ -n "$decrypt_identity" ]]; then
-      if [[ -n "$encrypted_sql_file" && -f "$encrypted_sql_file" ]]; then
-        site_source_ref['sql']="$encrypted_sql_file"
-        site_source_ref['sql_identity']="$decrypt_identity"
-      fi
-    else
-      [[ ! -f "${base}.sql.gz" ]] || site_source_ref['sql']="${base}.sql.gz"
-      [[ ! -f "${base}.sql" ]] || site_source_ref['sql']="${base}.sql"
+    if sql_file="$(restore_site_find_sql_file "$file" "$decrypt_identity" "$encrypted_sql_file")"; then
+      site_source_ref['sql']="$sql_file"
+      site_source_ref['sql_identity']="$decrypt_identity"
     fi
   fi
   if [[ "${site_source_ref['kind']}" == remote ]]; then
@@ -1353,8 +1394,12 @@ function restore_site() {
     echo "Имя сайта превышает допустимую длину имени базы (64)."
     return 1
   fi
+  local restore_default=1
   echo -e "Назначение: ${GREEN}${target_path}${WHITE}; владелец: ${YELLOW}${target_user}${WHITE}."
   if ((has_database)); then
+    if [[ "${site_source_ref['kind']}" == file ]]; then
+      restore_default=0
+    fi
     echo -e "База данных: ${YELLOW}${site_name}${WHITE}. Таблицы из дампа будут импортированы в эту базу."
   elif [[ "${site_source_ref['kind']}" == remote ]]; then
     echo "Отдельный дамп базы в выбранной копии не найден: будут восстановлены файлы."
@@ -1362,7 +1407,7 @@ function restore_site() {
     echo "Дамп базы отсутствует: будут восстановлены только файлы."
   fi
   echo "При обрыве или ошибке после начала записи восстановление может остаться частичным."
-  vertical_menu current 2 0 60 default=1 "Начать восстановление" "Отмена"
+  vertical_menu current 2 0 60 "default=${restore_default}" "Начать восстановление" "Отмена"
   [[ "$?" -eq 0 ]] || return 1
   restore_site_check_config "$conf_file" "$target_path" || return 1
   if ! restore_folder "$file" "$target_path" auto "$decrypt_identity" 1 "$context" site_restore_plan; then
@@ -1371,7 +1416,30 @@ function restore_site() {
   if ((has_database)); then
     restore_db_core "$sql_label" "$site_name" 0 "${site_source_ref['sql_identity']:-}" 1 "$context" "$target_user" || return 1
   fi
-  fix_site_configuration "$site_path" "$site_name" || return 1
+  local restore_public_folder="" public_folder_result=""
+  if [[ -t 0 && -t 1 ]]; then
+    public_folder_result=restore_public_folder
+  fi
+  fix_site_configuration "$site_path" "$site_name" "$public_folder_result" || return 1
+  if [[ -n "$restore_public_folder" ]]; then
+    ret=0
+    restore_site_offer_document_root "$site_path" "$site_name" "$restore_public_folder" || ret=$?
+    if ((ret != 0)); then
+      local restored_parts='Файлы'
+      if ((has_database)); then
+        restored_parts='Файлы и база данных'
+      fi
+      printf '%s сайта %b%s%b восстановлены.\n' "$restored_parts" "$GREEN" "$site_name" "$WHITE"
+      if ((ret == 2)); then
+        echo 'Смена DocumentRoot отменена.'
+      else
+        echo 'Сменить DocumentRoot не удалось.'
+        printf 'Публичная папка Joomla: %b%s%b\n' "$YELLOW" "$restore_public_folder" "$WHITE"
+        echo 'Для смены DocumentRoot используйте F2 → Публичная папка сайта (DocumentRoot).'
+      fi
+      return 0
+    fi
+  fi
   echo -e "Сайт ${GREEN}${site_name}${WHITE} восстановлен."
 }
 
@@ -2019,7 +2087,12 @@ function extract() {
     options+=("restore_cron::Восстановить CRON")
   fi
   if [[ "$ext" == "tar.gz" ]]; then
-    options+=("restore_site::Восстановить сайт из архива $db_guess")
+    local restore_site_label="Восстановить сайт"
+    # SQL внутри архива проверяем после выбора восстановления.
+    if restore_site_find_sql_file "$file" "$decrypt_identity" "$encrypted_companion" >/dev/null; then
+      restore_site_label="Восстановить сайт + базу"
+    fi
+    options+=("restore_site::${restore_site_label} из архива $db_guess")
     options+=("restore_folder::Восстановить папку из архива $db_guess")
   elif [[ "$ext" == "sql.gz" || "$ext" == "sql" ]]; then
     if [[ -n "$decrypt_identity" ]]; then

@@ -12,6 +12,7 @@ source "${RISH_HOME}/windows.sh"
 
 SITE_ENTRY="${1:-}"
 SITE_PARENT="${2:-}"
+SITE_DOCUMENT_ROOT="${3:-}"
 PMA_LANGUAGE="all-languages"
 PMA_LATEST_VERSION_INFO_URL="https://www.phpmyadmin.net/home_page/version.php"
 PMA_DOWNLOAD_BASE_URL="https://files.phpmyadmin.net/phpMyAdmin"
@@ -181,6 +182,7 @@ install_to_subdir()
   local parent_path="$3"
   local dirname="$4"
   local tmp_dir="$5"
+  local backup_directory="$6"
   local extracted_path
   local backup_time
 
@@ -202,9 +204,9 @@ install_to_subdir()
   if [[ -d "$target_path" ]] && dir_is_pma "$target_path"; then
     echo "Создаем архив текущей установки... "
     backup_time="$(date +%Y-%m-%d-%H-%M-%S)"
-    if silent tar -zcf "${parent_path}/${backup_time}.tar.gz" -C "$parent_path" "$dirname"; then
+    if silent tar -zcf "${backup_directory}/${backup_time}.tar.gz" -C "$parent_path" -- "$dirname"; then
       echo -e "Создан файл ${YELLOW}${backup_time}.tar.gz${WHITE}"
-      echo -e "Старая версия архивирована в папку: ${YELLOW}${parent_path}${WHITE}"
+      echo -e "Старая версия архивирована в папку: ${YELLOW}${backup_directory}${WHITE}"
       echo "Если phpMyAdmin работает корректно, этот архив можно удалить."
     else
       echo "Not created"
@@ -261,11 +263,11 @@ install_to_root()
   echo "Done"
 
   if dir_is_pma "$target_path"; then
-    echo "Старая версия phpMyAdmin найдена в корне сайта."
+    echo "Старая версия phpMyAdmin найдена в DocumentRoot."
     echo "После создания архива содержимое папки будет очищено и заменено новой версией."
     echo "Создаем архив текущей установки... "
     backup_time="$(date +%Y-%m-%d-%H-%M-%S)"
-    if silent tar -zcf "${parent_path}/${dirname}-pma-root-${backup_time}.tar.gz" -C "$parent_path" "$dirname"; then
+    if silent tar -zcf "${parent_path}/${dirname}-pma-root-${backup_time}.tar.gz" -C "$parent_path" -- "$dirname"; then
       echo -e "Создан файл ${YELLOW}${dirname}-pma-root-${backup_time}.tar.gz${WHITE}"
       echo -e "Старая версия архивирована в папку: ${YELLOW}${parent_path}${WHITE}"
       echo "Если phpMyAdmin работает корректно, этот архив можно удалить."
@@ -277,7 +279,7 @@ install_to_root()
     clear_dir_contents "$target_path" || return 1
   fi
 
-  echo -n "Устанавливаем в корень сайта... "
+  echo -n "Устанавливаем в DocumentRoot... "
   if cp -a "${extracted_path}/." "$target_path/"; then
     echo "Done"
   else
@@ -320,6 +322,16 @@ if [[ -z "$SITE_OWNER" || "$SITE_OWNER" == "$SITE_PARENT_PATH" ]]; then
   fail "Не удалось определить пользователя сайта по пути: ${SITE_PARENT_PATH}"
 fi
 
+PMA_WEB_ROOT="$SITE_PATH"
+if [[ -n "$SITE_DOCUMENT_ROOT" ]]; then
+  if [[ "$SITE_ENTRY" == */* || "$SITE_PATH" != "$SITE_PARENT_PATH/"* ||
+    "$SITE_PARENT_PATH" != "/var/www/$SITE_OWNER/"* || "$SITE_DOCUMENT_ROOT" != /* ]] ||
+    ! PMA_WEB_ROOT="$(real_path "$SITE_DOCUMENT_ROOT")" || [[ ! -d "$PMA_WEB_ROOT" ]] ||
+    [[ "$PMA_WEB_ROOT" != "$SITE_PATH" && "$PMA_WEB_ROOT" != "$SITE_PATH/"* ]]; then
+    fail "DocumentRoot должен быть существующей папкой внутри выбранного сайта."
+  fi
+fi
+
 echo "Для уменьшения поверхности атаки рекомендуем DBeaver Community вместо phpMyAdmin."
 echo "Он работает на вашем компьютере и подключается к базе через SSH-туннель."
 echo "Так на сервере не нужен дополнительный веб-интерфейс управления базами данных."
@@ -327,13 +339,16 @@ echo "Скачать: https://dbeaver.io/"
 echo
 
 printf 'Куда установить phpMyAdmin на сайте %b%s%b?\n' "$GREEN" "$SITE_ENTRY" "$WHITE"
+if [[ "$PMA_WEB_ROOT" != "$SITE_PATH" ]]; then
+  printf 'DocumentRoot сайта: %b%s%b\n' "$GREEN" "$PMA_WEB_ROOT" "$WHITE"
+fi
 echo
 echo "Рекомендуем выделить для phpMyAdmin отдельный сайт."
 echo "Если здесь уже работает CMS, используйте отдельную папку."
 echo
 echo "Enter — выбрать папку pppma."
 echo "Другая папка — замените pppma нужным именем."
-echo "Корень сайта — очистите поле и нажмите Enter."
+echo "Установить прямо в DocumentRoot — очистите поле и нажмите Enter."
 echo "Отмена — замените имя на q и нажмите Enter."
 echo
 read -e -p $'\001\033[0m\002Имя папки: \001\033[0;32m\002' -i "pppma" PMA_NAME
@@ -346,25 +361,20 @@ case "${PMA_NAME,,}" in
     ;;
 esac
 
-if [[ -z "$PMA_NAME" ]]; then
-  PMA_PATH="$SITE_PATH"
-  PMA_PARENT_PATH="$SITE_PATH"
-  PMA_DIRNAME=""
-  PMA_ROOT_INSTALL=1
-else
-  PMA_PATH="${SITE_PATH}/${PMA_NAME}"
-  PMA_PARENT_PATH="$SITE_PATH"
-  PMA_DIRNAME="$PMA_NAME"
-  PMA_ROOT_INSTALL=0
-fi
-
 if [[ "$PMA_NAME" == "." || "$PMA_NAME" == ".." || "$PMA_NAME" == */* ]]; then
   fail "Имя папки phpMyAdmin должно быть пустым или простым именем без '/'."
 fi
 
+PMA_PATH="${PMA_WEB_ROOT}${PMA_NAME:+/$PMA_NAME}"
+PMA_ROOT_INSTALL=0
+[[ -n "$PMA_NAME" ]] || PMA_ROOT_INSTALL=1
+if [[ -n "$SITE_DOCUMENT_ROOT" && -L "$PMA_PATH" ]]; then
+  fail "Папка phpMyAdmin должна находиться внутри DocumentRoot без символической ссылки."
+fi
+
 if [[ "$PMA_ROOT_INSTALL" -eq 1 ]]; then
   if ! dir_is_empty "$PMA_PATH" && ! dir_is_pma "$PMA_PATH"; then
-    echo -e "${YELLOW}Корень сайта не пуст:${WHITE} ${PMA_PATH}"
+    echo -e "${YELLOW}DocumentRoot не пуст:${WHITE} ${PMA_PATH}"
     echo "Папка не похожа на установленный phpMyAdmin."
     echo "Установка в корень может перезаписать файлы сайта."
     echo "Если выбрать \"Очистить папку и продолжить\", все содержимое этой папки будет удалено."
@@ -474,7 +484,7 @@ confirm_same_version_reinstall "$PMA_VERSION"
 
 if dir_is_pma "$PMA_PATH"; then
   if [[ "$PMA_ROOT_INSTALL" -eq 1 ]]; then
-    echo "В корне сайта найдена установленная версия phpMyAdmin."
+    echo "В DocumentRoot найдена установленная версия phpMyAdmin."
   else
     echo "В выбранной папке найдена установленная версия phpMyAdmin."
   fi
@@ -487,7 +497,7 @@ else
   echo -e "Ставим phpMyAdmin по адресу ${GREEN}${SITE_ENTRY}${PMA_NAME:+/${PMA_NAME}}${WHITE}?"
 
   if [[ "$PMA_ROOT_INSTALL" -eq 1 ]] && ! dir_is_empty "$PMA_PATH" && ! dir_is_pma "$PMA_PATH"; then
-    echo -e "${YELLOW}Внимание:${WHITE} установка в корень сайта может перезаписать одноименные файлы."
+    echo -e "${YELLOW}Внимание:${WHITE} установка в DocumentRoot может перезаписать одноименные файлы."
   fi
 
   if ! vertical_menu "current" 2 0 5 "Да" "Нет"; then
@@ -501,9 +511,11 @@ EXTRACT_DIR="${TMP_ROOT}/extract"
 mkdir -p "$EXTRACT_DIR" || fail "Не удалось создать временную папку распаковки."
 
 if [[ "$PMA_ROOT_INSTALL" -eq 1 ]]; then
-  install_to_root "$PMA_ARCHIVE" "$PMA_PATH" "$SITE_PARENT_PATH" "$SITE_ENTRY" "$EXTRACT_DIR" || fail "Установка phpMyAdmin в корень сайта не выполнена."
+  install_to_root "$PMA_ARCHIVE" "$PMA_PATH" "${PMA_WEB_ROOT%/*}" "${PMA_WEB_ROOT##*/}" "$EXTRACT_DIR" ||
+    fail "Установка phpMyAdmin в DocumentRoot не выполнена."
 else
-  install_to_subdir "$PMA_ARCHIVE" "$PMA_PATH" "$PMA_PARENT_PATH" "$PMA_DIRNAME" "$EXTRACT_DIR" || fail "Установка phpMyAdmin не выполнена."
+  install_to_subdir "$PMA_ARCHIVE" "$PMA_PATH" "$PMA_WEB_ROOT" "$PMA_NAME" "$EXTRACT_DIR" "$SITE_PATH" ||
+    fail "Установка phpMyAdmin не выполнена."
 fi
 
 echo -n "Настраиваем... "

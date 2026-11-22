@@ -22,9 +22,22 @@ CMS_DATABASE_AFFECTED_DATABASES=()
 CMS_DATABASE_WARNINGS=0
 
 source "${RISH_HOME}/php_helpers.sh"
+source "${RISH_HOME}/scripts/site_helpers.sh"
 
 cms_database_joomla_detect() {
-  [[ -f "$1/configuration.php" && -f "$1/administrator/manifests/files/joomla.xml" ]]
+  local document_root="$1" site_root="${1%/*}" bound_root
+  local manifest="administrator/manifests/files/joomla.xml"
+
+  if [[ -f "$document_root/configuration.php" && -f "$document_root/$manifest" ]]; then
+    printf '%s\n' "$document_root"
+    return 0
+  fi
+
+  [[ "$site_root" =~ ^/var/www/[^/]+/www/[^/]+ &&
+    -f "$site_root/configuration.php" && -f "$site_root/$manifest" ]] || return 1
+  bound_root="$(rish_joomla_root_from_public_directory "$site_root" "$document_root")" || return 1
+  [[ "$bound_root" == "$site_root" ]] || return 1
+  printf '%s\n' "$site_root"
 }
 
 cms_database_joomla_label() {
@@ -230,10 +243,11 @@ cms_database_print_sites_without_database() {
 
 cms_database_find_sites() {
   local wanted_user="$1" affected_databases="${2:-}"
-  local conf_file site_path site_name php_bin adapter metadata db_name db_user db_host fingerprint
-  local candidate detected mapped_database mapping_status site_database site_relative database_found
+  local conf_file document_roots site_path site_name site_domain config_path php_bin adapter metadata
+  local db_name db_user db_host fingerprint candidate detected mapped_database mapping_status site_database database_found
   local local_database_list="" local_database_status=0
   local -A seen=()
+  local -A seen_configs=()
   local -A seen_databases=()
 
   CMS_DATABASE_PATHS=()
@@ -263,13 +277,26 @@ cms_database_find_sites() {
 
   for conf_file in /etc/httpd/conf.d/*.conf; do
     [[ -f "$conf_file" ]] || continue
-    site_path="$(awk '$1 == "DocumentRoot" { gsub(/^"|"$/, "", $2); print $2; exit }' "$conf_file")"
-    [[ -n "$site_path" ]] || continue
+    site_name="$(awk 'tolower($1) == "servername" {
+      name = tolower($2)
+      gsub(/^["\047]|["\047]$/, "", name)
+      sub(/^[^:]+:\/\//, "", name)
+      sub(/:[0-9]+$/, "", name)
+      sub(/\.$/, "", name)
+      print name
+      exit
+    }' "$conf_file")"
+    document_roots="$(rish_read_vhost_document_roots "$site_name" --inherit "$conf_file")" || document_roots=""
+    if [[ -z "$document_roots" ]]; then
+      document_roots="$(awk '$1 == "DocumentRoot" { gsub(/^"|"$/, "", $2); print $2; exit }' "$conf_file")"
+    fi
+    site_path="${document_roots%%$'\n'*}"
+    [[ "$site_path" == /* ]] || continue
     site_path="$(realpath -e -- "$site_path" 2>/dev/null)" || continue
-    [[ "$site_path" =~ ^/var/www/[^/]+/www/ && -d "$site_path" ]] || continue
+    [[ "$site_path" =~ ^/var/www/[^/]+/www/([^/]+)(/|$) && -d "$site_path" ]] || continue
+    site_domain="${BASH_REMATCH[1]}"
     [[ -z "${seen[$site_path]:-}" ]] || continue
     seen["$site_path"]=1
-    site_name="$(awk '$1 == "ServerName" { print $2; exit }' "$conf_file")"
     candidate=0
     [[ "$site_path/" == "/var/www/$wanted_user/www/"* ]] && candidate=1
     mapping_status=0
@@ -280,19 +307,26 @@ cms_database_find_sites() {
     detected=0
 
     for adapter in "${CMS_DATABASE_ADAPTERS[@]}"; do
-      "cms_database_${adapter}_detect" "$site_path" || continue
+      config_path="$("cms_database_${adapter}_detect" "$site_path")" || continue
       detected=1
+      [[ -z "${seen_configs[$config_path]:-}" ]] || break
       php_bin="$(get_site_php_bin "$site_name" 2>/dev/null)" || php_bin=""
+      # Отдельный HTTPS-vhost может быть объявлен с ServerName www.<домен>.
+      if [[ -z "$php_bin" && "$site_name" != "$site_domain" ]] &&
+        validate_site_name "$site_domain" &&
+        php_bin="$(get_site_php_bin "$site_domain" 2>/dev/null)"; then
+        site_name="$site_domain"
+      fi
       if [[ -z "$php_bin" ]]; then
         if ((candidate)); then
-          cms_database_add_manual_site "$site_path" "$site_name" \
+          cms_database_add_manual_site "$config_path" "$site_name" \
             'Не найден PHP для проверки конфигурации; подключение к БД не проверено.'
         fi
         break
       fi
-      if ! metadata="$("cms_database_${adapter}_inspect" "$site_path" "$php_bin" 2>/dev/null)"; then
+      if ! metadata="$("cms_database_${adapter}_inspect" "$config_path" "$php_bin" 2>/dev/null)"; then
         if ((candidate)); then
-          cms_database_add_manual_site "$site_path" "$site_name" \
+          cms_database_add_manual_site "$config_path" "$site_name" \
             'Не удалось прочитать конфигурацию; подключение к БД не проверено.'
         fi
         break
@@ -300,18 +334,19 @@ cms_database_find_sites() {
       IFS=$'\t' read -r db_name db_user db_host fingerprint <<< "$metadata"
       if [[ -z "$db_name" || -z "$db_user" || -z "$db_host" || -z "$fingerprint" ]]; then
         if ((candidate)); then
-          cms_database_add_manual_site "$site_path" "$site_name" \
+          cms_database_add_manual_site "$config_path" "$site_name" \
             'Не удалось прочитать параметры конфигурации; подключение к БД не проверено.'
         fi
         break
       fi
       [[ "$db_user" == "$wanted_user" ]] || continue
+      seen_configs["$config_path"]=1
       if [[ "$db_host" != "localhost" ]]; then
-        cms_database_add_manual_site "$site_path" "$site_name" \
+        cms_database_add_manual_site "$config_path" "$site_name" \
           'Использование учётной записи localhost для этого хоста БД не подтверждено.' "$db_host"
         break
       fi
-      CMS_DATABASE_PATHS+=("$site_path")
+      CMS_DATABASE_PATHS+=("$config_path")
       CMS_DATABASE_TYPES+=("$adapter")
       CMS_DATABASE_PHP_BINS+=("$php_bin")
       CMS_DATABASE_NAMES+=("$db_name")
@@ -330,9 +365,7 @@ cms_database_find_sites() {
       if ((mapping_status == 0)); then
         site_database="$mapped_database"
       else
-        site_relative="${site_path#/var/www/}"
-        site_relative="${site_relative#*/www/}"
-        site_database="${site_relative%%/*}"
+        site_database="$site_domain"
       fi
       # A failed query must never turn into an empty list of existing databases.
       if ((local_database_status == 0)); then
@@ -372,7 +405,7 @@ cms_database_show_sites() {
   local i adapter
 
   printf '\n'
-  echo "Автонастройка проверяет поддерживаемые CMS в DocumentRoot сайтов Apache."
+  echo "Автонастройка проверяет конфигурации CMS сайтов Apache."
   printf 'Поддерживаемые CMS:'
   for adapter in "${CMS_DATABASE_ADAPTERS[@]}"; do
     printf ' %b%s%b' "${GREEN:-}" "$("cms_database_${adapter}_name")" "${WHITE:-}"

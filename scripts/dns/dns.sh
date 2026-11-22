@@ -1220,6 +1220,7 @@ create_record() {
   local type
   local name_input
   local name
+  local default_value=""
   local value
   local ttl
   local ttl_prompt="TTL: "
@@ -1250,7 +1251,12 @@ create_record() {
   if [[ "$name_input" != "@" && "$name_input" != *"." ]] && ! dns_names_equal "$name" "$(dns_fqdn "$name_input")"; then
     show_record_name_expansion "$name_input" "$name"
   fi
-  read_record_value "$type" value || {
+  if [[ "$type" == "A" ]]; then
+    if ! default_value="$(server_ipv4)" || [[ ! "$default_value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      default_value=""
+    fi
+  fi
+  read_record_value "$type" value "$default_value" || {
     wait_for_enter
     return
   }
@@ -1436,10 +1442,6 @@ delete_record() {
   if provider_delete_record_value "$DNS_ZONE_ID" "$name" "$type" "$value" "$value_ref"; then
     invalidate_records_cache
     echo "DNS-запись удалена."
-    echo
-    echo -e "Тип записи: ${YELLOW}${type}${WHITE}"
-    echo -e "Имя записи: ${YELLOW}${name}${WHITE}"
-    echo -e "Значение записи: ${YELLOW}${value}${WHITE}"
   else
     echo >&2
     echo -e "Не удалось удалить запись." >&2

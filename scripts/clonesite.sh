@@ -438,35 +438,41 @@ function select_remote_site() {
   CLONE_REMOTE_SITE_ROOT="/var/www/${CLONE_REMOTE_USER}/www/${CLONE_REMOTE_SITE}"
 }
 
+function read_vhost_php_version() {
+  grep -oE '/var/opt/remi/php[0-9]{2}/run/php-fpm/' "$1" | grep -oE 'php[0-9]{2}' | head -n 1
+}
+
 function inspect_remote_site() {
   local host="$1"
   local site="$2"
   local user="$3"
   local remote_script
-  local key value
+  local line value
   local vhost_file=""
   local document_root=""
   local site_root="/var/www/${user}/www/${site}"
   local inspect_output
 
-  remote_script="$(cat <<'RISH_REMOTE_CLONE_INSPECT'
+  remote_script="$(
+    declare -f rish_read_vhost_document_roots read_vhost_php_version || exit 1
+    cat <<'RISH_REMOTE_CLONE_INSPECT'
 site="$1"
 user="$2"
 site_root="/var/www/${user}/www/${site}"
 vhost_file=""
+document_root=""
 for f in /etc/httpd/conf.d/"${site}".conf /etc/httpd/conf.d/"${site}"-ssl.conf /etc/httpd/conf.d/"${site}"-le-ssl.conf /etc/httpd/conf.d/*.conf; do
   [ -f "$f" ] || continue
-  if awk -v site="$site" '$1 == "ServerName" && $2 == site { found=1 } END { exit !found }' "$f"; then
+  if document_root="$(rish_read_vhost_document_roots "$site" --inherit "$f")"; then
     vhost_file="$f"
+    document_root="${document_root%%$'\n'*}"
     break
   fi
 done
-document_root=""
 php_version=""
 ssl_files=""
 if [ -n "$vhost_file" ]; then
-  document_root="$(awk '$1 == "DocumentRoot" { print $2; exit }' "$vhost_file")"
-  php_version="$(grep -Eo "php[0-9]{2}" "$vhost_file" | head -n 1)"
+  php_version="$(read_vhost_php_version "$vhost_file")"
   ssl_files="$(awk '$1 ~ /^SSLCertificate(File|KeyFile|ChainFile)$/ { print $2 }' "$vhost_file" | paste -sd "," -)"
 fi
 has_db=0
@@ -480,7 +486,7 @@ printf "php_version=%s\n" "$php_version"
 printf "has_db=%s\n" "$has_db"
 printf "ssl_files=%s\n" "$ssl_files"
 RISH_REMOTE_CLONE_INSPECT
-)"
+  )" || return 1
 
   CLONE_REMOTE_DOCUMENT_ROOT_REL=""
   CLONE_REMOTE_PHP_VERSION=""
@@ -493,8 +499,10 @@ RISH_REMOTE_CLONE_INSPECT
     return 1
   fi
 
-  while IFS='=' read -r key value; do
-    case "$key" in
+  while IFS= read -r line; do
+    [[ "$line" == *=* ]] || continue
+    value="${line#*=}"
+    case "${line%%=*}" in
       site_root) site_root="$value" ;;
       vhost_file) vhost_file="$value" ;;
       document_root) document_root="$value" ;;
@@ -638,20 +646,12 @@ function handle_non_empty_target_site_root() {
   esac
 }
 
-function get_local_vhost_document_root() {
-  local site_name="$1"
-  local conf_file="/etc/httpd/conf.d/${site_name}.conf"
-
-  [[ -f "$conf_file" ]] || return 1
-  awk '$1 == "DocumentRoot" { print $2; exit }' "$conf_file"
-}
-
 function get_local_vhost_php_version() {
   local site_name="$1"
   local conf_file="/etc/httpd/conf.d/${site_name}.conf"
 
   [[ -f "$conf_file" ]] || return 1
-  grep -Eo 'php[0-9]{2}' "$conf_file" | head -n 1
+  read_vhost_php_version "$conf_file"
 }
 
 function check_existing_vhost_php_available() {
@@ -714,11 +714,11 @@ function can_use_existing_target_site() {
     return 1
   fi
 
-  document_root="$(get_local_vhost_document_root "$site_name")"
-  if [[ -z "$document_root" ]]; then
+  if ! document_root="$(rish_read_vhost_document_roots "$site_name" --inherit "$conf_file")" || [[ -z "$document_root" ]]; then
     echo -e "В существующем vhost не найден DocumentRoot: ${RED}${conf_file}${WHITE}"
     return 1
   fi
+  document_root="${document_root%%$'\n'*}"
 
   if [[ "$document_root" != "$expected_document_root" ]]; then
     echo -e "DocumentRoot существующего vhost не совпадает с ожидаемым:"

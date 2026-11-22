@@ -73,15 +73,197 @@ select_compatible_language_package() {
   return 1
 }
 
+joomla_public_install_available() {
+  local root="${1:-$site_root_path}" public_path="${2:-$site_path}"
+  local entry
+
+  [[ ( "$public_path" == "$root" || "${public_path%/*}" == "$root" ) &&
+    -d "$public_path" && ! -L "$root" && ! -L "$public_path" ]] || return 1
+  entry="$(find "$root" -mindepth 1 ! -samefile "$public_path" -printf x -quit 2>/dev/null)" || return 1
+  [[ -z "$entry" ]]
+}
+
+joomla_check_public_document_roots() {
+  local conf_dir="$1" domain="$2" expected_root="$3" site_root="$4" config
+
+  [[ -f "$conf_dir/$domain.conf" ]] || return 1
+  for config in "$conf_dir"/*.conf; do
+    [[ -f "$config" ]] || continue
+    site_manager_render_document_root "$config" "$domain" "$expected_root" "$site_root" check || return 1
+  done
+}
+
+joomla_switch_document_root_to_public() (
+  # Контекст читается функциями менеджера сайтов.
+  # shellcheck disable=SC2034
+  local SM_DIRECTORY="$directory" SM_FILE_NAME="$folder"
+  # Состояние установки передаётся между функциями установки и отката.
+  # shellcheck disable=SC2034
+  local joomla_rollback_dir="" joomla_staging_id=""
+
+  if ! site_manager_resolve_context || ((!SM_SITE_AVAILABLE)) ||
+    [[ "$SM_SITE_PATH" != "$site_root_path" ||
+      "$(realpath -e -- "$SM_DOCUMENT_ROOT" 2>/dev/null)" != "$site_path" ]] ||
+    ! joomla_public_install_available; then
+    echo "Папка сайта или DocumentRoot изменились. Запустите установку заново." >&2
+    return 1
+  fi
+  site_manager_commit_document_root /etc/httpd/conf.d "$1" create \
+    joomla_install_after_document_root_change joomla_finish_public_install
+)
+
+joomla_install_after_document_root_change() {
+  local account_root="/var/www/$user"
+
+  if [[ -L "$account_root" || "$(stat -c '%u' -- "$account_root")" != 0 ]] ||
+    ! joomla_staging_id="$(stat -c '%d:%i' -- "$staging_path")" ||
+    ! joomla_rollback_dir="$(mktemp -d -- "$account_root/.rish-joomla.XXXXXX")" ||
+    [[ "$(stat -c '%d' -- "$joomla_rollback_dir")" != "${joomla_staging_id%%:*}" ||
+      "$(stat -c '%d' -- "$install_path")" != "${joomla_staging_id%%:*}" ]]; then
+    echo "Не удалось подготовить закрытую папку для отката на той же файловой системе." >&2
+    return 1
+  fi
+  joomla_install_prepared_package "$@"
+}
+
+# Переменные установки доступны из install_joomla через область видимости Bash.
+# shellcheck disable=SC2154
+joomla_finish_public_install() {
+  local status="$1" original="$joomla_rollback_dir/original" failed_package="$joomla_rollback_dir/joomla"
+
+  [[ -n "$joomla_rollback_dir" ]] || return 0
+  if ((status == 0)); then
+    if ! rmdir -- "$original/$public_folder" "$original" "$joomla_rollback_dir"; then
+      printf 'Исходная папка сохранена в %b%s%b.\n' "$YELLOW" "$joomla_rollback_dir" "$WHITE" >&2
+    fi
+    return 0
+  fi
+
+  if [[ -d "$original" ]]; then
+    if [[ -e "$install_path" || -L "$install_path" ]]; then
+      if [[ -L "$install_path" || "$(stat -c '%d:%i' -- "$install_path")" != "$joomla_staging_id" ]] ||
+        ! mv -T -- "$install_path" "$failed_package"; then
+        printf 'Не удалось изолировать файлы установки. Исходная папка сохранена в %b%s%b.\n' \
+          "$YELLOW" "$original" "$WHITE" >&2
+        return 1
+      fi
+      printf 'Файлы незавершённой установки сохранены в %b%s%b.\n' "$YELLOW" "$failed_package" "$WHITE" >&2
+    fi
+    if ! mv -nT -- "$original" "$install_path" || [[ -e "$original" ]]; then
+      printf 'Не удалось вернуть исходную папку сайта из %b%s%b.\n' "$YELLOW" "$original" "$WHITE" >&2
+      return 1
+    fi
+  fi
+  if [[ ! -d "$failed_package" ]]; then
+    rmdir -- "$joomla_rollback_dir" ||
+      printf 'Временная папка сохранена в %b%s%b.\n' "$YELLOW" "$joomla_rollback_dir" "$WHITE" >&2
+  fi
+}
+
+# public_folder передаётся через область видимости install_joomla.
+# shellcheck disable=SC2154
+place_joomla_package() {
+  local staging_path="$1" install_path="$2" user="$3"
+
+  if [[ "$install_path" == "$site_path" ]]; then
+    rm -rf -- "$site_path" && mv -- "$staging_path" "$site_path"
+    return
+  fi
+
+  if [[ -n "${joomla_rollback_dir:-}" ]]; then
+    local original="$joomla_rollback_dir/original"
+    joomla_public_install_available && mv -T -- "$install_path" "$original" || return 1
+    joomla_public_install_available "$original" "$original/$public_folder" || return 1
+    mv -nT -- "$staging_path" "$install_path" &&
+      [[ "$(stat -c '%d:%i' -- "$install_path")" == "$joomla_staging_id" ]]
+    return
+  fi
+
+  # Replace only an empty site directory. mv -T refuses a non-empty destination.
+  joomla_public_install_available && rmdir -- "$site_path" || return 1
+  if mv -T -- "$staging_path" "$install_path"; then
+    return 0
+  fi
+  runuser -u "$user" -- mkdir -m 755 -- "$site_path"
+  return 1
+}
+
+# Параметры установки доступны из install_joomla через область видимости Bash.
+# shellcheck disable=SC2154
+joomla_install_prepared_package() {
+  # Менеджер сайтов использует свои локальные переменные с теми же именами.
+  local folder="$1" site_path="$2" site_root_path="$install_path"
+
+  if [[ -n "$public_folder" ]]; then
+    if ! cms_prepare_context "$directory" "$folder" ||
+      [[ "$site_path" != "$install_path/$public_folder" ]] || ! joomla_public_install_available; then
+      printf 'DocumentRoot должен указывать на %b%s%b.\n' "$GREEN" "$install_path/$public_folder" "$WHITE"
+      printf 'В папке сайта должен быть только пустой каталог %b%s%b.\n' "$GREEN" "$public_folder" "$WHITE"
+      return 1
+    fi
+    joomla_check_public_document_roots /etc/httpd/conf.d "$folder" "$site_path" "$site_root_path" || return 1
+  fi
+
+  if [[ -n "$db_exists" ]]; then
+    if ! mariadb-admin -f -u root drop "${folder}"; then
+      echo -e "При удалении базы данных ${RED}${folder}${WHITE} произошли ${RED}ошибки${WHITE}"
+      return 1
+    fi
+    echo -e "База данных ${GREEN}${folder}${WHITE} удалена"
+  fi
+  if ! mariadb -u root -e "CREATE DATABASE \`${folder}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
+    echo -e "Не удалось создать базу данных ${RED}${folder}${WHITE}."
+    return 1
+  fi
+  echo -e "База mysql с именем ${GREEN}${folder}${WHITE} создана"
+  if ! mariadb -uroot -e "GRANT ALL PRIVILEGES ON \`${folder}\`.* TO '${user}'@'localhost'; FLUSH PRIVILEGES;"; then
+    echo -e "Не удалось выдать права на базу данных пользователю ${RED}${user}${WHITE}."
+    return 1
+  fi
+  echo -e "Права на базу выданы пользователю ${GREEN}${user}${WHITE}"
+
+  if ! place_joomla_package "$staging_path" "$install_path" "$user"; then
+    echo -e "Не удалось заменить ${RED}файлы сайта${WHITE}."
+    echo "База данных уже была пересоздана."
+    return 1
+  fi
+
+  echo -e "Будет использована учетная запись ${GREEN}${admin_email}${WHITE}"
+  if ! (
+    cd "$install_path" &&
+      runuser -u "$user" -- "$php_bin" installation/joomla.php install \
+        --no-interaction \
+        "${public_option[@]}" \
+        --site-name="$site_name" \
+        --admin-user="$admin_email" \
+        --admin-username="$admin_email" \
+        --admin-password="$admin_password" \
+        --admin-email="$admin_email" \
+        --db-type="mysqli" \
+        --db-host="localhost" \
+        --db-user="$user" \
+        --db-pass="$db_password" \
+        --db-name="$folder" \
+        --db-encryption="0"
+  ); then
+    echo -e "Установка Joomla завершилась с ${RED}ошибкой${WHITE}."
+    return 1
+  fi
+}
+
 install_joomla() {
+  local install_path="$site_path"
   local -a downloads
   local -a joomlas
+  local -a public_option=()
+  local public_folder=""
   local choice
   local joomla_version
   local joomla_full_version
   local joomla_minor_version
   local user
   local cr
+  local document_root_lock
   local admin_email
   local admin_password
   local db_password
@@ -121,15 +303,47 @@ install_joomla() {
     wait_for_enter
     exit
   fi
-  joomla_version=$( echo "${joomlas[${choice}]}" | sed 's@^[^0-9]*\([0-9]\+\).*@\1@' )
   joomla_full_version=$( echo "${joomlas[${choice}]}" | sed -n 's@^[^0-9]*\([0-9]\+\.[0-9]\+\.[0-9]\+\).*@\1@p' )
   if [[ -z "$joomla_full_version" ]]; then
     echo -e "Не удалось определить версию выбранного архива ${RED}Joomla${WHITE}."
     wait_for_enter
     exit 1
   fi
+  joomla_version=${joomla_full_version%%.*}
   joomla_minor_version=${joomla_full_version%.*}
   archive_name="${joomlas[${choice}]}"
+
+  if ((joomla_version >= 5)) && joomla_public_install_available; then
+    echo "Выберите способ установки Joomla:"
+    vertical_menu "current" 2 0 40 "Обычная установка" "Установка с отдельной публичной папкой"
+    case $? in
+      0) ;;
+      1)
+        source "${RISH_HOME}/scripts/site_manager.sh" || return 1
+        if [[ "$site_path" == "$site_root_path" ]]; then
+          cr=0
+          IFS= read -r -e -i "public" \
+            -p $'\001\033[0m\002Имя публичной папки: \001\033[0;32m\002' public_folder || cr=$?
+          printf '%b' "$WHITE"
+          [[ "$cr" == 0 && -n "$public_folder" ]] || return 0
+        else
+          public_folder="${site_path##*/}"
+        fi
+        # Joomla фильтрует значение --public-folder как HTML-строку.
+        if ! site_manager_document_root_name_ok "$public_folder" || [[ "$public_folder" == *[\&\<\>]* ]]; then
+          printf 'Имя %b%q%b нельзя использовать для публичной папки Joomla.\n' "$RED" "$public_folder" "$WHITE"
+          wait_for_enter
+          return 1
+        fi
+        install_path="$site_root_path"
+        printf 'Публичная папка Joomla: %b%s%b\n' "$GREEN" "$install_path/$public_folder" "$WHITE"
+        public_option=(--public-folder="$public_folder")
+        # PHP считает строку «0» пустой, а Joomla допускает завершающий слеш.
+        [[ "$public_folder" != 0 ]] || public_option=(--public-folder=0/)
+        ;;
+      *) return 0 ;;
+    esac
+  fi
 
   if [[ -z "$php_bin" ]]; then
     echo -e "Установка ${RED}Joomla${WHITE} невозможна: не определен PHP сайта."
@@ -208,15 +422,15 @@ install_joomla() {
     exit 1
   fi
 
-  if compgen -G "${site_path}.rish-install.*" > /dev/null; then
+  if compgen -G "${install_path}.rish-install.*" > /dev/null; then
     rm -f -- "$archive_path"
     echo -e "Найдены ${RED}временные папки${WHITE} предыдущей установки."
     echo "Удалите их вручную после проверки содержимого:"
-    echo "${site_path}.rish-install.*"
+    echo "${install_path}.rish-install.*"
     wait_for_enter
     exit 1
   fi
-  if ! staging_path=$(mktemp -d "${site_path}.rish-install.XXXXXX") ||
+  if ! staging_path=$(mktemp -d "${install_path}.rish-install.XXXXXX") ||
     ! chmod 755 "$staging_path" ||
     ! tar xzf "$archive_path" -C "$staging_path"; then
     rm -f -- "$archive_path"
@@ -227,69 +441,48 @@ install_joomla() {
   fi
   rm -f -- "$archive_path"
 
+  # Учитываем пути, которые Joomla и RISH создают после распаковки.
+  if [[ -n "$public_folder" &&
+    ( -e "$staging_path/$public_folder" || -L "$staging_path/$public_folder" ||
+      "$public_folder" == .htaccess || "$public_folder" == configuration.php || "$public_folder" == files ) ]]; then
+    rm -rf -- "$staging_path"
+    printf 'Имя %b%s%b уже используется Joomla. Выберите другое имя публичной папки.\n' "$RED" "$public_folder" "$WHITE"
+    wait_for_enter
+    return 1
+  fi
   if [[ ! -f "${staging_path}/htaccess.txt" ]] ||
-    ! mv "${staging_path}/htaccess.txt" "${staging_path}/.htaccess" ||
+    { [[ -n "$public_folder" ]] && ! mkdir -m 755 -- "$staging_path/$public_folder"; } ||
+    ! mv -- "$staging_path/htaccess.txt" "$staging_path${public_folder:+/$public_folder}/.htaccess" ||
     ! chown -R "${user}:${user}" "$staging_path"; then
     rm -rf -- "$staging_path"
     echo -e "Не удалось подготовить файлы ${RED}Joomla${WHITE}."
     wait_for_enter
     exit 1
   fi
-
-  if [[ -n "$db_exists" ]]; then
-    if ! mariadb-admin -f -u root drop "${folder}"; then
-      rm -rf -- "$staging_path"
-      echo -e "При удалении базы данных ${RED}${folder}${WHITE} произошли ${RED}ошибки${WHITE}"
+  cr=0
+  if [[ -n "$public_folder" && "$site_path" == "$install_path" ]]; then
+    joomla_switch_document_root_to_public "$install_path/$public_folder" || cr=$?
+  else
+    (
+      # Менеджер сайтов удерживает ту же блокировку, когда сам меняет DocumentRoot.
+      if [[ -n "$public_folder" ]] &&
+        ! { exec {document_root_lock}</etc/httpd/conf.d && flock -n "$document_root_lock"; }; then
+        echo "Не удалось получить блокировку конфигурации Apache."
+        exit 1
+      fi
+      joomla_install_prepared_package "$folder" "$site_path"
+    ) || cr=$?
+  fi
+  if ((cr != 0)); then
+    rm -rf -- "$staging_path"
+    if ((cr == 2)); then
+      echo "Установка Joomla отменена."
       wait_for_enter
-      exit 1
+      return 0
     fi
-    echo -e "База данных ${GREEN}${folder}${WHITE} удалена"
-  fi
-  if ! mariadb -u root -e "CREATE DATABASE \`${folder}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
-    rm -rf -- "$staging_path"
-    echo -e "Не удалось создать базу данных ${RED}${folder}${WHITE}."
     wait_for_enter
     exit 1
   fi
-  echo -e "База mysql с именем ${GREEN}${folder}${WHITE} создана"
-  if ! mariadb -uroot -e "GRANT ALL PRIVILEGES ON \`${folder}\`.* TO '${user}'@'localhost'; FLUSH PRIVILEGES;"; then
-    rm -rf -- "$staging_path"
-    echo -e "Не удалось выдать права на базу данных пользователю ${RED}${user}${WHITE}."
-    wait_for_enter
-    exit 1
-  fi
-  echo -e "Права на базу выданы пользователю ${GREEN}${user}${WHITE}"
-
-  if ! rm -rf -- "$site_path" ||
-    ! mv -- "$staging_path" "$site_path"; then
-    rm -rf -- "$staging_path"
-    echo -e "Не удалось заменить ${RED}файлы сайта${WHITE}."
-    echo "База данных уже была пересоздана."
-    wait_for_enter
-    exit 1
-  fi
-
-  echo -e "Будет использована учетная запись ${GREEN}${admin_email}${WHITE}"
-  (
-    cd "${site_path}" || exit 1
-    runuser -u "$user" -- "$php_bin" installation/joomla.php install \
-      --no-interaction \
-      --site-name="$site_name" \
-      --admin-user="$admin_email" \
-      --admin-username="$admin_email" \
-      --admin-password="$admin_password" \
-      --admin-email="$admin_email" \
-      --db-type="mysqli" \
-      --db-host="localhost" \
-      --db-user="$user" \
-      --db-pass="$db_password" \
-      --db-name="$folder" \
-      --db-encryption="0"
-  ) || {
-    echo -e "Установка Joomla завершилась с ${RED}ошибкой${WHITE}."
-    wait_for_enter
-    exit 1
-  }
 
   echo
   echo -e "Установка Joomla ${GREEN}завершена${WHITE}."
@@ -327,7 +520,7 @@ install_joomla() {
     fi
     if [[ -n "$language_package_url" ]]; then
       echo -e "Будет установлен пакет локализации: ${GREEN}${language_package_url##*/}${WHITE}"
-      runuser -u "$user" -- "$php_bin" "${site_path}/cli/joomla.php" extension:install \
+      runuser -u "$user" -- "$php_bin" "${install_path}/cli/joomla.php" extension:install \
         --url="$language_package_url" || {
           echo -e "Не удалось установить ${RED}русскую локализацию${WHITE}."
           echo "Основная установка Joomla завершена успешно."
@@ -365,7 +558,7 @@ update_joomla() {
 
   echo "Проверяем наличие обновлений Joomla..."
   check_output=$(
-    cd "$site_path" &&
+    cd "$joomla_path" &&
       timeout 30s runuser -u "$user" -- "$php_bin" cli/joomla.php core:check-updates --no-ansi 2>&1
   )
   cr=$?
@@ -389,7 +582,7 @@ update_joomla() {
 
   echo "Обновляем Joomla..."
   if ! (
-    cd "$site_path" &&
+    cd "$joomla_path" &&
       runuser -u "$user" -- "$php_bin" cli/joomla.php core:update
   ); then
     echo -e "Обновление Joomla ${RED}завершилось с ошибкой${WHITE}."
@@ -403,7 +596,7 @@ update_joomla() {
 
 joomla_config_value() {
   local name="$1"
-  local config_file="${site_path}/configuration.php"
+  local config_file="${joomla_path}/configuration.php"
 
   sed -nE "s/^[[:space:]]*(public[[:space:]]+)?\\\$${name}[[:space:]]*=[[:space:]]*'([^']*)'.*/\\2/p" "$config_file" | head -n 1
 }
@@ -430,7 +623,7 @@ run_joomla_user_command() {
   shift
 
   (
-    cd "$site_path" &&
+    cd "$joomla_path" &&
       runuser -u "$user" -- "$php_bin" cli/joomla.php "$@"
   )
 }
@@ -478,7 +671,7 @@ show_joomla_users_head() {
   local cr
 
   (
-    cd "$site_path" &&
+    cd "$joomla_path" &&
       runuser -u "$user" -- "$php_bin" cli/joomla.php user:list | head -n "$line_limit"
   )
   cr=$?
@@ -496,7 +689,7 @@ show_joomla_super_users() {
 
   (
     set -o pipefail
-    cd "$site_path" &&
+    cd "$joomla_path" &&
       runuser -u "$user" -- "$php_bin" cli/joomla.php user:list |
         awk '
           function print_header() {
@@ -561,7 +754,7 @@ filter_joomla_users() {
 
   (
     set -o pipefail
-    cd "$site_path" &&
+    cd "$joomla_path" &&
       runuser -u "$user" -- "$php_bin" cli/joomla.php user:list | grep -i -- "$pattern"
   )
   cr=$?
@@ -659,6 +852,17 @@ manage_joomla_users() {
   done
 }
 
+cms_install_site_url() {
+  local domain="$1" scheme=http
+
+  if [[ -f "/etc/httpd/conf.d/${domain}-ssl.conf" ||
+    -f "/etc/httpd/conf.d/${domain}-le-ssl.conf" ]]; then
+    scheme=https
+  fi
+
+  printf '%s://%s\n' "$scheme" "$domain"
+}
+
 install_opencart() {
   local -a downloads
   local -a opencarts
@@ -674,7 +878,7 @@ install_opencart() {
   local livestore_tag
   local livestore_version
   local livestore_url
-  local site_url="http://${site_name}"
+  local site_url
   local user
   local cr
   local db_password
@@ -746,10 +950,7 @@ install_opencart() {
     exit 1
   fi
 
-  if [[ -f "/etc/httpd/conf.d/${site_name}-ssl.conf" ||
-    -f "/etc/httpd/conf.d/${site_name}-le-ssl.conf" ]]; then
-    site_url="https://${site_name}"
-  fi
+  site_url="$(cms_install_site_url "$site_name")"
 
   if ! user=$(get_site_user "$directory"); then
     echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
@@ -945,7 +1146,7 @@ install_wordpress() {
   local wp_cli="/usr/local/bin/wp"
   local wp_cli_tmp
   local wordpress_download_path
-  local site_url="http://${site_name}"
+  local site_url
   local user
   local cr
   local db_password
@@ -988,10 +1189,7 @@ install_wordpress() {
     exit 1
   fi
 
-  if [[ -f "/etc/httpd/conf.d/${site_name}-ssl.conf" ||
-    -f "/etc/httpd/conf.d/${site_name}-le-ssl.conf" ]]; then
-    site_url="https://${site_name}"
-  fi
+  site_url="$(cms_install_site_url "$site_name")"
 
   if ! user=$(get_site_user "$directory"); then
     echo -e "Выбран ${RED}неверный${WHITE} каталог для сайта."
@@ -1133,7 +1331,7 @@ install_wordpress() {
 }
 
 install_phpmyadmin() {
-  bash /root/rish/scripts/phpmyadmin_install.sh "$folder" "$directory"
+  bash /root/rish/scripts/phpmyadmin_install.sh "$folder" "$directory" "$site_path"
 }
 
 audit_joomla_extensions() {
@@ -1144,7 +1342,7 @@ audit_joomla_extensions() {
   fi
 
   bash /root/rish/scripts/joomla_extensions_audit.sh \
-    "$site_path" "$site_name" "$joomla_version" "$php_bin" "$site_user"
+    "$joomla_path" "$site_name" "$joomla_version" "$php_bin" "$site_user"
 }
 
 run_manual_joomla_cli_command() {
@@ -1176,8 +1374,8 @@ run_manual_joomla_cli_command() {
     fi
 
     read -r -a command_args <<< "$command_line"
-    full_command="cd $(shell_quote_command "$site_path") && $(shell_quote_command runuser -u "$user" -- "$php_bin" cli/joomla.php "${command_args[@]}")"
-    cron_command="cd $(shell_quote_command "$site_path") && $(shell_quote_command "$php_bin" cli/joomla.php "${command_args[@]}")"
+    full_command="cd $(shell_quote_command "$joomla_path") && $(shell_quote_command runuser -u "$user" -- "$php_bin" cli/joomla.php "${command_args[@]}")"
+    cron_command="cd $(shell_quote_command "$joomla_path") && $(shell_quote_command "$php_bin" cli/joomla.php "${command_args[@]}")"
     # CRON обрабатывает проценты до передачи команды оболочке.
     cron_command="${cron_command//%/\\%}"
     echo
@@ -1221,7 +1419,7 @@ detect_phpmyadmin_installations() {
     if [[ "$candidate" == "$site_path" ]]; then
       relative_path="корень сайта"
     else
-      relative_path="${candidate#${site_path}/}"
+      relative_path="${candidate#"$site_path"/}"
     fi
 
     version="$(phpmyadmin_version "$candidate")"
@@ -1243,10 +1441,11 @@ detect_phpmyadmin_installations() {
 }
 
 fix_joomla_site_configuration() {
-  local config_parent="${site_path%/*}"
-  local config_name="${site_path##*/}"
+  local config_path="${joomla_path:-$site_path}"
+  local config_parent="${config_path%/*}"
+  local config_name="${config_path##*/}"
 
-  if [[ ! -f "${site_path}/configuration.php" ]]; then
+  if [[ ! -f "${config_path}/configuration.php" ]]; then
     echo
     echo -e "В выбранной папке нет файла ${GREEN}configuration.php${WHITE}."
     echo "Папка не выглядит как сайт Joomla."
@@ -1281,6 +1480,7 @@ cms_initialize_runtime() {
 
 cms_prepare_context() {
   local canonical_directory document_root canonical_root
+  local manifest="administrator/manifests/files/joomla.xml"
 
   cms_initialize_runtime || return 1
   directory="${1:-}"
@@ -1288,6 +1488,7 @@ cms_prepare_context() {
   folder="${2:-}"
   site_root_path="${directory}/${folder}"
   site_path=""
+  joomla_path=""
   site_name="$folder"
   site_cms=""
   joomla_version=""
@@ -1317,19 +1518,8 @@ cms_prepare_context() {
     printf 'Фактический путь сайта выходит за пределы выбранного каталога.\n' >&2
     return 1
   fi
-  document_root="$(awk '
-    tolower($1) == "documentroot" {
-      sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, "")
-      if ($0 ~ /^"/) {
-        sub(/^"/, "")
-        sub(/".*$/, "")
-      } else {
-        sub(/[[:space:]].*$/, "")
-      }
-      print
-      exit
-    }
-  ' "/etc/httpd/conf.d/${site_name}.conf")"
+  document_root="$(rish_read_vhost_document_roots "$site_name" --inherit "/etc/httpd/conf.d/${site_name}.conf")" || document_root=""
+  document_root="${document_root%%$'\n'*}"
   if [[ "$document_root" != /* ]] ||
     ! site_path="$(realpath -e -- "$document_root" 2>/dev/null)" || [[ ! -d "$site_path" ]]; then
     printf 'Не удалось определить DocumentRoot сайта %s.\n' "$site_name" >&2
@@ -1345,12 +1535,19 @@ cms_prepare_context() {
     return 1
   fi
 
-  if [[ -f "${site_path}/configuration.php" &&
-    -f "${site_path}/administrator/manifests/files/joomla.xml" ]]; then
+  if [[ -f "$site_path/configuration.php" && -f "$site_path/$manifest" ]]; then
+    joomla_path="$site_path"
+  elif [[ "$site_path" != "$canonical_root" &&
+    -f "$site_path/index.php" && -f "$site_path/defines.php" &&
+    -f "$canonical_root/configuration.php" && -f "$canonical_root/$manifest" ]]; then
+    joomla_path="$canonical_root"
+  fi
+
+  if [[ -n "$joomla_path" ]]; then
     site_is_joomla=1
     joomla_version=$(
       sed -nE 's@.*<version>[[:space:]]*([0-9]+(\.[0-9]+)+)[[:space:]]*</version>.*@\1@p' \
-        "${site_path}/administrator/manifests/files/joomla.xml" |
+        "$joomla_path/$manifest" |
         head -n 1
     )
     if [[ -n "$joomla_version" ]]; then
@@ -1358,7 +1555,7 @@ cms_prepare_context() {
     else
       site_cms="Joomla"
     fi
-    if [[ -f "${site_path}/cli/joomla.php" ]]; then
+    if [[ -f "${joomla_path}/cli/joomla.php" ]]; then
       site_has_joomla_cli=1
     fi
     if [[ "$joomla_version" =~ ^[56]\. ]]; then
@@ -1388,7 +1585,7 @@ cms_build_actions() {
       CMS_ACTION_TOKENS+=(run_manual_joomla_cli_command)
     fi
   fi
-  if [[ -f "${site_path}/configuration.php" ]]; then
+  if [[ -f "${joomla_path:-$site_path}/configuration.php" ]]; then
     CMS_ACTION_LABELS+=("Настроить Joomla configuration.php")
     CMS_ACTION_TOKENS+=(fix_joomla_site_configuration)
   fi

@@ -107,7 +107,8 @@ function check_site() {
       local conf_file="/etc/httpd/conf.d/$site_name.conf"
       local current_path=""
       local expected_path="${directory_path%/}/${site_name}"
-      current_path=$(awk '$1 == "DocumentRoot" { print $2; exit }' "$conf_file")
+      current_path="$(rish_read_vhost_document_roots "$site_name" --inherit "$conf_file")" || current_path=""
+      current_path="${current_path%%$'\n'*}"
 
       if [[ -z "$current_path" ]]; then
         echo -e "Не удалось определить DocumentRoot в конфиге: ${RED}${conf_file}${WHITE}"
@@ -176,6 +177,7 @@ function create_site_core() {
   local restart_php_fpm="${6:-1}"
   local reload_apache="${7:-1}"
   local update_hotlist="${8:-1}"
+  local apache_document_root
   local conf_file
   local created_pool_file=""
   local document_root_path
@@ -252,6 +254,14 @@ function create_site_core() {
 
   site_dir="${path}/${site_name}"
   document_root_path="${site_dir}${DocumentRoot}"
+  apache_document_root="/var/www/${username}/www/${site_name}${DocumentRoot}"
+  case "$apache_document_root" in
+    *[[:cntrl:]]*|*\"*|*\'*|*\\*|*'${'*|*'*'*|*'?'*|*'['*|*']'*)
+      echo "DocumentRoot содержит неподдерживаемые символы."
+      return 1
+      ;;
+    *[[:space:]\<\>#]*) apache_document_root="\"$apache_document_root\"" ;;
+  esac
 
   if [[ -d "$document_root_path" ]]; then
     echo -e "Используем существующую папку сайта: ${GREEN}${site_name}${WHITE}"
@@ -293,7 +303,7 @@ function create_site_core() {
     echo "ServerAdmin webmaster@localhost"
     echo "ServerName ${site_name}"
     echo "ServerAlias www.${site_name}"
-    echo "DocumentRoot /var/www/${username}/www/${site_name}${DocumentRoot}"
+    printf 'DocumentRoot %s\n' "$apache_document_root"
     echo ""
     echo "<FilesMatch \.php$>"
     echo "    SetHandler \"proxy:unix:/var/opt/remi/${selected_php}/run/php-fpm/${username}.sock|fcgi://localhost\""
@@ -301,7 +311,7 @@ function create_site_core() {
     echo ""
     echo "DirectoryIndex index.php index.html"
     echo ""
-    echo "<Directory /var/www/${username}/www/${site_name}${DocumentRoot}>"
+    printf '<Directory %s>\n' "$apache_document_root"
     echo "    Options -Indexes +FollowSymLinks"
     echo "    AllowOverride All"
     echo "    Require all granted"
