@@ -847,6 +847,46 @@ site_manager_print_site_info() {
   fi
 }
 
+site_manager_print_apache_info() {
+  local LC_ALL=en_US.UTF-8
+  local info kind value columns prefix="Алиасы: " indent line="" index
+  local -a aliases=() certificates=()
+
+  info=$(bash "${RISH_HOME}/scripts/certs.sh" --describe-site "$SM_SITE_NAME" 2>/dev/null) || return 0
+  while IFS=$'\t' read -r kind value; do
+    case "$kind" in
+      alias) aliases+=("$value") ;;
+      certificate)
+        site_manager_format_path "$value" value
+        certificates+=("$value")
+        ;;
+    esac
+  done <<< "$info"
+
+  if ((${#aliases[@]} == 0)); then
+    printf '%s—\n' "$prefix"
+  else
+    read -r _ columns < <(stty size 2>/dev/null)
+    [[ "$columns" =~ ^[1-9][0-9]*$ ]] || columns=80
+    printf -v indent '%*s' "${#prefix}" ''
+    for index in "${!aliases[@]}"; do
+      value="${aliases[$index]}"
+      ((index == ${#aliases[@]} - 1)) || value+=","
+      if [[ -n "$line" ]] && ((${#prefix} + ${#line} + 1 + ${#value} > columns)); then
+        printf '%s%b%s%b\n' "$prefix" "$GREEN" "$line" "$WHITE"
+        prefix="$indent"
+        line=""
+      fi
+      line+="${line:+ }${value}"
+    done
+    printf '%s%b%s%b\n' "$prefix" "$GREEN" "$line" "$WHITE"
+  fi
+  if ((${#certificates[@]} > 0)); then
+    printf -v value '%s, ' "${certificates[@]}"
+    printf 'SSL-сертификат: %b%s%b\n' "$YELLOW" "${value%, }" "$WHITE"
+  fi
+}
+
 site_manager_build_menu() {
   local create_label="Создать сайт"
 
@@ -900,6 +940,7 @@ site_manager_build_menu() {
 
 site_manager_main() {
   local choice action default_action=permissions default_index index php_version php_branch server_ip
+  local terminal_rows menu_height
 
   RISH_HOME="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 1
   export RISH_HOME
@@ -934,6 +975,7 @@ site_manager_main() {
       server_ip=$(ip route get 1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }') || server_ip=""
       printf 'IP сервера: %b%s%b\n' "$YELLOW" "${server_ip:-не определён}" "$WHITE"
       site_manager_print_site_info
+      site_manager_print_apache_info
     else
       echo "Управление сайтом"
     fi
@@ -962,7 +1004,13 @@ site_manager_main() {
         break
       fi
     done
-    vertical_menu "current" 2 0 32 "default=$default_index" "${SM_MENU_ITEMS[@]}"
+    menu_height=0
+    if ((SM_SITE_AVAILABLE || SM_DELETE_AVAILABLE)) && [[ -t 0 && -t 1 ]] &&
+      read -r terminal_rows _ < <(stty size 2>/dev/null) && [[ "$terminal_rows" =~ ^[1-9][0-9]*$ ]]; then
+      menu_height=$((terminal_rows - $(get_cursor_row) - 1))
+      ((menu_height >= 5)) || menu_height=5
+    fi
+    vertical_menu "current" 2 "$menu_height" 32 "default=$default_index" "${SM_MENU_ITEMS[@]}"
     choice=$?
     if ((choice == 255 || choice >= ${#SM_MENU_ACTIONS[@]})); then
       return 0

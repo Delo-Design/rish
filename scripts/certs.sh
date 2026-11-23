@@ -1,6 +1,118 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2155
 
+function describe_site_apache() {
+  python3 - "$1" <<'PY'
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+
+site = sys.argv[1].lower()
+site_names = {site, f"www.{site}"}
+server_root = Path("/etc/httpd")
+vhost = re.compile(
+    r"^[ \t]*<VirtualHost[ \t]+([^>\n]+)>[^\n]*\n(.*?)^[ \t]*</VirtualHost[ \t]*>",
+    re.I | re.M | re.S,
+)
+directive = re.compile(
+    r"^[ \t]*(ServerName|ServerAlias|SSLEngine|SSLCertificateFile)[ \t]+([^\n]+)",
+    re.I | re.M,
+)
+
+
+def read_site_vhosts(config):
+    try:
+        content = config.read_text(encoding="utf-8", errors="replace").replace("\\\n", "")
+    except OSError:
+        return
+
+    for addresses, body in vhost.findall(content):
+        name = ssl_engine = ""
+        aliases = {}
+        certificates = []
+        for key, args in directive.findall(body):
+            try:
+                values = shlex.split(args, comments=True)
+            except ValueError:
+                continue
+            if not values:
+                continue
+            key = key.lower()
+            if key == "servername":
+                name = values[0].rsplit("://", 1)[-1].split(":", 1)[0].rstrip(".").lower()
+            elif key == "serveralias":
+                for alias in values:
+                    if alias and alias.isprintable() and not any(char.isspace() for char in alias):
+                        aliases.setdefault(alias.rstrip(".").lower(), alias)
+            elif key == "sslengine":
+                ssl_engine = values[0].lower()
+            else:
+                certificates.append(values[0])
+
+        if name not in site_names and site_names.isdisjoint(aliases):
+            continue
+        # In RISH, managed HTTPS vhosts can inherit SSLEngine from the server.
+        https = ssl_engine == "on" or (
+            ssl_engine != "off" and any(address.endswith(":443") for address in addresses.split())
+        )
+        yield aliases, certificates if https else []
+
+
+def certificate_label(path):
+    if not path.is_file():
+        return "файл сертификата не найден"
+    if path.parent.parent == Path("/etc/letsencrypt/live") and path.name in ("fullchain.pem", "cert.pem"):
+        return "Let’s Encrypt"
+    if Path("/etc/pki/tls/rish/selectel") in path.parents:
+        return "Selectel"
+    try:
+        identity = subprocess.run(
+            [
+                "openssl", "x509", "-in", str(path), "-noout",
+                "-subject", "-issuer", "-nameopt", "sep_multiline,utf8",
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, timeout=2,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "не удалось прочитать сертификат"
+    names = dict(re.findall(r"^(subject|issuer)=([^\n]*(?:\n[ \t]+[^\n]*)*)", identity, re.M))
+    issuer = names.get("issuer")
+    if not issuer:
+        return "издатель не указан"
+    if issuer == names.get("subject"):
+        return "самоподписанный"
+    fields = dict(re.findall(r"^[ \t]*(O|CN)[ \t]*=[ \t]*(.+)$", issuer, re.M))
+    return fields.get("O") or fields.get("CN") or "издатель не указан"
+
+
+aliases = {}
+certificates = {}
+configs = (server_root / "conf.d").glob("*.conf")
+for config in sorted(configs, key=lambda path: (path.name != f"{site}.conf", path.name)):
+    if not config.is_file():
+        continue
+    for vhost_aliases, files in read_site_vhosts(config):
+        for key, alias in vhost_aliases.items():
+            if key != site:
+                aliases.setdefault(key, alias)
+        for file in files:
+            certificates.setdefault(server_root / file)
+
+for alias in aliases.values():
+    print(f"alias\t{alias}")
+for label in dict.fromkeys(certificate_label(path) for path in certificates):
+    print(f"certificate\t{label}")
+PY
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" && "${1:-}" == "--describe-site" ]]; then
+  [[ $# == 2 ]] || exit 1
+  describe_site_apache "$2"
+  exit $?
+fi
+
 source /root/rish/windows.sh
 
 GREEN='\033[0;32m'
